@@ -168,7 +168,7 @@ func (c *RunCmd) Run(ctx *cliCtx) error {
 
 // ApproveCmd approves a pending broker request.
 type ApproveCmd struct {
-	ID  string `arg:"" help:"Pending request id"`
+	ID   string `arg:"" help:"Pending request id"`
 	Sock string `help:"Broker socket path" default:"" env:"ESEC_VAULT_SOCK"`
 }
 

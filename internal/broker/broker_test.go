@@ -27,8 +27,9 @@ func skipUnlessUnix(t *testing.T) {
 // assertions).
 func startTestBroker(t *testing.T, keys map[string]map[string]string, pol *policy.Policy) (*Client, string, *Server) {
 	t.Helper()
-	// The socket path must stay short (104-char unix socket limit on darwin).
-	sockDir, err := os.MkdirTemp("", "ev")
+	// The socket path must stay short (104-char unix socket limit on darwin),
+	// so t.TempDir() is too long here.
+	sockDir, err := os.MkdirTemp("", "ev") //nolint:usetesting // see above
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func encryptedFixture(t *testing.T, dir string) (string, map[string]string) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, ".ejson.dev")
-	if err := os.WriteFile(path, []byte(out.String()), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(out.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return path, map[string]string{"ESEC_PRIVATE_KEY_DEV": priv}
@@ -82,7 +83,7 @@ func encryptedFixture(t *testing.T, dir string) (string, map[string]string) {
 
 func readAudit(t *testing.T, path string) []AuditEntry {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // test fixture path
 	if err != nil {
 		t.Fatal(err)
 	}

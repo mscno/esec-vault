@@ -45,11 +45,11 @@ func (c *MembersProveCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	dir := share.MembersDirName
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
 	}
 	path := filepath.Join(dir, login+".proof")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return err
 	}
 	fmt.Printf("Wrote %s\nCommit it from your own GitHub account and open a PR.\n", path)
@@ -125,7 +125,7 @@ type MembersTrustCmd struct {
 // Run implements members trust. The proof is verified against GitHub before
 // pinning; the fingerprint should additionally be confirmed out-of-band.
 func (c *MembersTrustCmd) Run(ctx *cliCtx) error {
-	data, err := os.ReadFile(filepath.Join(share.MembersDirName, c.Login+".proof")) //nolint:gosec // login is a CLI arg
+	data, err := os.ReadFile(filepath.Join(share.MembersDirName, c.Login+".proof"))
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func (c *MembersListCmd) Run(ctx *cliCtx) error {
 			continue
 		}
 		login := e.Name()[:len(e.Name())-len(".proof")]
-		data, err := os.ReadFile(filepath.Join(share.MembersDirName, e.Name())) //nolint:gosec // from dir listing
+		data, err := os.ReadFile(filepath.Join(share.MembersDirName, e.Name()))
 		if err != nil {
 			continue
 		}

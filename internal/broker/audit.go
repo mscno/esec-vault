@@ -44,7 +44,7 @@ func (a *AuditLogger) Log(e AuditEntry) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) //nolint:gosec // path is constructed from trusted home dir
+	f, err := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}

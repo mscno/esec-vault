@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -70,7 +71,7 @@ func Prove(login, pubkeyHex, sshKeyPath string) (*Proof, error) {
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("ssh-keygen sign failed: %v: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	sig, err := os.ReadFile(stmtPath + ".sig")
+	sig, err := os.ReadFile(stmtPath + ".sig") //nolint:gosec // stmtPath is our own temp file
 	if err != nil {
 		return nil, fmt.Errorf("signature not produced: %w", err)
 	}
@@ -104,10 +105,10 @@ func ParseProof(data []byte) (*Proof, error) {
 
 // sshsig is the parsed SSHSIG file payload (PROTOCOL.sshsig).
 type sshsig struct {
-	pubkey   []byte
-	ns       string
-	hashAlg  string
-	sig      []byte
+	pubkey  []byte
+	ns      string
+	hashAlg string
+	sig     []byte
 }
 
 const sshsigMagic = "SSHSIG"
@@ -118,7 +119,7 @@ func readSSHString(b []byte) ([]byte, []byte, error) {
 	}
 	n := binary.BigEndian.Uint32(b[:4])
 	b = b[4:]
-	if uint32(len(b)) < n {
+	if int64(n) > int64(len(b)) {
 		return nil, nil, errors.New("short ssh string payload")
 	}
 	return b[:n], b[n:], nil
@@ -169,7 +170,7 @@ func parseSSHSIG(armored []byte) (*sshsig, error) {
 		return nil, err
 	}
 	out.hashAlg = string(hashAlg)
-	if out.sig, raw, err = readSSHString(raw); err != nil {
+	if out.sig, _, err = readSSHString(raw); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -198,8 +199,11 @@ func (s *sshsig) signedData(message []byte) ([]byte, error) {
 }
 
 func writeSSHString(buf *bytes.Buffer, b []byte) {
+	if len(b) > math.MaxUint32 {
+		return // cannot happen for SSHSIG fields
+	}
 	var n [4]byte
-	binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+	binary.BigEndian.PutUint32(n[:], uint32(len(b))) //nolint:gosec // length checked above
 	buf.Write(n[:])
 	buf.Write(b)
 }

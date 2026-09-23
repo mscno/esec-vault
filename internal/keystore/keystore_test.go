@@ -99,7 +99,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("global keyring wrong: %v %v", back, err)
 	}
 	// .gitignore updated.
-	gi, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	gi, err := os.ReadFile(filepath.Join(repo, ".gitignore")) //nolint:gosec // test fixture path
 	if err != nil || !strings.Contains(string(gi), esec.DefaultKeyringFilename) {
 		t.Fatalf(".gitignore missing entry: %v %v", string(gi), err)
 	}

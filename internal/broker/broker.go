@@ -87,23 +87,6 @@ func NewServer(keys map[string]map[string]string, pol *policy.Policy, audit *Aud
 	}
 }
 
-// keyFor returns the hex private key for a project environment.
-func (s *Server) keyFor(project, env string) (string, error) {
-	entries, ok := s.Keys[project]
-	if !ok {
-		return "", fmt.Errorf("no keys held for project %q", project)
-	}
-	name := esec.EsecPrivateKey
-	if env != "" {
-		name = fmt.Sprintf("%s_%s", esec.EsecPrivateKey, strings.ToUpper(env))
-	}
-	key, ok := entries[name]
-	if !ok {
-		return "", fmt.Errorf("no key %q held for project %q", name, project)
-	}
-	return key, nil
-}
-
 // Serve listens on the socket and serves until ctx is cancelled. The socket
 // file is removed on shutdown.
 func (s *Server) Serve(ctx context.Context, sockPath string) error {
@@ -155,6 +138,23 @@ func (s *Server) Serve(ctx context.Context, sockPath string) error {
 	}
 }
 
+// keyFor returns the hex private key for a project environment.
+func (s *Server) keyFor(project, env string) (string, error) {
+	entries, ok := s.Keys[project]
+	if !ok {
+		return "", fmt.Errorf("no keys held for project %q", project)
+	}
+	name := esec.EsecPrivateKey
+	if env != "" {
+		name = fmt.Sprintf("%s_%s", esec.EsecPrivateKey, strings.ToUpper(env))
+	}
+	key, ok := entries[name]
+	if !ok {
+		return "", fmt.Errorf("no key %q held for project %q", name, project)
+	}
+	return key, nil
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	uc, ok := conn.(*net.UnixConn)
@@ -174,7 +174,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 	resp := s.dispatch(uid, pid, &req)
-	_ = enc.Encode(resp)
+	if err := enc.Encode(resp); err != nil {
+		s.Logger.Warn("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) audit(uid, pid uint32, op, project, env, decision, detail string) {
@@ -255,7 +257,7 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		return &Response{OK: false, Error: err.Error()}
 	}
 
-	data, err := os.ReadFile(req.Path) //nolint:gosec // broker runs as the user; path comes from the user's session
+	data, err := os.ReadFile(req.Path)
 	if err != nil {
 		return &Response{OK: false, Error: fmt.Sprintf("failed to read secrets file: %v", err)}
 	}

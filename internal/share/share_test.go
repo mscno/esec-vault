@@ -62,7 +62,9 @@ func fakeGitHub(t *testing.T, keys map[string]string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		login := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".keys")
 		if k, ok := keys[login]; ok {
-			w.Write([]byte(k + "\n"))
+			if _, err := w.Write([]byte(k + "\n")); err != nil {
+				panic(err)
+			}
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -167,11 +169,11 @@ func TestShareSyncRoundTrip(t *testing.T) {
 	if err := projectfile.WriteProjectFile(repo, "org/repo"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(repo, MembersDirName), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, MembersDirName), 0750); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := proof.Marshal()
-	if err := os.WriteFile(filepath.Join(repo, MembersDirName, "bob.proof"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, MembersDirName, "bob.proof"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,10 +239,10 @@ func TestShareRejectsUntrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := proof.Marshal()
-	if err := os.MkdirAll(filepath.Join(repo, MembersDirName), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, MembersDirName), 0750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, MembersDirName, "bob.proof"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, MembersDirName, "bob.proof"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 

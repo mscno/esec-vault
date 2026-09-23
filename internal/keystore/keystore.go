@@ -28,21 +28,13 @@ type Store struct {
 // New returns the default store honoring ESEC_KEYRING_DIR / ~/.config.
 func New() *Store { return &Store{Dir: paths.KeyringDir()} }
 
-// path returns the keyring path for a project identifier.
-func (s *Store) path(project string) (string, error) {
-	if err := projectfile.ValidateOrgRepo(project); err != nil {
-		return "", err
-	}
-	return filepath.Join(s.Dir, projectfile.KeyringName(project)), nil
-}
-
 // Read returns the keyring entries for a project.
 func (s *Store) Read(project string) (map[string]string, error) {
 	p, err := s.path(project)
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open(p)
+	f, err := os.Open(p) //nolint:gosec // path derived from a validated project id inside the store dir
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +143,7 @@ func (s *Store) Migrate(repoDir string, deleteLocal bool, confirm func(question 
 	}
 
 	localPath := filepath.Join(repoDir, esec.DefaultKeyringFilename)
-	f, err := os.Open(localPath)
+	f, err := os.Open(localPath) //nolint:gosec // repoDir is user-provided
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("no repo-local keyring at %s", localPath)
@@ -187,6 +179,14 @@ func (s *Store) Migrate(repoDir string, deleteLocal bool, confirm func(question 
 		return project, fmt.Errorf("keyring migrated, but failed to update .gitignore: %w", err)
 	}
 	return project, nil
+}
+
+// path returns the keyring path for a project identifier.
+func (s *Store) path(project string) (string, error) {
+	if err := projectfile.ValidateOrgRepo(project); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.Dir, projectfile.KeyringName(project)), nil
 }
 
 func equalMap(a, b map[string]string) bool {

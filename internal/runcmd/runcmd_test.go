@@ -19,7 +19,7 @@ import (
 func TestResolveSecretsFile(t *testing.T) {
 	dir := t.TempDir()
 	// Only an .env.dev exists.
-	if err := os.WriteFile(filepath.Join(dir, ".env.dev"), []byte("A=B\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".env.dev"), []byte("A=B\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -64,7 +64,7 @@ func TestRunInjectsSecretsFromBroker(t *testing.T) {
 	if _, err := esec.Encrypt(strings.NewReader(`{"_ESEC_PUBLIC_KEY": "`+pub+`", "GREETING": "hello-vault"}`), &enc, esec.FileFormatEjson); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".ejson.dev"), []byte(enc.String()), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".ejson.dev"), []byte(enc.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := projectfile.WriteProjectFile(dir, "org/repo"); err != nil {
@@ -72,8 +72,9 @@ func TestRunInjectsSecretsFromBroker(t *testing.T) {
 	}
 
 	// Live broker holding the project key, policy allowing dev. The socket
-	// path must stay short (104-char unix socket limit on darwin).
-	sockDir, err := os.MkdirTemp("", "ev")
+	// path must stay short (104-char unix socket limit on darwin), so
+	// t.TempDir() is too long for it.
+	sockDir, err := os.MkdirTemp("", "ev") //nolint:usetesting // see above
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,18 +101,14 @@ func TestRunInjectsSecretsFromBroker(t *testing.T) {
 	}
 
 	// Run from the repo dir; child prints the secret.
-	cwd, _ := os.Getwd()
-	defer func() { _ = os.Chdir(cwd) }()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(dir)
 
 	marker := filepath.Join(t.TempDir(), "out")
 	cmd := []string{"sh", "-c", "printf '%s' \"$GREETING\" > " + marker}
 	if err := Run(client, "dev", "", cmd); err != nil {
 		t.Fatal(err)
 	}
-	out, err := os.ReadFile(marker)
+	out, err := os.ReadFile(marker) //nolint:gosec // test fixture path
 	if err != nil {
 		t.Fatal(err)
 	}

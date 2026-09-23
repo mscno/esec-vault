@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/mscno/esec"
-	"github.com/mscno/esec/pkg/projectfile"
 
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
@@ -109,7 +108,7 @@ func (c *BackupCmd) Run(ctx *cliCtx) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(c.Out, data, 0600); err != nil {
+		if err := os.WriteFile(c.Out, data, 0600); err != nil { //nolint:gosec // c.Out is a user-provided CLI flag
 			return err
 		}
 	}
@@ -170,13 +169,3 @@ func (c *RecoverCmd) Run(ctx *cliCtx) error {
 }
 
 // SyncCmd and ShareCmd live in share.go; MembersCmd in members.go.
-
-// resolveProject is a small helper for commands that need the repo's project.
-func resolveProject() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	project, _, err := projectfile.FindProjectFile(cwd)
-	return project, err
-}

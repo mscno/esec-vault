@@ -78,7 +78,11 @@ func Seal(v *Vault, ts time.Time, recipientPub *[32]byte) ([]byte, error) {
 	out = append(out, magic...)
 	out = append(out, version)
 	var tsbuf [8]byte
-	binary.LittleEndian.PutUint64(tsbuf[:], uint64(ts.Unix()))
+	unix := ts.Unix()
+	if unix < 0 {
+		return nil, fmt.Errorf("vault timestamp before epoch")
+	}
+	binary.LittleEndian.PutUint64(tsbuf[:], uint64(unix))
 	out = append(out, tsbuf[:]...)
 	return append(out, boxed...), nil
 }
