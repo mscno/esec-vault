@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/joho/godotenv v1.5.1
-	github.com/mscno/esec v0.5.1-0.20260923085918-a6e379eed20e
+	github.com/mscno/esec v0.6.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/zalando/go-keyring v0.2.6
