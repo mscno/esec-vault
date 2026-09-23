@@ -26,5 +26,5 @@ func peerCredentials(conn *net.UnixConn) (uid, pid uint32, err error) {
 	if credErr != nil {
 		return 0, 0, credErr
 	}
-	return cred.Uid, cred.Pid, nil
+	return cred.Uid, uint32(cred.Pid), nil
 }
