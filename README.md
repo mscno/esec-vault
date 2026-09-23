@@ -109,6 +109,26 @@ esec-vault sync                             # opens her blob into her global key
 
 Offboarding: delete the member's blob, rotate the affected environment keys, re-share.
 
+## Monorepos
+
+esec v0.7+ supports component-scoped secrets in monorepos; esec-vault manages their keys:
+
+```sh
+# Per-component keypair, added to the project's global keyring:
+esec-vault keyring add          # prints ESEC_PUBLIC_KEY=... for the new secrets file
+
+# services/registry/.env.registry.production uses that public key;
+# decryption finds the key by the file's public key — naming is free-form.
+# The broker resolves the same way, so `esec-vault run registry.production -- ...` works.
+
+# One command migrates every repo-local keyring, including nested subprojects:
+esec-vault keyring migrate --delete-local
+```
+
+Project scoping follows the nearest `.esec-project` (never crossing the git root): one marker
+at the repo root shares a single project across components; nested markers create subprojects
+(e.g. `ESEC_PROJECT=org/repo/services/registry`) with separate keyrings, backups, and shares.
+
 ## Layout
 
 ```

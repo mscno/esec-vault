@@ -258,16 +258,58 @@ func TestKeyFor(t *testing.T) {
 	s := NewServer(map[string]map[string]string{
 		"org/repo": {"ESEC_PRIVATE_KEY": "k0", "ESEC_PRIVATE_KEY_DEV": "k1"},
 	}, &policy.Policy{}, nil, nil)
-	if k, err := s.keyFor("org/repo", "dev"); err != nil || k != "k1" {
+	if k, err := s.keyFor("org/repo", "dev", nil); err != nil || k != "k1" {
 		t.Fatalf("got %q %v", k, err)
 	}
-	if k, err := s.keyFor("org/repo", ""); err != nil || k != "k0" {
+	if k, err := s.keyFor("org/repo", "", nil); err != nil || k != "k0" {
 		t.Fatalf("got %q %v", k, err)
 	}
-	if _, err := s.keyFor("org/repo", "prod"); err == nil {
+	// Dotted env resolves through the suffix chain.
+	s.Keys["org/repo"]["ESEC_PRIVATE_KEY_REGISTRY_PRODUCTION"] = "k2"
+	if k, err := s.keyFor("org/repo", "registry.production", nil); err != nil || k != "k2" {
+		t.Fatalf("dotted env: got %q %v", k, err)
+	}
+	if _, err := s.keyFor("org/repo", "prod", nil); err == nil {
 		t.Fatal("expected missing key error")
 	}
-	if _, err := s.keyFor("org/nope", "dev"); err == nil {
+	if _, err := s.keyFor("org/nope", "dev", nil); err == nil {
 		t.Fatal("expected unknown project error")
 	}
+}
+
+func TestBrokerResolvesByPublicKey(t *testing.T) {
+	skipUnlessUnix(t)
+	dir := t.TempDir()
+	secretsPath, entries := encryptedFixture(t, dir)
+
+	// Replace the env-named entry with a pubkey-keyed one: the broker must
+	// resolve via the file's embedded public key.
+	pubHex := extractPubHex(t, secretsPath)
+	pubEntries := map[string]string{"ESEC_PRIVATE_KEY_" + strings.ToUpper(pubHex): entries["ESEC_PRIVATE_KEY_DEV"]}
+
+	pol := &policy.Policy{
+		Default: policy.Allow,
+	}
+	client, _, _ := startTestBroker(t, map[string]map[string]string{"org/repo": pubEntries}, pol)
+	secrets, err := client.GetSecrets("org/repo", "registry.production", secretsPath, ".ejson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets["DATABASE_URL"] != "postgres://x" {
+		t.Fatalf("unexpected secrets: %v", secrets)
+	}
+}
+
+func extractPubHex(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // test fixture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	pub, _ := doc["_ESEC_PUBLIC_KEY"].(string)
+	return pub
 }

@@ -138,19 +138,16 @@ func (s *Server) Serve(ctx context.Context, sockPath string) error {
 	}
 }
 
-// keyFor returns the hex private key for a project environment.
-func (s *Server) keyFor(project, env string) (string, error) {
+// keyFor returns the hex private key for a project environment, resolving via
+// the shared chain (environment suffixes, then the file's public key).
+func (s *Server) keyFor(project, env string, pubkey *[32]byte) (string, error) {
 	entries, ok := s.Keys[project]
 	if !ok {
 		return "", fmt.Errorf("no keys held for project %q", project)
 	}
-	name := esec.EsecPrivateKey
-	if env != "" {
-		name = fmt.Sprintf("%s_%s", esec.EsecPrivateKey, strings.ToUpper(env))
-	}
-	key, ok := entries[name]
+	key, _, ok := esec.ResolveKey(entries, esec.KeySuffixes(env), pubkey)
 	if !ok {
-		return "", fmt.Errorf("no key %q held for project %q", name, project)
+		return "", fmt.Errorf("no key for env %q (or the file's public key) held for project %q", env, project)
 	}
 	return key, nil
 }
@@ -252,18 +249,25 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		s.audit(uid, pid, req.Op, req.Project, req.Env, "allow", "policy")
 	}
 
-	key, err := s.keyFor(req.Project, req.Env)
-	if err != nil {
-		return &Response{OK: false, Error: err.Error()}
-	}
-
 	data, err := os.ReadFile(req.Path)
 	if err != nil {
 		return &Response{OK: false, Error: fmt.Sprintf("failed to read secrets file: %v", err)}
 	}
 
-	var plain bytes.Buffer
 	format := esec.FileFormat(req.Format)
+	// The file's embedded public key is the ground truth for key resolution
+	// (monorepo components, rotated keys).
+	var pubkey *[32]byte
+	if pub, err := esec.ExtractPublicKey(data, format); err == nil {
+		pubkey = &pub
+	}
+
+	key, err := s.keyFor(req.Project, req.Env, pubkey)
+	if err != nil {
+		return &Response{OK: false, Error: err.Error()}
+	}
+
+	var plain bytes.Buffer
 	if _, err := esec.Decrypt(bytes.NewReader(data), &plain, "", format, ".", key); err != nil {
 		return &Response{OK: false, Error: fmt.Sprintf("decryption failed: %v", err)}
 	}

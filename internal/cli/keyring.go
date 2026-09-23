@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mscno/esec"
+	"github.com/mscno/esec/pkg/projectfile"
 
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
@@ -17,8 +18,9 @@ import (
 
 // KeyringCmd groups global keyring store management.
 type KeyringCmd struct {
-	Migrate KeyringMigrateCmd `cmd:"" help:"Move a repo-local .esec-keyring into the global store."`
+	Migrate KeyringMigrateCmd `cmd:"" help:"Move repo-local .esec-keyring files into the global store."`
 	List    KeyringListCmd    `cmd:"" help:"List projects and environments in the global store."`
+	Add     KeyringAddCmd     `cmd:"" help:"Generate a component keypair and add it to a project's keyring."`
 }
 
 // KeyringMigrateCmd moves repo-local keyrings into the global store.
@@ -30,14 +32,66 @@ type KeyringMigrateCmd struct {
 // Run implements keyring migrate.
 func (c *KeyringMigrateCmd) Run(ctx *cliCtx) error {
 	ks := keystore.New()
+	failed := false
 	for _, dir := range c.Dirs {
-		project, err := ks.Migrate(dir, c.DeleteLocal, confirm)
-		if err != nil {
-			ctx.Logger.Error("migration failed", "dir", dir, "error", err)
-			continue
+		projects, err := ks.Migrate(dir, c.DeleteLocal, confirm)
+		for _, p := range projects {
+			fmt.Printf("Migrated %s (from %s)\n", p, dir)
 		}
-		fmt.Printf("Migrated %s -> %s\n", dir, project)
+		if err != nil {
+			failed = true
+			ctx.Logger.Error("migration had errors", "dir", dir, "error", err)
+		}
 	}
+	if failed {
+		return fmt.Errorf("migration completed with errors")
+	}
+	return nil
+}
+
+// KeyringAddCmd generates a component keypair and appends a pubkey-keyed
+// entry to the project's global keyring.
+type KeyringAddCmd struct {
+	Project string `help:"Project id (default: nearest .esec-project)" name:"project"`
+}
+
+// Run implements keyring add.
+func (c *KeyringAddCmd) Run(ctx *cliCtx) error {
+	project := c.Project
+	if project == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		p, _, err := projectfile.FindProjectFile(cwd)
+		if err != nil {
+			return fmt.Errorf("no .esec-project found; pass --project explicitly")
+		}
+		project = p
+	}
+
+	pub, priv, err := esec.GenerateKeypair()
+	if err != nil {
+		return err
+	}
+
+	ks := keystore.New()
+	entries, err := ks.Read(project)
+	if err != nil {
+		entries = map[string]string{}
+	}
+	name := fmt.Sprintf("%s_%s", esec.EsecPrivateKey, strings.ToUpper(pub))
+	if _, exists := entries[name]; exists {
+		return fmt.Errorf("entry %s already exists (collision — regenerate)", name)
+	}
+	entries[name] = priv
+	if err := ks.Write(project, entries, true); err != nil {
+		return err
+	}
+
+	fmt.Printf("Added keypair to keyring for %s\n", project)
+	fmt.Printf("\nPublic key — put it in the new secrets file:\n\n  ESEC_PUBLIC_KEY=%s\n\n", pub)
+	fmt.Println("The file will be decryptable via its public key regardless of its name.")
 	return nil
 }
 

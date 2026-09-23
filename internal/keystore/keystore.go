@@ -132,53 +132,115 @@ func (s *Store) List() ([]string, error) {
 	return projects, nil
 }
 
-// Migrate moves a repository's repo-local .esec-keyring into the global store.
-// The project identifier comes from the repo's .esec-project. When deleteLocal
-// is set, the repo-local file is removed only after the global copy has been
-// verified by reading it back. ".esec-keyring" is ensured in .gitignore.
-func (s *Store) Migrate(repoDir string, deleteLocal bool, confirm func(question string) bool) (string, error) {
-	project, err := projectfile.ReadProjectFile(repoDir)
+// Migrate walks repoDir for repo-local .esec-keyring files and moves each into
+// the global store, keyed by the nearest .esec-project (monorepo subtrees with
+// their own marker get their own store entry). It returns the migrated project
+// identifiers; per-directory failures are collected and returned together.
+func (s *Store) Migrate(repoDir string, deleteLocal bool, confirm func(question string) bool) ([]string, error) {
+	var migrated []string
+	var errs []error
+	err := filepath.WalkDir(repoDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != esec.DefaultKeyringFilename {
+			return nil
+		}
+		dir := filepath.Dir(path)
+		project, _, perr := projectfile.FindProjectFile(dir)
+		if perr != nil {
+			errs = append(errs, fmt.Errorf("%s: no .esec-project found: %w", dir, perr))
+			return nil
+		}
+		if err := s.migrateOne(dir, project, deleteLocal, confirm); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			return nil
+		}
+		migrated = append(migrated, project)
+		return nil
+	})
 	if err != nil {
-		return "", fmt.Errorf("%s: %w (create one with ESEC_PROJECT=org/repo)", repoDir, err)
+		return migrated, err
 	}
+	if len(migrated) == 0 && len(errs) == 0 {
+		return nil, fmt.Errorf("no repo-local %s files found under %s", esec.DefaultKeyringFilename, repoDir)
+	}
+	return migrated, errors.Join(errs...)
+}
 
+// migrateOne moves a single repo-local keyring into the global store.
+// The repo-local file is removed only after the global copy has been verified
+// by reading it back, and only when deleteLocal is set and confirmed.
+// ".esec-keyring" is ensured in the repo's .gitignore.
+func (s *Store) migrateOne(repoDir, project string, deleteLocal bool, confirm func(question string) bool) error {
 	localPath := filepath.Join(repoDir, esec.DefaultKeyringFilename)
 	f, err := os.Open(localPath) //nolint:gosec // repoDir is user-provided
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("no repo-local keyring at %s", localPath)
+			return fmt.Errorf("no repo-local keyring at %s", localPath)
 		}
-		return "", err
+		return err
 	}
 	entries, err := godotenv.Parse(f)
 	f.Close()
 	if err != nil {
-		return "", fmt.Errorf("failed to parse %s: %w", localPath, err)
+		return fmt.Errorf("failed to parse %s: %w", localPath, err)
 	}
 
 	if err := s.Write(project, entries, false); err != nil {
-		return "", err
+		return err
 	}
 
 	// Verify the written copy before any deletion.
 	back, err := s.Read(project)
 	if err != nil || !equalMap(entries, back) {
-		return "", fmt.Errorf("verification failed after writing global keyring; local file left untouched")
+		return fmt.Errorf("verification failed after writing global keyring; local file left untouched")
 	}
 
 	if deleteLocal {
 		if confirm != nil && !confirm(fmt.Sprintf("Delete repo-local %s?", localPath)) {
-			return project, fmt.Errorf("aborted before deleting local file; global copy is in place")
+			return fmt.Errorf("aborted before deleting local file; global copy is in place")
 		}
 		if err := os.Remove(localPath); err != nil {
-			return "", fmt.Errorf("failed to remove %s: %w", localPath, err)
+			return fmt.Errorf("failed to remove %s: %w", localPath, err)
 		}
 	}
 
-	if err := ensureGitignore(repoDir, esec.DefaultKeyringFilename); err != nil {
-		return project, fmt.Errorf("keyring migrated, but failed to update .gitignore: %w", err)
+	// Ensure gitignore at the git root (or the keyring's own directory).
+	root := repoDir
+	if _, gitErr := os.Stat(filepath.Join(repoDir, ".git")); gitErr != nil {
+		if gitRoot, found := findGitRoot(repoDir); found {
+			root = gitRoot
+		}
 	}
-	return project, nil
+	if err := ensureGitignore(root, esec.DefaultKeyringFilename); err != nil {
+		return fmt.Errorf("keyring migrated, but failed to update .gitignore: %w", err)
+	}
+	return nil
+}
+
+// findGitRoot walks up from dir looking for a .git entry.
+func findGitRoot(dir string) (string, bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir, false
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+			return abs, true
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", false
+		}
+		abs = parent
+	}
 }
 
 // path returns the keyring path for a project identifier.

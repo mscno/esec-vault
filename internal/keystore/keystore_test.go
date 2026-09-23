@@ -83,7 +83,13 @@ func TestMigrate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	project, err := s.Migrate(repo, false, nil)
+	project, err := func() (string, error) {
+		projects, err := s.Migrate(repo, false, nil)
+		if err != nil || len(projects) == 0 {
+			return "", err
+		}
+		return projects[0], nil
+	}()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,5 +144,56 @@ func TestMigrateDeleteLocal(t *testing.T) {
 	}
 	if _, err := os.Stat(local); !os.IsNotExist(err) {
 		t.Fatal("local keyring should be deleted")
+	}
+}
+
+func TestMigrateTreeMonorepo(t *testing.T) {
+	t.Setenv(esec.EsecKeyringDir, t.TempDir())
+	s := &Store{Dir: filepath.Join(t.TempDir(), "keyrings")}
+
+	root := t.TempDir()
+	// git boundary
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := projectfile.WriteProjectFile(root, "org/platform"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, esec.DefaultKeyringFilename), []byte("ESEC_PRIVATE_KEY_PROD=aaaa\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Nested subproject with its own marker and keyring.
+	sub := filepath.Join(root, "services", "registry")
+	if err := os.MkdirAll(sub, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := projectfile.WriteProjectFile(sub, "org/platform/services/registry"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, esec.DefaultKeyringFilename), []byte("ESEC_PRIVATE_KEY_PRODUCTION=bbbb\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	projects, err := s.Migrate(root, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 migrations, got %v", projects)
+	}
+	if _, err := s.Read("org/platform"); err != nil {
+		t.Fatal(err)
+	}
+	back, err := s.Read("org/platform/services/registry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back["ESEC_PRIVATE_KEY_PRODUCTION"] != "bbbb" {
+		t.Fatalf("wrong entries for subproject: %v", back)
+	}
+	// .gitignore written once at the git root.
+	gi, err := os.ReadFile(filepath.Join(root, ".gitignore")) //nolint:gosec // test fixture path
+	if err != nil || !strings.Contains(string(gi), esec.DefaultKeyringFilename) {
+		t.Fatalf(".gitignore missing entry: %v %v", string(gi), err)
 	}
 }

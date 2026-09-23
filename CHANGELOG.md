@@ -1,3 +1,18 @@
+# v0.2.0
+
+Monorepo support (pairs with esec v0.7.0):
+
+- Broker key resolution uses esec's shared chain — environment suffix (dotted envs like
+  `registry.production`) then the secrets file's embedded public key — so per-component
+  keypairs work through the broker without naming discipline
+- `keyring migrate` walks monorepos: every repo-local `.esec-keyring` is migrated, keyed by
+  its nearest `.esec-project` (nested subprojects included); `.gitignore` is updated at the
+  git root
+- New `keyring add` command: generates a component keypair, appends the pubkey-keyed entry
+  (`ESEC_PRIVATE_KEY_<pubkey>`) to the project's global keyring, and prints the public key
+  for embedding in the new secrets file
+- Depends on esec v0.7.0
+
 # v0.1.0
 
 Initial release.
