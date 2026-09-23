@@ -1,0 +1,99 @@
+version: "2"
+run:
+  tests: true
+linters:
+  default: all
+  disable:
+    - cyclop
+    - depguard
+    - err113
+    - errorlint
+    - exhaustruct
+    - exhaustruct_v5
+    - gomodguard
+    - forbidigo
+    - funlen
+    - gochecknoglobals
+    - gocognit
+    - goconst
+    - godot
+    - godox
+    - goprintffuncname
+    - intrange
+    - ireturn
+    - lll
+    - mnd
+    - modernize
+    - nakedret
+    - nestif
+    - nilnil
+    - nlreturn
+    - noctx
+    - noinlineerr
+    - nonamedreturns
+    - paralleltest
+    - perfsprint
+    - tagalign
+    - tagliatelle
+    - testpackage
+    - thelper
+    - varnamelen
+    - wrapcheck
+    - wsl
+    - wsl_v5
+  enable:
+    - gomodguard_v2
+  settings:
+    dupl:
+      threshold: 100
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocyclo:
+      min-complexity: 20
+    govet:
+      enable:
+        - nilness
+        - sortslice
+        - unusedwrite
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - revive
+        text: 'unused-parameter: parameter \S+ seems to be unused, consider removing or renaming it as _'
+      - linters:
+          - revive
+        text: 'var-naming: avoid package names that conflict with Go standard library package names'
+      - linters:
+          - dupword
+        path: _test\.go
+      - path: (.+)\.go$
+        text: '^(G104|G204):'
+      - path: (.+)\.go$
+        text: Error return value of .(.*\.Help|.*\.MarkFlagRequired|(os\.)?std(out|err)\..*|.*Close|.*[Ff]lush|os\.Remove(All)?|.*printf?|os\.(Un)?Setenv). is not checked
+      - path: (.+)\.go$
+        text: exported method (.*\.MarshalJSON|.*\.UnmarshalJSON) should have comment or be unexported
+      - path: (.+)\.go$
+        text: composite literal uses unkeyed fields
+      - path: (.+)\.go$
+        text: bad syntax for struct tag key
+      - path: (.+)\.go$
+        text: bad syntax for struct tag pair
+      - path: (.+)\.go$
+        text: result .* \(error\) is always nil
+      - path: (.+)\.go$
+        text: Error return value of `fmt.Fprintln` is not checked
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

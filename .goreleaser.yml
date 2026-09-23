@@ -1,0 +1,51 @@
+version: 2
+
+builds:
+  - main: ./cmd/esec-vault/
+    flags:
+      - -trimpath
+    ldflags: >
+      -X main.version={{.Version}}
+      -X main.commit={{.Commit}}
+      -X main.date={{.Date}}
+      -s
+      -w
+      -extldflags "-static"
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - freebsd
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Reproducible builds
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+# Archive with reproducible timestamps
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+# SHA256 checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Source archive for auditability
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+
+# SBOM generation using syft
+sboms:
+  - artifacts: archive
+  - id: source
+    artifacts: source

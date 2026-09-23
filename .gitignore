@@ -1,0 +1,4 @@
+/esec-vault
+/dist/
+*.keyring
+coverage.out
