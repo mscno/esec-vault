@@ -159,7 +159,7 @@ func filterEnvs(entries map[string]string, envs []string) (map[string]string, er
 	for _, env := range envs {
 		name := esec.EsecPrivateKey
 		if env != "" {
-			name = esec.EsecPrivateKey + "_" + strings.ToUpper(env)
+			name = esec.EsecPrivateKey + "_" + strings.ToUpper(strings.ReplaceAll(env, ".", "_"))
 		}
 		if v, ok := entries[name]; ok {
 			filtered[name] = v

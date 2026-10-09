@@ -45,8 +45,14 @@ func SocketPath() string {
 	if s := os.Getenv("ESEC_VAULT_SOCK"); s != "" {
 		return s
 	}
-	return filepath.Join(Home(), "agent.sock")
+	return filepath.Join(RuntimeDir(), "agent.sock")
 }
+
+// RuntimeDir holds disposable daemon endpoints, separate from persistent keys.
+func RuntimeDir() string { return filepath.Join(Home(), "run") }
+
+// ControlSocket is the owner-only daemon administration endpoint.
+func ControlSocket() string { return filepath.Join(RuntimeDir(), "control.sock") }
 
 // PIDFile records the broker's process id.
 func PIDFile() string { return filepath.Join(Home(), "agent.pid") }
