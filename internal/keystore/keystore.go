@@ -34,6 +34,13 @@ func (s *Store) Read(project string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing keyring symlink: %s", p)
+	}
 	f, err := os.Open(p) //nolint:gosec // path derived from a validated project id inside the store dir
 	if err != nil {
 		return nil, err
@@ -49,13 +56,15 @@ func (s *Store) Write(project string, entries map[string]string, force bool) err
 	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(p); err == nil {
+	if info, err := os.Lstat(p); err == nil {
 		if !force {
 			return fmt.Errorf("keyring already exists at %s (use force to overwrite)", p)
 		}
-		if fi, _ := os.Lstat(p); fi.Mode()&fs.ModeSymlink != 0 {
+		if info.Mode()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to follow symlink at %s", p)
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
@@ -65,6 +74,7 @@ func (s *Store) Write(project string, entries map[string]string, force bool) err
 	buf.WriteString("###########################################################\n")
 	buf.WriteString("### Private key file - Do not commit to version control ###\n")
 	buf.WriteString("###########################################################\n\n")
+	fmt.Fprintf(&buf, "# ESEC_PROJECT=%s\n", project)
 	keys := make([]string, 0, len(entries))
 	for k := range entries {
 		keys = append(keys, k)
@@ -84,6 +94,11 @@ func (s *Store) Write(project string, entries map[string]string, force bool) err
 		return err
 	}
 	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err
@@ -116,7 +131,32 @@ func (s *Store) List() ([]string, error) {
 	var projects []string
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".keyring") || name == esec.DefaultKeyringBasename {
+		if e.IsDir() || !strings.HasSuffix(name, ".keyring") {
+			continue
+		}
+		if e.Type()&fs.ModeSymlink != 0 {
+			return nil, fmt.Errorf("refusing keyring symlink %s", name)
+		}
+		if name == esec.DefaultKeyringBasename {
+			projects = append(projects, "default")
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.Dir, name)) //nolint:gosec // name comes from ReadDir of the configured store
+		if err != nil {
+			return nil, err
+		}
+		declared := ""
+		for _, line := range strings.Split(string(data), "\n") {
+			if p, ok := strings.CutPrefix(line, "# ESEC_PROJECT="); ok {
+				declared = p
+				break
+			}
+		}
+		if declared != "" {
+			if projectfile.ValidateOrgRepo(declared) != nil || projectfile.KeyringName(declared) != name {
+				return nil, fmt.Errorf("invalid project metadata in %s", name)
+			}
+			projects = append(projects, declared)
 			continue
 		}
 		stem := strings.TrimSuffix(name, ".keyring")
@@ -124,7 +164,7 @@ func (s *Store) List() ([]string, error) {
 		// is the org/repo separator; repo names may contain further underscores.
 		org, repo, ok := strings.Cut(stem, "_")
 		if !ok || projectfile.ValidateOrgRepo(org+"/"+repo) != nil {
-			continue
+			return nil, fmt.Errorf("cannot identify keyring %s; add a '# ESEC_PROJECT=org/repo' header", name)
 		}
 		projects = append(projects, org+"/"+repo)
 	}
@@ -245,10 +285,21 @@ func findGitRoot(dir string) (string, bool) {
 
 // path returns the keyring path for a project identifier.
 func (s *Store) path(project string) (string, error) {
+	if project == "default" {
+		return filepath.Join(s.Dir, esec.DefaultKeyringBasename), nil
+	}
 	if err := projectfile.ValidateOrgRepo(project); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.Dir, projectfile.KeyringName(project)), nil
+	p := filepath.Join(s.Dir, projectfile.KeyringName(project))
+	if data, err := os.ReadFile(p); err == nil { //nolint:gosec // validated project flattened into the configured store
+		for _, line := range strings.Split(string(data), "\n") {
+			if declared, ok := strings.CutPrefix(line, "# ESEC_PROJECT="); ok && declared != project {
+				return "", fmt.Errorf("project name collision: %s belongs to %s", p, declared)
+			}
+		}
+	}
+	return p, nil
 }
 
 func equalMap(a, b map[string]string) bool {

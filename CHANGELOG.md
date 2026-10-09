@@ -1,3 +1,22 @@
+# v0.3.0
+
+- OS-managed user daemon with launchd/systemd installation, manifest-based
+  uninstall and explicit local-data/keychain purge.
+- Owner-only control socket, separate broker socket, locked startup and bounded
+  unlock sessions independent of backup scheduling.
+- Guided setup, backup jobs, CLI change notifications and crash-released locks.
+
+- Self-contained format-2 snapshots with identity and recovery-key encryption;
+  cold recovery needs only the backup, phrase and optional passphrase.
+- Versioned memory-hard identity derivation, confirmed setup, passphrase changes,
+  explicit legacy migration and preserved encrypted identity backups.
+- Declarative remote config and setup wizard; file, rclone, restic and exec
+  transports with round-trip verification, immutable generations and explicit retention.
+- Live-key snapshots, deduplicated unchanged backups, durable pending uploads,
+  periodic watch/retry worker and broker integration.
+- Project/environment setup, status/doctor, safe restore preflight and default/
+  monorepo keyring coverage.
+
 # v0.2.0
 
 Monorepo support (pairs with esec v0.7.0):

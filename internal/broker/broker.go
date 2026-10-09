@@ -67,6 +67,13 @@ type Server struct {
 
 	mu      sync.Mutex
 	pending map[string]chan bool
+	keysMu  sync.RWMutex
+	locked  bool
+	expires time.Time
+	epoch   uint64
+	timer   *time.Timer
+	// ControlOnlyApproval reserves approvals for the daemon control socket.
+	ControlOnlyApproval bool
 }
 
 // NewServer returns a broker server.
@@ -94,7 +101,10 @@ func (s *Server) Serve(ctx context.Context, sockPath string) error {
 		return err
 	}
 	// Refuse to serve over a live socket; clean up a stale one.
-	if _, err := os.Stat(sockPath); err == nil {
+	if info, err := os.Lstat(sockPath); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("refusing non-socket at %s", sockPath)
+		}
 		if c, derr := net.DialTimeout("unix", sockPath, 200*time.Millisecond); derr == nil {
 			c.Close()
 			return fmt.Errorf("broker already running at %s", sockPath)
@@ -141,6 +151,11 @@ func (s *Server) Serve(ctx context.Context, sockPath string) error {
 // keyFor returns the hex private key for a project environment, resolving via
 // the shared chain (environment suffixes, then the file's public key).
 func (s *Server) keyFor(project, env string, pubkey *[32]byte) (string, error) {
+	s.keysMu.RLock()
+	defer s.keysMu.RUnlock()
+	if s.locked || (!s.expires.IsZero() && !time.Now().Before(s.expires)) {
+		return "", fmt.Errorf("vault is locked; run 'esec vault unlock'")
+	}
 	entries, ok := s.Keys[project]
 	if !ok {
 		return "", fmt.Errorf("no keys held for project %q", project)
@@ -191,6 +206,11 @@ func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
 		return &Response{OK: true}
 
 	case OpListEnvs:
+		s.keysMu.RLock()
+		defer s.keysMu.RUnlock()
+		if s.locked {
+			return &Response{Error: "vault is locked"}
+		}
 		entries, ok := s.Keys[req.Project]
 		if !ok {
 			s.audit(uid, pid, req.Op, req.Project, "", "deny", "unknown project")
@@ -213,6 +233,9 @@ func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
 		return s.handleGetSecrets(uid, pid, req)
 
 	case OpApprove:
+		if s.ControlOnlyApproval {
+			return &Response{Error: "approval requires the owner control socket"}
+		}
 		return s.handleApprove(uid, pid, req)
 
 	default:
@@ -228,7 +251,9 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		return &Response{OK: false, Error: "path must be absolute"}
 	}
 
+	s.keysMu.RLock()
 	action := s.Policy.Decide(req.Project, req.Env, uid)
+	s.keysMu.RUnlock()
 	if action == policy.Deny {
 		s.audit(uid, pid, req.Op, req.Project, req.Env, "deny", "policy")
 		return &Response{OK: false, Error: fmt.Sprintf("denied by policy: %s env %q", req.Project, req.Env)}
