@@ -109,6 +109,14 @@ func (m *Manager) Current(source string) (bool, error) {
 	if !bytes.Equal(data, managed) {
 		return false, nil
 	}
+	// UnitContents renders from Manifest.Environment, which Install populates
+	// via captureEnvironment. Capture it here too, otherwise the freshly
+	// rendered unit lacks PATH and never matches the installed one.
+	env := map[string]string{"ESEC_VAULT_HOME": m.Manifest.Home}
+	if err := captureEnvironment(env); err != nil {
+		return false, err
+	}
+	m.Manifest.Environment = env
 	unit, err := m.UnitContents()
 	if err != nil {
 		return false, err

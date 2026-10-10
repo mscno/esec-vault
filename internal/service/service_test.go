@@ -237,6 +237,30 @@ func assertNoStop(t *testing.T, f *fakeOS) {
 	}
 }
 
+func TestCurrentComparesUnitWithCapturedEnvironment(t *testing.T) {
+	m, _ := manager(t, "darwin")
+	t.Setenv("PATH", t.TempDir())
+	src := source(t)
+	if err := m.Install(context.Background(), src, false); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh Manager is what the CLI builds on every invocation; it must still
+	// recognise the installation instead of rendering a PATH-less unit.
+	fresh, err := NewAt("darwin", 501, strings.Split(m.Manifest.Unit, "/Library")[0], m.Manifest.Home, "", func(context.Context, string, ...string) ([]byte, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := fresh.Current(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Fatal("fresh manager reported a matching installation as stale")
+	}
+}
+
 func TestCurrentReportsFalseWithoutInstallation(t *testing.T) {
 	m, _ := manager(t, "darwin")
 	if m.Installed() {

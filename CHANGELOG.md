@@ -1,3 +1,10 @@
+# v0.3.3
+
+- Fix the managed-copy comparison so `daemon upgrade` is idempotent and
+  `daemon restart` stops rejecting a current daemon. The check rendered the
+  unit file before capturing the environment, so it compared a PATH-less plist
+  against the installed one and always reported the copy as stale.
+
 # v0.3.2
 
 - Resolve the module version for `go install` builds. The hardcoded `dev`

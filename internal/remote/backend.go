@@ -202,13 +202,19 @@ func (b *rcloneBackend) Put(ctx context.Context, key string, data []byte) error 
 	return err
 }
 func (b *rcloneBackend) Get(ctx context.Context, key string) ([]byte, error) {
-	out, err := runTool(ctx, nil, "rclone", "cat", b.base+"/"+key)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && (exit.ExitCode() == 3 || exit.ExitCode() == 4) {
+	// Object stores have no directories, so "rclone cat" on a missing key
+	// succeeds and prints nothing. Probing first keeps an absent object from
+	// reading back as empty content, which reads as a conflicting generation.
+	exists, err := b.exists(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
 		return nil, ErrNotFound
 	}
-	return out, err
+	return runTool(ctx, nil, "rclone", "cat", b.base+"/"+key)
 }
+
 func (b *rcloneBackend) List(ctx context.Context, prefix string) ([]string, error) {
 	out, err := runTool(ctx, nil, "rclone", "lsf", "--recursive", "--files-only", b.base)
 	if err != nil {
@@ -229,6 +235,27 @@ func (b *rcloneBackend) Delete(ctx context.Context, key string) error {
 		return nil
 	}
 	return err
+}
+
+// exists reports whether key names an object. A listing of the single key is
+// unambiguous on every backend: missing keys come back as an empty array on
+// object stores and as a not-found exit code on filesystem-like ones.
+func (b *rcloneBackend) exists(ctx context.Context, key string) (bool, error) {
+	out, err := runTool(ctx, nil, "rclone", "lsjson", b.base+"/"+key)
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && (exit.ExitCode() == 3 || exit.ExitCode() == 4) {
+			return false, nil
+		}
+		return false, err
+	}
+	var entries []struct {
+		Name string `json:"Name"`
+	}
+	if err := json.Unmarshal(out, &entries); err != nil {
+		return false, fmt.Errorf("rclone lsjson returned invalid JSON for %q: %w", key, err)
+	}
+	return len(entries) > 0, nil
 }
 
 type resticBackend struct{ repo, prefix string }

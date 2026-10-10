@@ -47,6 +47,93 @@ func exerciseBackend(t *testing.T, entry Entry) {
 	}
 }
 
+// objectStoreShim stands in for rclone against a store with no real
+// directories (S3, R2, B2). There, reading a missing key succeeds and prints
+// nothing instead of failing, so a backend that infers absence from the exit
+// code alone silently reports "missing object" as "object with content".
+const objectStoreShim = `#!/bin/sh
+root="$FAKE_RCLONE_ROOT"
+op="$1"
+shift
+target=""
+for a in "$@"; do
+	case "$a" in
+	-*) ;;
+	*) target="$a" ;;
+	esac
+done
+rel="${target#*:}"
+file="$root/$rel"
+case "$op" in
+rcat)
+	mkdir -p "$(dirname "$file")"
+	cat > "$file"
+	;;
+cat)
+	[ -f "$file" ] && cat "$file"
+	exit 0
+	;;
+lsjson)
+	if [ -f "$file" ]; then
+		printf '[{"Path":"%s","Name":"%s","Size":%s,"IsDir":false}]\n' "$rel" "$(basename "$rel")" "$(wc -c < "$file" | tr -d ' ')"
+	else
+		printf '[]\n'
+	fi
+	;;
+lsf)
+	if [ -d "$file" ]; then
+		find "$file" -type f | sed "s|^$file/||"
+	fi
+	;;
+deletefile)
+	if [ -f "$file" ]; then
+		rm -f "$file"
+	else
+		echo "object not found" >&2
+		exit 4
+	fi
+	;;
+*)
+	exit 2
+	;;
+esac
+`
+
+func TestRcloneObjectStoreContract(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX shell to host the rclone shim")
+	}
+	bin := t.TempDir()
+	shim := filepath.Join(bin, "rclone")
+	if err := os.WriteFile(shim, []byte(objectStoreShim), 0o700); err != nil { //nolint:gosec // executable test fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_RCLONE_ROOT", t.TempDir())
+	exerciseBackend(t, Entry{Type: TypeRclone, RcloneRemote: "test", Bucket: "backups", Prefix: "nested/v2"})
+}
+
+// A missing key on a directory-less store reads back as empty content. The
+// backend must report it as absent so pushes are not rejected as conflicting.
+func TestRcloneObjectStoreMissingKeyIsNotFound(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX shell to host the rclone shim")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "rclone"), []byte(objectStoreShim), 0o700); err != nil { //nolint:gosec // executable test fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_RCLONE_ROOT", t.TempDir())
+	b, err := New(Entry{Type: TypeRclone, RcloneRemote: "test", Bucket: "backups", Prefix: "nested/v2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Get(context.Background(), "vaults/never-written.esec"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("absent key reported as %v, want ErrNotFound", err)
+	}
+}
+
 func TestRcloneLocalAliasContract(t *testing.T) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		t.Skip("rclone not installed")
