@@ -1,3 +1,12 @@
+# v0.3.2
+
+- Resolve the module version for `go install` builds. The hardcoded `dev`
+  placeholder made released binaries report an unknown build over the control
+  socket, so the daemon staleness check could never fire.
+- Remove the mise `install` task, which wrote dev builds into a `PATH` directory
+  and shadowed real releases. Local builds are now injected as `dev` plus the
+  commit hash instead of a stale hardcoded version.
+
 # v0.3.1
 
 - Add `daemon upgrade` to replace the managed executable after upgrading the
