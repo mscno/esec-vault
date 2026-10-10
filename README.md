@@ -823,13 +823,34 @@ are excluded.
 esec-vault daemon install --start
 esec-vault daemon status
 esec-vault daemon logs
+esec-vault daemon upgrade               # after upgrading the CLI
 ```
 
 The OS owns the process: a macOS LaunchAgent or Linux systemd user service starts
 at login and restarts after a crash. Installation copies the current executable
-to a stable, private path and records an ownership manifest. Re-run installation
-after upgrading the CLI to update that copy. No root service or terminal session
-is needed. `daemon run` and `remote watch` remain foreground debugging tools.
+to a stable, private path and records an ownership manifest. No root service or
+terminal session is needed. `daemon run` and `remote watch` remain foreground
+debugging tools.
+
+### Upgrading the CLI and the daemon
+
+The service runs its **own copy** of the executable, not the one on your `PATH`.
+Installing a newer `esec-vault` therefore does not change the running daemon,
+which keeps executing the copy it was installed with. Refresh it explicitly:
+
+```sh
+esec-vault daemon upgrade
+esec-vault unlock --ttl 4h              # the daemon restarts locked
+```
+
+`daemon upgrade` stops the old process, replaces the managed copy, and starts the
+new one. `daemon install` does the same and is a no-op when the copy already
+matches, so repeating it never drops a live broker session.
+
+The daemon reports its build over the control socket. `daemon status` shows
+`version`, `cli_version` and `up_to_date`, and `status`/`doctor` warn when the
+two differ. `daemon restart` refuses to run against a stale copy instead of
+silently restarting the old build, pointing you at `daemon upgrade`.
 
 The daemon starts **locked**. Its broker session is independent of process lifetime:
 
@@ -877,7 +898,7 @@ Configure those references in the shell before installation.
 esec-vault daemon stop                # stop now; preserve login startup
 esec-vault daemon disable             # stop and disable automatic startup
 esec-vault daemon start               # enable/start the installed service
-esec-vault daemon restart             # restart locked
+esec-vault daemon restart             # restart locked; refuses a stale copy
 esec-vault daemon uninstall           # remove service, copied binary, sockets, logs
 esec-vault uninstall --purge --dry-run # preview destructive local cleanup
 esec-vault uninstall --purge          # confirm and delete local vault data/identity

@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mscno/esec"
@@ -14,6 +17,7 @@ import (
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/remote"
+	"github.com/mscno/esec-vault/internal/service"
 )
 
 func TestCLIBackupAndFreshRecover(t *testing.T) {
@@ -86,6 +90,50 @@ func TestCLIBackupAndFreshRecover(t *testing.T) {
 	if _, err := os.Stat(paths.IdentityFile()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRestartRefusesStaleManagedDaemon(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("managed daemon requires a unix service manager")
+	}
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	noop := func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+	m, err := service.NewAt(runtime.GOOS, os.Getuid(), dir, vault, "", noop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing is installed, so there is nothing stale to complain about.
+	if err := requireCurrent(m); err != nil {
+		t.Fatal("uninstalled manager rejected:", err)
+	}
+	older := writeExe(t, "old executable")
+	if err := m.Install(context.Background(), older, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireCurrentWith(m, older); err != nil {
+		t.Fatal("matching copy rejected:", err)
+	}
+	// A CLI newer than the managed copy must be refused, otherwise restart
+	// would silently keep running the old code after an upgrade.
+	newer := writeExe(t, "newer executable")
+	err = requireCurrentWith(m, newer)
+	if err == nil {
+		t.Fatal("stale managed copy accepted")
+	}
+	if !strings.Contains(err.Error(), "daemon upgrade") {
+		t.Fatalf("error does not point at the fix: %v", err)
+	}
+}
+
+// writeExe creates a stand-in executable used as an install source.
+func writeExe(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "exe")
+	if err := os.WriteFile(p, []byte(content), 0700); err != nil { //nolint:gosec // test executable fixture
+		t.Fatal(err)
+	}
+	return p
 }
 
 func TestNoninteractiveRemoteAddNeverPrompts(t *testing.T) {

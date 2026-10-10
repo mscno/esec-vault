@@ -17,6 +17,7 @@ import (
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/remote"
+	"github.com/mscno/esec-vault/internal/service"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec/pkg/projectfile"
 )
@@ -71,6 +72,9 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 	fmt.Printf("Identity: %s\nSnapshot: generation %d, %d projects, recovery material: %t\nStale: %t; upload pending: %t\n", s.Identity, s.Generation, s.Projects, s.Recoverable, s.Stale, s.Pending)
 	if s.Daemon != nil {
 		fmt.Printf("Daemon: running (pid %d), broker unlocked: %t\n", s.Daemon.PID, s.Daemon.Unlocked)
+		if s.Daemon.Version != "" && s.Daemon.Version != ctx.Version {
+			s.Problems = append(s.Problems, fmt.Sprintf("daemon runs %s but this CLI is %s; run: esec-vault daemon upgrade", s.Daemon.Version, ctx.Version))
+		}
 	}
 	for _, p := range s.Problems {
 		fmt.Println("!", p)
@@ -158,6 +162,7 @@ func (c *DoctorCmd) Run(ctx *cliCtx) error {
 		issues = append(issues, "no default remote; run remote add or remote set-default")
 	}
 	issues = append(issues, permissionIssues()...)
+	issues = append(issues, daemonVersionIssues(ctx)...)
 	dirs := c.Dirs
 	if len(dirs) == 0 {
 		dirs = []string{"."}
@@ -173,6 +178,34 @@ func (c *DoctorCmd) Run(ctx *cliCtx) error {
 		fmt.Println("!", issue)
 	}
 	return &exitCodeError{code: 1}
+}
+
+// daemonVersionIssues reports a managed daemon that is not running this build.
+// Upgrading the CLI replaces only the binary on PATH, so the daemon keeps
+// executing its own copy until daemon upgrade is run.
+func daemonVersionIssues(ctx *cliCtx) []string {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return nil
+	}
+	m, err := service.New()
+	if err != nil || !m.Installed() {
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	same, err := m.Current(exe)
+	if err != nil || same {
+		return nil
+	}
+	issue := "managed daemon runs an older copy of esec-vault; run: esec-vault daemon upgrade"
+	cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil && resp.Version != "" && resp.Version != ctx.Version {
+		issue += fmt.Sprintf(" (daemon %s, cli %s)", resp.Version, ctx.Version)
+	}
+	return []string{issue}
 }
 
 func permissionIssues() []string {

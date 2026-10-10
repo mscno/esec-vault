@@ -22,6 +22,7 @@ import (
 // DaemonCmd owns the OS-managed background process.
 type DaemonCmd struct {
 	Install   DaemonInstallCmd   `cmd:"" help:"Install the user service and its stable executable copy."`
+	Upgrade   DaemonUpgradeCmd   `cmd:"" help:"Replace the managed copy with this binary and restart it."`
 	Start     DaemonStartCmd     `cmd:"" help:"Enable and start the installed service."`
 	Stop      DaemonStopCmd      `cmd:"" help:"Stop the service (preserve login startup)."`
 	Disable   DaemonDisableCmd   `cmd:"" help:"Stop and disable login startup."`
@@ -41,6 +42,24 @@ type DaemonInstallCmd struct {
 
 // Run installs using an owned, stable copy of the current executable.
 func (c *DaemonInstallCmd) Run(app *cliCtx) error {
+	return installManaged(c.Start)
+}
+
+// DaemonUpgradeCmd replaces the managed copy after the CLI itself was upgraded.
+type DaemonUpgradeCmd struct {
+	Start bool `help:"Start the service immediately as well as at login" default:"true"`
+}
+
+// Run refreshes the managed executable. Upgrading the CLI on disk does not
+// touch the daemon, because the service runs its own private copy.
+func (c *DaemonUpgradeCmd) Run(app *cliCtx) error {
+	return installManaged(c.Start)
+}
+
+// installManaged copies this executable into the managed location. It is a
+// no-op when the copy and unit already match, so a healthy daemon is not
+// bounced and its broker session survives.
+func installManaged(start bool) error {
 	if !daemon.ManagedSocket() {
 		return fmt.Errorf("managed service requires the default broker socket; unset ESEC_VAULT_SOCK")
 	}
@@ -54,15 +73,26 @@ func (c *DaemonInstallCmd) Run(app *cliCtx) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := m.Install(ctx, exe, c.Start); err != nil {
+	same, err := m.Current(exe)
+	if err != nil {
 		return err
 	}
-	if c.Start {
+	if err := m.Install(ctx, exe, start); err != nil {
+		return err
+	}
+	if start {
 		if err := waitDaemon(ctx); err != nil {
 			return fmt.Errorf("service installed but not ready; inspect daemon logs: %w", err)
 		}
 	}
+	if same {
+		fmt.Fprintln(os.Stderr, "Already up to date:", m.Manifest.Binary)
+		return nil
+	}
 	fmt.Fprintln(os.Stderr, "Installed", m.Manifest.Unit)
+	if start {
+		fmt.Fprintln(os.Stderr, "The daemon starts locked; run: esec-vault unlock")
+	}
 	return nil
 }
 
@@ -138,6 +168,12 @@ func manageService(action string) error {
 	case "disable":
 		return m.Disable(ctx)
 	case "restart":
+		// Restarting re-executes the managed copy, not the binary on PATH.
+		// Refuse when that copy is stale so an upgrade is never mistaken for
+		// one that already took effect.
+		if err := requireCurrent(m); err != nil {
+			return err
+		}
 		if err := m.Stop(ctx); err != nil {
 			return err
 		}
@@ -150,6 +186,33 @@ func manageService(action string) error {
 	default:
 		return fmt.Errorf("unknown service action")
 	}
+}
+
+// requireCurrent fails when the managed executable differs from this binary.
+// Restarting or starting a stale copy silently keeps the old code running
+// after an upgrade, which is the failure mode this guards against.
+func requireCurrent(m *service.Manager) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return requireCurrentWith(m, exe)
+}
+
+// requireCurrentWith is the testable form: it compares source against the
+// managed copy instead of assuming the current process.
+func requireCurrentWith(m *service.Manager, source string) error {
+	if !m.Installed() {
+		return nil
+	}
+	same, err := m.Current(source)
+	if err != nil {
+		return err
+	}
+	if same {
+		return nil
+	}
+	return fmt.Errorf("the managed daemon at %s is older than this binary; run: esec-vault daemon upgrade", m.Manifest.Binary)
 }
 
 func waitDaemon(ctx context.Context) error {
@@ -190,6 +253,11 @@ func (c *DaemonStatusCmd) Run(app *cliCtx) error {
 	defer cancel()
 	resp, err := daemon.Call(ctx, daemon.Request{Op: "status"})
 	if err == nil {
+		resp.CLI = app.Version
+		resp.UpToDate = resp.Version != "" && resp.Version == app.Version
+		if !resp.UpToDate {
+			fmt.Fprintf(os.Stderr, "! daemon runs %s but this CLI is %s; run: esec-vault daemon upgrade\n", orUnknown(resp.Version), orUnknown(app.Version))
+		}
 		return printJSON(resp)
 	}
 	m, managerErr := service.New()
@@ -200,7 +268,16 @@ func (c *DaemonStatusCmd) Run(app *cliCtx) error {
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return statErr
 	}
-	return printJSON(map[string]any{"installed": statErr == nil, "reachable": false, "unit": m.Manifest.Unit, "error": err.Error()})
+	return printJSON(map[string]any{"installed": statErr == nil, "reachable": false, "unit": m.Manifest.Unit, "cli_version": app.Version, "up_to_date": false, "error": err.Error()})
+}
+
+// orUnknown labels a missing build string so status output stays unambiguous
+// when talking to a daemon that predates version reporting.
+func orUnknown(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+	return v
 }
 
 // UnlockCmd starts a bounded broker session, never changing service lifetime.

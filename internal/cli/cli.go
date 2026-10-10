@@ -23,6 +23,8 @@ type cliCtx struct {
 	Logger  *slog.Logger
 	Keyring keyring.Keyring
 	Quiet   bool
+	// Version is this binary's build string, compared against the daemon's.
+	Version string
 }
 
 type cli struct {
@@ -56,6 +58,9 @@ type cli struct {
 
 // Execute runs the CLI.
 func Execute(version string) {
+	// The daemon reports this string over the control socket so a CLI can
+	// detect that a managed service still runs an older executable copy.
+	daemon.BuildVersion = version
 	var c cli
 	ctx := kong.Parse(&c,
 		kong.ShortUsageOnError(),
@@ -70,7 +75,7 @@ func Execute(version string) {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	app := &cliCtx{Logger: logger, Keyring: keyring.NewOS(), Quiet: c.Quiet}
+	app := &cliCtx{Logger: logger, Keyring: keyring.NewOS(), Quiet: c.Quiet, Version: version}
 	mutation := strings.HasPrefix(ctx.Command(), "project init") || strings.HasPrefix(ctx.Command(), "env add") || strings.HasPrefix(ctx.Command(), "keyring add") || strings.HasPrefix(ctx.Command(), "keyring migrate") || strings.HasPrefix(ctx.Command(), "sync") || strings.HasPrefix(ctx.Command(), "restore")
 	err := runCommand(func() error { return ctx.Run(app) }, mutation)
 	if mutation && !daemon.Notify() {

@@ -1,3 +1,22 @@
+# v0.3.1
+
+- Add `daemon upgrade` to replace the managed executable after upgrading the
+  CLI. The service runs a private copy, so a new binary on `PATH` never reached
+  the running daemon.
+- Report the daemon's build over the control socket. `daemon status` shows
+  `version`, `cli_version` and `up_to_date`, and `status`/`doctor` warn when the
+  managed copy is older than the CLI.
+- Refuse `daemon restart` against a stale managed copy instead of silently
+  restarting the old build, and point at `daemon upgrade`.
+- Make `daemon install` idempotent: an identical managed copy and unit file are
+  reused without stopping a healthy daemon, so a live broker session survives.
+- Update go-keyring to v0.2.8, with wincred v1.2.3 and dbus v5.2.2.
+- Depend on esec v0.8.1.
+- Add detailed project, environment, subfolder, teammate-sharing, and broker
+  guides in simplified technical English.
+- Update CI to checkout v7, setup-go v7, and golangci-lint-action v9.
+- Preserve Markdown spacing when extracting release notes.
+
 # v0.3.0
 
 - OS-managed user daemon with launchd/systemd installation, manifest-based

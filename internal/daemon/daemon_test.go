@@ -171,6 +171,26 @@ func TestControlRejectsOtherUIDAndBrokerCannotApprove(t *testing.T) {
 	}
 }
 
+func TestStatusReportsBuildVersion(t *testing.T) {
+	_, ctx := server(t)
+	t.Cleanup(func() { BuildVersion = "dev" })
+	BuildVersion = "9.9.9-test"
+	r, err := Call(ctx, Request{Op: "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Version != "9.9.9-test" {
+		t.Fatalf("status did not report the running build: %q", r.Version)
+	}
+	p, err := Call(ctx, Request{Op: "ping"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Version != "9.9.9-test" {
+		t.Fatalf("ping did not report the running build: %q", p.Version)
+	}
+}
+
 func TestStaleNonSocketIsPreserved(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "control.sock")
 	if err := os.WriteFile(p, []byte("unrelated"), 0600); err != nil {

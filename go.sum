@@ -18,8 +18,8 @@ github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUq
 github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
 github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=
 github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=
-github.com/mscno/esec v0.8.0 h1:YVbnY9D6kyXi3o37Hp0/cdVk2mwp9JJ8W5h30+ajnm8=
-github.com/mscno/esec v0.8.0/go.mod h1:2mY10QARq9JDitafjL07j9aq4fgF1tWRa3KA5bAJF+I=
+github.com/mscno/esec v0.8.1 h1:ciwaTQ/35T5RS+PaF049Eb93C9HWUka8yMRG5gAhfbg=
+github.com/mscno/esec v0.8.1/go.mod h1:2mY10QARq9JDitafjL07j9aq4fgF1tWRa3KA5bAJF+I=
 github.com/pelletier/go-toml/v2 v2.4.3 h1:GTRvJQutkOSftxIFD5xw9aepkYNuPWmVJpffdDPYVpY=
 github.com/pelletier/go-toml/v2 v2.4.3/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

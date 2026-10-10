@@ -84,7 +84,48 @@ func NewAt(platform string, uid int, userHome, vaultHome, xdg string, runner Run
 	return &Manager{Manifest: m, Run: runner}, nil
 }
 
+// Installed reports whether this user's managed installation exists.
+func (m *Manager) Installed() bool {
+	return m.load() == nil
+}
+
+// Current reports whether the managed executable and unit file already match
+// source, meaning an install would be a no-op and must not bounce the daemon.
+func (m *Manager) Current(source string) (bool, error) {
+	if !m.Installed() {
+		return false, nil
+	}
+	data, err := os.ReadFile(source) //nolint:gosec // caller-selected executable, normally os.Executable
+	if err != nil {
+		return false, err
+	}
+	managed, err := os.ReadFile(m.Manifest.Binary)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !bytes.Equal(data, managed) {
+		return false, nil
+	}
+	unit, err := m.UnitContents()
+	if err != nil {
+		return false, err
+	}
+	written, err := os.ReadFile(m.Manifest.Unit)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return bytes.Equal(unit, written), nil
+}
+
 // Install records ownership, copies a stable executable and enables login startup.
+// It is idempotent: when the managed copy and unit are already identical it
+// re-enables and starts without stopping a healthy daemon.
 func (m *Manager) Install(ctx context.Context, source string, start bool) error {
 	if err := m.validateDirectories(); err != nil {
 		return err
@@ -92,7 +133,14 @@ func (m *Manager) Install(ctx context.Context, source string, start bool) error 
 	if err := m.existing(); err != nil {
 		return err
 	}
-	if _, err := os.Stat(m.manifestPath()); err == nil {
+	if m.Installed() {
+		unchanged, err := m.Current(source)
+		if err != nil {
+			return err
+		}
+		if unchanged {
+			return m.reuse(ctx, start)
+		}
 		if err := m.Disable(ctx); err != nil {
 			return err
 		}
@@ -367,6 +415,18 @@ func (m *Manager) UnitContents() ([]byte, error) {
 	}
 	b.WriteString("</dict><key>Umask</key><integer>63</integer></dict></plist>\n")
 	return b.Bytes(), nil
+}
+
+// reuse re-enables an already-current installation without stopping it, so
+// repeating an install never drops a live broker session.
+func (m *Manager) reuse(ctx context.Context, start bool) error {
+	if err := m.enable(ctx); err != nil {
+		return err
+	}
+	if start {
+		return m.Start(ctx)
+	}
+	return nil
 }
 
 func (m *Manager) systemd() string {

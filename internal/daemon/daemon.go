@@ -46,7 +46,18 @@ type Response struct {
 	Unlocked bool      `json:"unlocked"`
 	Expires  time.Time `json:"expires,omitempty"`
 	Job      *Job      `json:"job,omitempty"`
+	// Version is the build answering the control socket. It lets a newer CLI
+	// notice that a managed daemon still runs an older executable copy.
+	Version string `json:"version,omitempty"`
+	// CLI and UpToDate are filled in by the client for reporting only; the
+	// daemon never sets them.
+	CLI      string `json:"cli_version,omitempty"`
+	UpToDate bool   `json:"up_to_date"`
 }
+
+// BuildVersion identifies the running binary. The CLI entry point sets it from
+// the version string injected at link time.
+var BuildVersion = "dev"
 
 // Job records the result of a queued backup; durable dirty state survives restart.
 type Job struct {
@@ -210,7 +221,7 @@ func (s *Server) dispatch(ctx context.Context, uid, pid uint32, r Request) Respo
 	switch r.Op {
 	case "ping", "status":
 		unlocked, expires := s.Broker.Session()
-		return Response{OK: true, PID: os.Getpid(), Unlocked: unlocked, Expires: expires}
+		return Response{OK: true, PID: os.Getpid(), Unlocked: unlocked, Expires: expires, Version: BuildVersion}
 	case "lock":
 		s.Broker.Lock()
 		return Response{OK: true}

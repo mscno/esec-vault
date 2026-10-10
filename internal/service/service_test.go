@@ -151,6 +151,103 @@ func TestInstallDisableStartUninstallBothPlatforms(t *testing.T) {
 	}
 }
 
+func TestRepeatedInstallDoesNotBounceRunningDaemon(t *testing.T) {
+	for _, platform := range []string{"darwin", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			m, f := manager(t, platform)
+			ctx := context.Background()
+			src := source(t)
+			if err := m.Install(ctx, src, true); err != nil {
+				t.Fatal(err)
+			}
+			if !m.Installed() {
+				t.Fatal("not reported as installed")
+			}
+			same, err := m.Current(src)
+			if err != nil || !same {
+				t.Fatalf("fresh install not current: %t %v", same, err)
+			}
+			// A matching source must not bounce a healthy daemon, because the
+			// broker session would be lost for no reason.
+			f.commands = nil
+			if err := m.Install(ctx, src, true); err != nil {
+				t.Fatal(err)
+			}
+			assertNoStop(t, f)
+			if !f.running {
+				t.Fatal("idempotent install left the service stopped")
+			}
+		})
+	}
+}
+
+func TestInstallReplacesStaleManagedCopy(t *testing.T) {
+	for _, platform := range []string{"darwin", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			m, f := manager(t, platform)
+			ctx := context.Background()
+			src := source(t)
+			if err := m.Install(ctx, src, true); err != nil {
+				t.Fatal(err)
+			}
+			// Replacing the source is what `go install` does on upgrade.
+			if err := os.WriteFile(src, []byte("upgraded executable"), 0700); err != nil { //nolint:gosec // test executable fixture
+				t.Fatal(err)
+			}
+			same, err := m.Current(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if same {
+				t.Fatal("stale managed copy reported as current")
+			}
+			f.commands = nil
+			if err := m.Install(ctx, src, true); err != nil {
+				t.Fatal(err)
+			}
+			assertStopped(t, f)
+			same, err = m.Current(src)
+			if err != nil || !same {
+				t.Fatalf("upgrade did not install the new copy: %t %v", same, err)
+			}
+			got, err := os.ReadFile(m.Manifest.Binary)
+			if err != nil || string(got) != "upgraded executable" {
+				t.Fatalf("managed copy not replaced: %q %v", got, err)
+			}
+		})
+	}
+}
+
+// assertStopped requires that the old daemon was shut down before its
+// executable was replaced.
+func assertStopped(t *testing.T, f *fakeOS) {
+	t.Helper()
+	joined := strings.Join(f.commands, "\n")
+	if !strings.Contains(joined, "bootout") && !strings.Contains(joined, " stop") {
+		t.Fatal("did not stop the old daemon before replacing it")
+	}
+}
+
+func assertNoStop(t *testing.T, f *fakeOS) {
+	t.Helper()
+	for _, c := range f.commands {
+		if strings.Contains(c, "bootout") || strings.Contains(c, " stop") {
+			t.Fatalf("stopped the service unnecessarily: %s", c)
+		}
+	}
+}
+
+func TestCurrentReportsFalseWithoutInstallation(t *testing.T) {
+	m, _ := manager(t, "darwin")
+	if m.Installed() {
+		t.Fatal("reported installed before any artifacts exist")
+	}
+	same, err := m.Current(source(t))
+	if err != nil || same {
+		t.Fatalf("uninstalled manager reported current: %t %v", same, err)
+	}
+}
+
 func TestFailedStopPreservesManifestAndExecutable(t *testing.T) {
 	m, f := manager(t, "darwin")
 	if err := m.Install(context.Background(), source(t), true); err != nil {
