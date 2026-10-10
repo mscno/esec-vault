@@ -1,3 +1,13 @@
+# v0.3.4
+
+- Fix rclone-backed backups failing forever against object stores such as S3,
+  R2 and B2. Reading a missing key with `rclone cat` succeeds and prints
+  nothing there, because those stores have no directories. The rclone backend
+  inferred "absent" from the exit code alone, so every first push reported
+  `remote generation already exists with different content` and the daemon
+  retried a conflicting generation that never existed. `Get` now probes the key
+  with `lsjson` before reading, so a missing object is reported as absent.
+
 # v0.3.3
 
 - Fix the managed-copy comparison so `daemon upgrade` is idempotent and
