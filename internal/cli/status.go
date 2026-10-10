@@ -177,7 +177,9 @@ func (c *DoctorCmd) Run(ctx *cliCtx) error {
 	for _, issue := range issues {
 		fmt.Println("!", issue)
 	}
-	return &exitCodeError{code: 1}
+	// The findings above are the report; the message only prevents a silent
+	// exit for anyone invoking this programmatically.
+	return &exitCodeError{code: 1, msg: fmt.Sprintf("%d problem(s) found", len(issues))}
 }
 
 // daemonVersionIssues reports a managed daemon that is not running this build.
@@ -188,15 +190,21 @@ func daemonVersionIssues(ctx *cliCtx) []string {
 		return nil
 	}
 	m, err := service.New()
-	if err != nil || !m.Installed() {
+	if err != nil {
+		return []string{"could not inspect the managed daemon: " + err.Error()}
+	}
+	if !m.Installed() {
 		return nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return nil
+		return []string{"could not locate this executable to compare builds: " + err.Error()}
 	}
 	same, err := m.Current(exe)
-	if err != nil || same {
+	if err != nil {
+		return []string{"could not compare the managed daemon build: " + err.Error()}
+	}
+	if same {
 		return nil
 	}
 	issue := "managed daemon runs an older copy of esec-vault; run: esec-vault daemon upgrade"

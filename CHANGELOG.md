@@ -1,3 +1,26 @@
+# v0.3.5
+
+- Never exit on failure without reporting why. `remote test`, `backup --push`,
+  `daemon install/start/stop/restart` and `project init` all exited with a
+  non-zero status and no output at all when an external tool failed, because the
+  error path called `os.Exit` without printing the message. Tool diagnostics that
+  embed "exit status" (rclone's 403 AccessDenied, launchctl's load errors) are
+  now shown; only `run` stays silent, since the child already wrote its stderr.
+- Preserve git's stderr in `project init` errors, so a missing `origin` remote
+  explains itself instead of reporting only "exit status 128".
+- Fail closed when the audit log cannot be written. A secret is no longer
+  decrypted and served if the allow decision could not be recorded.
+- Report a failed audit-log `Close` (for example ENOSPC on append) instead of
+  returning success for an entry that never reached disk.
+- Report plist XML escaping failures instead of writing a malformed unit that
+  later surfaces as an opaque launchctl error.
+- Reject keyring entries whose names cannot be exported as environment
+  variables, rather than silently omitting the secret from the child process.
+- Treat an unreadable push marker as pending instead of silently reporting that
+  nothing needs uploading.
+- Surface `members list` proof-read failures, `doctor` daemon-check failures and
+  `daemon logs` errors rather than omitting them silently.
+
 # v0.3.4
 
 - Fix rclone-backed backups failing forever against object stores such as S3,

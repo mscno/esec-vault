@@ -3,6 +3,8 @@ package remote
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -50,12 +52,14 @@ func MarkDirty(reason string, projects int) error {
 
 // IsDirty reports whether a push is pending.
 func IsDirty() bool {
-	data, err := os.ReadFile(DirtyPath())
+	d, err := readDirty()
 	if err != nil {
-		return false
-	}
-	var d dirtyFile
-	if err := json.Unmarshal(data, &d); err != nil {
+		// An unreadable marker must not silently read as "nothing pending";
+		// assume dirty so the next push still happens.
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("push marker unreadable; treating as pending", "error", err)
+			return true
+		}
 		return false
 	}
 	return d.Dirty
@@ -63,15 +67,26 @@ func IsDirty() bool {
 
 // DirtyReason returns the pending-change reason and age.
 func DirtyReason() (reason string, age time.Duration, ok bool) {
-	data, err := os.ReadFile(DirtyPath())
+	d, err := readDirty()
 	if err != nil {
 		return "", 0, false
 	}
-	var d dirtyFile
-	if err := json.Unmarshal(data, &d); err != nil || !d.Dirty {
+	if !d.Dirty {
 		return "", 0, false
 	}
 	return d.Reason, time.Since(d.FirstAt), true
+}
+
+func readDirty() (dirtyFile, error) {
+	data, err := os.ReadFile(DirtyPath())
+	if err != nil {
+		return dirtyFile{}, err
+	}
+	var d dirtyFile
+	if err := json.Unmarshal(data, &d); err != nil {
+		return dirtyFile{}, fmt.Errorf("parse push marker: %w", err)
+	}
+	return d, nil
 }
 
 // DebounceElapsed reports whether enough time has passed since the change to

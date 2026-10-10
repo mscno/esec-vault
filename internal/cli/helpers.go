@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/identity"
@@ -57,13 +59,21 @@ func maybeAutoPushContext(parent context.Context, ctx *cliCtx) {
 	}
 }
 
-// runGit runs a git command in dir and returns stdout.
+// runGit runs a git command in dir and returns stdout. Git's own stderr is
+// folded into the error: cmd.Output would otherwise discard it, leaving the
+// user with a bare "exit status 128" and no explanation.
 func runGit(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git: %w", err)
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
 	}
 	return string(out), nil
 }

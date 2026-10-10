@@ -345,7 +345,15 @@ func (c *DaemonLogsCmd) Run(app *cliCtx) error {
 		cmd := exec.Command("journalctl", "--user", "-u", m.Manifest.Name, "-n", fmt.Sprint(c.Lines), "--no-pager")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		if err := cmd.Run(); err != nil {
+			// Exit code 1 can also mean "no entries"; only surface a real failure.
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() == 1 {
+				return nil
+			}
+			return fmt.Errorf("journalctl: %w", err)
+		}
+		return nil
 	}
 	data, err := os.ReadFile(m.Manifest.Log)
 	if err != nil {

@@ -191,13 +191,18 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
-func (s *Server) audit(uid, pid uint32, op, project, env, decision, detail string) {
+// audit records a decision and reports whether it was persisted. Callers must
+// fail closed on error: serving a secret whose allow decision was never
+// written would leave no record of the disclosure.
+func (s *Server) audit(uid, pid uint32, op, project, env, decision, detail string) error {
 	if s.Audit == nil {
-		return
+		return nil
 	}
 	if err := s.Audit.Log(AuditEntry{UID: uid, PID: pid, Op: op, Project: project, Env: env, Decision: decision, Detail: detail}); err != nil {
 		s.Logger.Error("audit log write failed", "error", err)
+		return err
 	}
+	return nil
 }
 
 func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
@@ -213,7 +218,9 @@ func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
 		}
 		entries, ok := s.Keys[req.Project]
 		if !ok {
-			s.audit(uid, pid, req.Op, req.Project, "", "deny", "unknown project")
+			// A denied request serves nothing, so a lost audit line cannot
+			// cause an unrecorded disclosure.
+			_ = s.audit(uid, pid, req.Op, req.Project, "", "deny", "unknown project")
 			return &Response{OK: false, Error: fmt.Sprintf("no keys held for project %q", req.Project)}
 		}
 		var envs []string
@@ -226,7 +233,9 @@ func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
 				envs = append(envs, strings.ToLower(rest))
 			}
 		}
-		s.audit(uid, pid, req.Op, req.Project, "", "allow", "metadata")
+		if err := s.audit(uid, pid, req.Op, req.Project, "", "allow", "metadata"); err != nil {
+			return auditFailed()
+		}
 		return &Response{OK: true, Envs: envs}
 
 	case OpGetSecrets:
@@ -243,19 +252,28 @@ func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
 	}
 }
 
-func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
-	if req.Project == "" || req.Path == "" {
-		return &Response{OK: false, Error: "project and path are required"}
-	}
-	if !filepath.IsAbs(req.Path) {
-		return &Response{OK: false, Error: "path must be absolute"}
-	}
+// auditFailed refuses a request whose decision could not be recorded, so a
+// secret is never disclosed without an audit trail.
+func auditFailed() *Response {
+	return &Response{OK: false, Error: "audit log unavailable; refusing to serve secrets"}
+}
 
+// recordAllow persists an allow decision and reports whether it may proceed.
+// Serving secrets without a recorded decision would leave no trace of the
+// disclosure, so a failed write refuses the request.
+func (s *Server) recordAllow(uid, pid uint32, req *Request, detail string) error {
+	return s.audit(uid, pid, req.Op, req.Project, req.Env, "allow", detail)
+}
+
+// authorize applies policy and records the decision. It returns a non-nil
+// Response when the request must not proceed.
+func (s *Server) authorize(uid, pid uint32, req *Request) *Response {
 	s.keysMu.RLock()
 	action := s.Policy.Decide(req.Project, req.Env, uid)
 	s.keysMu.RUnlock()
 	if action == policy.Deny {
-		s.audit(uid, pid, req.Op, req.Project, req.Env, "deny", "policy")
+		// Denials serve nothing; the audit line is best effort here.
+		_ = s.audit(uid, pid, req.Op, req.Project, req.Env, "deny", "policy")
 		return &Response{OK: false, Error: fmt.Sprintf("denied by policy: %s env %q", req.Project, req.Env)}
 	}
 	if action == policy.Ask {
@@ -263,15 +281,33 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		if err != nil {
 			return &Response{OK: false, Error: err.Error()}
 		}
-		s.audit(uid, pid, req.Op, req.Project, req.Env, "ask", id)
-		approved := s.waitPending(id)
-		if !approved {
-			s.audit(uid, pid, req.Op, req.Project, req.Env, "deny", "approval "+id+" timed out or rejected")
+		if err := s.audit(uid, pid, req.Op, req.Project, req.Env, "ask", id); err != nil {
+			return auditFailed()
+		}
+		if !s.waitPending(id) {
+			_ = s.audit(uid, pid, req.Op, req.Project, req.Env, "deny", "approval "+id+" timed out or rejected")
 			return &Response{OK: false, Error: fmt.Sprintf("approval %s was not granted", id)}
 		}
-		s.audit(uid, pid, req.Op, req.Project, req.Env, "allow", "approved "+id)
-	} else {
-		s.audit(uid, pid, req.Op, req.Project, req.Env, "allow", "policy")
+		if err := s.recordAllow(uid, pid, req, "approved "+id); err != nil {
+			return auditFailed()
+		}
+		return nil
+	}
+	if err := s.recordAllow(uid, pid, req, "policy"); err != nil {
+		return auditFailed()
+	}
+	return nil
+}
+
+func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
+	if req.Project == "" || req.Path == "" {
+		return &Response{OK: false, Error: "project and path are required"}
+	}
+	if !filepath.IsAbs(req.Path) {
+		return &Response{OK: false, Error: "path must be absolute"}
+	}
+	if denied := s.authorize(uid, pid, req); denied != nil {
+		return denied
 	}
 
 	data, err := os.ReadFile(req.Path)
@@ -361,7 +397,10 @@ func (s *Server) handleApprove(uid, pid uint32, req *Request) *Response {
 	if !ok {
 		return &Response{OK: false, Error: fmt.Sprintf("no pending approval %q", req.ID)}
 	}
-	s.audit(uid, pid, req.Op, "", "", "approve", req.ID)
+	if err := s.audit(uid, pid, req.Op, "", "", "approve", req.ID); err != nil {
+		// Do not grant the approval: the decision would go unrecorded.
+		return auditFailed()
+	}
 	ch <- true
 	return &Response{OK: true}
 }

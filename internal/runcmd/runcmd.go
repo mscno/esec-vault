@@ -97,8 +97,10 @@ func Run(client *broker.Client, env, format string, command []string) error {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Env = os.Environ()
 	for k, v := range secrets {
-		if strings.ContainsAny(k, "=;\n") {
-			continue
+		// Never drop a secret silently: the child would run successfully
+		// without the variable it was promised.
+		if strings.ContainsAny(k, "=;\n") || k == "" {
+			return fmt.Errorf("cannot inject secret with unsupported name %q", k)
 		}
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

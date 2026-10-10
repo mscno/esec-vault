@@ -88,12 +88,22 @@ func Execute(version string) {
 			maybeAutoPush(app)
 		}
 	}
-	var exitErr interface{ ExitCode() int }
-	if errors.As(err, &exitErr) {
-		os.Exit(exitErr.ExitCode())
+	// Never exit on a failure without telling the user why. Both branches below
+	// used to os.Exit silently, which made a failing command look like success
+	// with no output at all.
+	//
+	// Suppression is keyed on a sentinel type, never on the error text: many
+	// real failures (rclone, launchctl, git) legitimately embed "exit status"
+	// in a message that carries the only diagnostic we have.
+	var forwarded *forwardedExitError
+	if errors.As(err, &forwarded) {
+		os.Exit(forwarded.code)
 	}
 	var codeErr *exitCodeError
 	if errors.As(err, &codeErr) {
+		if codeErr.msg != "" {
+			fmt.Fprintln(os.Stderr, "esec-vault: error:", codeErr.msg)
+		}
 		os.Exit(codeErr.code)
 	}
 	ctx.FatalIfErrorf(err)
@@ -111,7 +121,24 @@ func runCommand(run func() error, mutation bool) error {
 	return run()
 }
 
-// exitCodeError carries a desired process exit code.
-type exitCodeError struct{ code int }
+// exitCodeError carries a desired process exit code plus the reason for it.
+// The message is mandatory for any non-empty failure: a bare exit code leaves
+// the user with no way to tell success from failure.
+type exitCodeError struct {
+	code int
+	msg  string
+}
 
-func (e *exitCodeError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+func (e *exitCodeError) Error() string {
+	if e.msg == "" {
+		return fmt.Sprintf("exit status %d", e.code)
+	}
+	return e.msg
+}
+
+// forwardedExitError signals that a child process already reported its own
+// failure on stderr, so only the exit code should be propagated. It is the one
+// case where exiting silently is correct.
+type forwardedExitError struct{ code int }
+
+func (e *forwardedExitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }

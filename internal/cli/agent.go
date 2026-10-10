@@ -199,7 +199,8 @@ func (c *RunCmd) Run(ctx *cliCtx) error {
 	err := runcmd.Run(broker.NewClient(sock), c.Env, c.Format, c.Command)
 	var ee *runcmd.ExitError
 	if errors.As(err, &ee) {
-		return &exitCodeError{code: ee.Code}
+		// The child already wrote its own stderr; forward only the code.
+		return &forwardedExitError{code: ee.Code}
 	}
 	return err
 }

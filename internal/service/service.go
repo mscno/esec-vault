@@ -402,24 +402,39 @@ func (m *Manager) UnitContents() ([]byte, error) {
 	}
 	var b bytes.Buffer
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n")
-	item := func(key, value string) {
+	// An escaping failure would produce a malformed plist that only surfaces
+	// later as an opaque launchctl error, so report it here.
+	item := func(key, value string) error {
 		b.WriteString("<key>" + key + "</key><string>")
-		_ = xml.EscapeText(&b, []byte(value))
+		if err := xml.EscapeText(&b, []byte(value)); err != nil {
+			return fmt.Errorf("cannot escape plist value for %s: %w", key, err)
+		}
 		b.WriteString("</string>\n")
+		return nil
 	}
-	item("Label", m.Manifest.Name)
+	if err := item("Label", m.Manifest.Name); err != nil {
+		return nil, err
+	}
 	b.WriteString("<key>ProgramArguments</key><array>")
 	for _, a := range []string{m.Manifest.Binary, "daemon", "run"} {
 		b.WriteString("<string>")
-		_ = xml.EscapeText(&b, []byte(a))
+		if err := xml.EscapeText(&b, []byte(a)); err != nil {
+			return nil, fmt.Errorf("cannot escape plist argument %q: %w", a, err)
+		}
 		b.WriteString("</string>")
 	}
 	b.WriteString("</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>\n")
-	item("StandardOutPath", m.Manifest.Log)
-	item("StandardErrorPath", m.Manifest.Log)
+	if err := item("StandardOutPath", m.Manifest.Log); err != nil {
+		return nil, err
+	}
+	if err := item("StandardErrorPath", m.Manifest.Log); err != nil {
+		return nil, err
+	}
 	b.WriteString("<key>EnvironmentVariables</key><dict>")
 	for _, k := range sortedEnvironment(m.Manifest.Environment) {
-		item(k, m.Manifest.Environment[k])
+		if err := item(k, m.Manifest.Environment[k]); err != nil {
+			return nil, err
+		}
 	}
 	b.WriteString("</dict><key>Umask</key><integer>63</integer></dict></plist>\n")
 	return b.Bytes(), nil

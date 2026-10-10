@@ -112,7 +112,8 @@ func (c *MembersVerifyCmd) Run(ctx *cliCtx) error {
 		fmt.Printf("  %s: %s\n", login, status)
 	}
 	if rc != 0 {
-		return &exitCodeError{code: rc}
+		// Member problems are printed above; report the count as the reason.
+		return &exitCodeError{code: rc, msg: "one or more members failed verification"}
 	}
 	return nil
 }
@@ -178,6 +179,8 @@ func (c *MembersListCmd) Run(ctx *cliCtx) error {
 		login := e.Name()[:len(e.Name())-len(".proof")]
 		data, err := os.ReadFile(filepath.Join(share.MembersDirName, e.Name()))
 		if err != nil {
+			// Report rather than silently omit the member.
+			fmt.Printf("  %s: unreadable proof: %v\n", login, err)
 			continue
 		}
 		proof, err := share.ParseProof(data)

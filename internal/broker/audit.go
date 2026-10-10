@@ -48,7 +48,11 @@ func (a *AuditLogger) Log(e AuditEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	_, err = f.Write(append(data, '\n'))
+	// A failed Close can mean the append never reached disk (ENOSPC). Report it
+	// so the caller can fail closed instead of trusting a lost entry.
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
 	return err
 }
