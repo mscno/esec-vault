@@ -28,9 +28,13 @@ jobs:
         uses: anchore/sbom-action/download-syft@v0
       - name: Extract release changelog
         run: |
-          version=${GITHUB_REF#refs/tags/v*}
+          version=${GITHUB_REF#refs/tags/}
           mkdir -p tmp
-          sed '/^# 'v$version'/,/^# /!d;//d;/^\s*$/d' CHANGELOG.md > tmp/release_changelog.md
+          awk -v version="$version" '
+            $0 == "# " version { found=1; next }
+            found && /^# / { exit }
+            found { print }
+          ' CHANGELOG.md > tmp/release_changelog.md
       - name: Release
         uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
         with:
