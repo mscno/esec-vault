@@ -39,7 +39,7 @@ type cli struct {
 	Identity  IdentityCmd  `cmd:"" help:"Manage your identity keypair (mnemonic-backed)."`
 	Keyring   KeyringCmd   `cmd:"" help:"Manage the global keyring store."`
 	Project   ProjectCmd   `cmd:"" help:"Scaffold projects and environments."`
-	Env       EnvCmd       `cmd:"" help:"Create keys for an environment."`
+	Env       EnvCmd       `cmd:"" help:"Manage environment keys."`
 	Backup    BackupCmd    `cmd:"" help:"Seal all keyrings and your identity into the vault blob."`
 	Restore   RestoreCmd   `cmd:"" help:"Restore keyrings from the vault blob."`
 	Recover   RecoverCmd   `cmd:"" help:"Full cold recovery: phrase + backup -> identity -> keyrings."`

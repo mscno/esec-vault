@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -44,7 +45,21 @@ func (c *ProjectInitCmd) Run(ctx *cliCtx) error {
 	} else if err != nil && !errors.Is(err, projectfile.ErrNotFound) {
 		return err
 	}
-	return c.create(project)
+	dir, err := filepath.Abs(c.Dir)
+	if err != nil {
+		return err
+	}
+	if err := c.create(project); err != nil {
+		return err
+	}
+	source := "Git origin"
+	if c.Project != "" {
+		source = "--project flag"
+	} else if c.ID != "" {
+		source = "project ID argument"
+	}
+	fmt.Fprintf(os.Stderr, "Project %s ready in %s (project ID from %s). Keys stored outside the repository.\n", project, dir, source)
+	return nil
 }
 
 func (c *ProjectInitCmd) projectID() (string, error) {
@@ -97,7 +112,6 @@ func (c *ProjectInitCmd) create(project string) error {
 	if err := ensureGitignoreEntry(c.Dir, esec.DefaultKeyringFilename); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Project %s ready: %d environments, %d templates. Keys stored outside the repository.\n", project, len(c.Env), len(files))
 	return nil
 }
 
@@ -162,9 +176,16 @@ func templateContent(format, env, pub string) (string, error) {
 func deriveProjectFromGit(dir string) (string, error) {
 	out, err := runGit(dir, "config", "--get", "remote.origin.url")
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return "", fmt.Errorf("cannot infer project: Git origin is missing or unset in %s; pass --project org/repo: %w", dir, err)
+		}
 		return "", fmt.Errorf("pass --project org/repo: %w", err)
 	}
 	raw := strings.TrimSpace(out)
+	if raw == "" {
+		return "", fmt.Errorf("cannot infer project: Git origin is empty in %s; pass --project org/repo", dir)
+	}
 	var p string
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
@@ -201,8 +222,42 @@ func validateEnvName(env string) error {
 
 // EnvCmd manages human-named environments.
 type EnvCmd struct {
-	Add  EnvAddCmd  `cmd:"" help:"Create an environment key."`
-	List EnvListCmd `cmd:"" help:"List environment public keys."`
+	Add     EnvAddCmd     `cmd:"" help:"Create an environment key."`
+	List    EnvListCmd    `cmd:"" help:"List environment public keys."`
+	ShowKey EnvShowKeyCmd `cmd:"" help:"Print an environment private key after confirmation."`
+}
+
+// EnvShowKeyCmd reveals one named environment's private key after confirmation.
+type EnvShowKeyCmd struct {
+	Env     string `arg:"" help:"Environment name"`
+	Project string `help:"Project id (default: nearest .esec-project)"`
+}
+
+// Run requires explicit confirmation before writing the private key to stdout.
+func (c *EnvShowKeyCmd) Run(ctx *cliCtx) error {
+	if err := validateEnvName(c.Env); err != nil {
+		return err
+	}
+	project, err := resolveProject(c.Project)
+	if err != nil {
+		return err
+	}
+	entries, err := keystore.New().Read(project)
+	if err != nil {
+		return err
+	}
+	priv, ok := entries[environmentKey(c.Env)]
+	if !ok {
+		return fmt.Errorf("environment %s has no stored private key in project %s", c.Env, project)
+	}
+	if _, err := publicHex(priv); err != nil {
+		return err
+	}
+	if !confirm(fmt.Sprintf("Print the private key for %s environment %s to the console?", project, c.Env)) {
+		return fmt.Errorf("private key display cancelled")
+	}
+	_, err = fmt.Fprintln(os.Stdout, priv)
+	return err
 }
 
 // EnvAddCmd stores a new key and prints only its public half.

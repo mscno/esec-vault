@@ -129,6 +129,10 @@ esec vault project init acme/billing \
 Use `--format ejson`, `--format eyaml`, `--format eyml`, or `--format etoml`
 for other file formats. Use `--no-template` to create keys without secrets files.
 If you omit the project ID, `project init` tries to infer it from Git origin.
+If origin is missing or empty, it reports an error; pass `--project acme/store`
+to initialize without a remote. On success, it prints the project ID, absolute
+directory path, and whether the ID came from `--project`, the positional
+argument, or Git origin.
 Use an explicit ID when adding environments to a project with a custom ID.
 
 ### Step 3: Add values and encrypt them
@@ -270,6 +274,23 @@ esec keygen --save --env preview2 --project acme/store
 Both commands refuse to replace an existing named environment key.
 Neither command creates a secrets file. In contrast, plain `esec keygen` prints
 both keys and does not save them.
+
+### Print an environment's private key
+
+From the project directory or one of its subfolders:
+
+```sh
+esec vault env show-key dev
+```
+
+The command finds the nearest `.esec-project` marker and asks for confirmation.
+Enter `y` to print the private key as a plain hex string on stdout. Any other
+answer, or no input, cancels without printing the key. Confirmation is always
+required, including with `--quiet`.
+
+Use `esec vault env show-key api.prod --project acme/store` to select a project
+explicitly. This exposes the private key in your console; only run it when you
+need the key itself.
 
 ### Give each component its own key
 

@@ -1,3 +1,12 @@
+# v0.3.6
+
+- Add `env show-key ENV` to print a named environment's private key after
+  confirmation, resolving the nearest project marker or an explicit `--project`.
+- Report a clear error when `project init` cannot infer a project because Git
+  origin is missing or empty, with a hint to use `--project org/repo`.
+- Print the initialized project's absolute directory and whether its ID came
+  from the `--project` flag, positional argument, or Git origin.
+
 # v0.3.5
 
 - Never exit on failure without reporting why. `remote test`, `backup --push`,
