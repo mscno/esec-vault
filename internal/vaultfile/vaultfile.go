@@ -385,3 +385,10 @@ func Exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// CheckFraming validates a blob's header and box framing without decrypting
+// it. The server uses it to reject uploads that cannot be vault blobs.
+func CheckFraming(data []byte) error {
+	_, _, err := framing(data)
+	return err
+}

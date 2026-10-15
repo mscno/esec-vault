@@ -10,6 +10,7 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
@@ -51,6 +52,11 @@ type cli struct {
 	Sync      SyncCmd      `cmd:"" help:"Open your committed share blobs into the global keyring store."`
 	Remote    RemoteCmd    `cmd:"" help:"Manage cloud backup destinations."`
 
+	Login       LoginCmd       `cmd:"" help:"Sign in to a vault server and get your keys on this machine."`
+	Logout      LogoutCmd      `cmd:"" help:"End this machine's vault server session."`
+	Devices     DevicesCmd     `cmd:"" help:"List, approve, revoke and rename your devices."`
+	AgentUnlock AgentUnlockCmd `cmd:"" name:"agent-unlock" help:"Let an SSH-agent key unlock new devices (optional)."`
+
 	Version kong.VersionFlag `help:"Show version"`
 	Debug   bool             `help:"Enable debug logging" env:"ESEC_DEBUG"`
 	Quiet   bool             `help:"Suppress non-essential output" short:"q"`
@@ -76,7 +82,7 @@ func Execute(version string) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
 	app := &cliCtx{Logger: logger, Keyring: keyring.NewOS(), Quiet: c.Quiet, Version: version}
-	mutation := strings.HasPrefix(ctx.Command(), "project init") || strings.HasPrefix(ctx.Command(), "env add") || strings.HasPrefix(ctx.Command(), "keyring add") || strings.HasPrefix(ctx.Command(), "keyring migrate") || strings.HasPrefix(ctx.Command(), "sync") || strings.HasPrefix(ctx.Command(), "restore")
+	mutation := isMutation(ctx.Command())
 	err := runCommand(func() error { return ctx.Run(app) }, mutation)
 	if mutation && !daemon.Notify() {
 		// Persist even partially successful imports; offline upload failures leave
@@ -86,6 +92,12 @@ func Execute(version string) {
 				logger.Warn("keys saved, but backup is pending", "error", backupErr)
 			}
 			maybeAutoPush(app)
+		}
+		// Without a daemon, push key changes to the vault server right away.
+		if err == nil && !strings.HasPrefix(ctx.Command(), "sync") {
+			if syncErr := serverSync(&cliCtx{Logger: logger, Keyring: app.Keyring, Quiet: true}, false); syncErr != nil && !errors.Is(syncErr, account.ErrNotLoggedIn) {
+				logger.Warn("keys saved, but the vault server sync is pending", "error", syncErr)
+			}
 		}
 	}
 	// Never exit on a failure without telling the user why. Both branches below
@@ -107,6 +119,17 @@ func Execute(version string) {
 		os.Exit(codeErr.code)
 	}
 	ctx.FatalIfErrorf(err)
+}
+
+// isMutation reports whether a command changes keyrings, so it runs under the
+// keyring lock and is followed by a snapshot and a server push.
+func isMutation(command string) bool {
+	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "sync", "restore"} {
+		if strings.HasPrefix(command, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func runCommand(run func() error, mutation bool) error {

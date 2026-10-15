@@ -1,0 +1,22 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>esec vault</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">esec vault</a>
+  {{with .User}}<span class="who">{{.Login}} <span class="muted">(GitHub {{.GitHubID}})</span></span>{{end}}
+</header>
+<main>
+{{end}}
+{{define "foot"}}
+</main>
+<footer class="muted">The server stores only ciphertext. Keys never leave your devices unencrypted.</footer>
+</body>
+</html>
+{{end}}

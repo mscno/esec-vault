@@ -225,6 +225,7 @@ type EnvCmd struct {
 	Add     EnvAddCmd     `cmd:"" help:"Create an environment key."`
 	List    EnvListCmd    `cmd:"" help:"List environment public keys."`
 	ShowKey EnvShowKeyCmd `cmd:"" help:"Print an environment private key after confirmation."`
+	Rotate  EnvRotateCmd  `cmd:"" help:"Replace an environment key and re-encrypt its files."`
 }
 
 // EnvShowKeyCmd reveals one named environment's private key after confirmation.

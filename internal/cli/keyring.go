@@ -18,6 +18,7 @@ import (
 	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/storage"
 	"github.com/mscno/esec-vault/internal/vaultfile"
+	"github.com/mscno/esec/pkg/keyringfile"
 	"github.com/mscno/esec/pkg/projectfile"
 )
 
@@ -26,6 +27,85 @@ type KeyringCmd struct {
 	Migrate KeyringMigrateCmd `cmd:"" help:"Import repo-local keyrings into the global store."`
 	List    KeyringListCmd    `cmd:"" help:"List stored projects and key counts."`
 	Add     KeyringAddCmd     `cmd:"" help:"Generate a public-key-addressed project key."`
+	Seal    KeyringSealCmd    `cmd:"" help:"Encrypt keyring files with this machine's cache key."`
+	Unseal  KeyringUnsealCmd  `cmd:"" help:"Store keyring files as plain text again."`
+}
+
+// KeyringSealCmd seals keyrings.
+type KeyringSealCmd struct {
+	All              bool   `help:"Seal every keyring and seal new keyrings by default"`
+	Project          string `help:"Seal one project (default: nearest .esec-project)"`
+	SkipVersionCheck bool   `help:"Seal even if the esec on PATH cannot read sealed keyrings"`
+}
+
+// Run implements keyring seal.
+func (c *KeyringSealCmd) Run(ctx *cliCtx) error {
+	if !c.SkipVersionCheck {
+		if err := esecSupportsSealed(); err != nil {
+			return fmt.Errorf("%w (or pass --skip-version-check)", err)
+		}
+	}
+	if c.All {
+		n, err := sealAll(ctx, true)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Sealed %d keyring(s); new keyrings will be sealed too.\n", n)
+		return nil
+	}
+	return sealOne(ctx, c.Project, true)
+}
+
+// KeyringUnsealCmd unseals keyrings.
+type KeyringUnsealCmd struct {
+	All     bool   `help:"Unseal every keyring and stop sealing new ones"`
+	Project string `help:"Unseal one project (default: nearest .esec-project)"`
+	Yes     bool   `help:"Do not ask for confirmation"`
+}
+
+// Run implements keyring unseal.
+func (c *KeyringUnsealCmd) Run(ctx *cliCtx) error {
+	what := "this project's keyring"
+	if c.All {
+		what = "every keyring"
+	}
+	if !c.Yes && !confirm(fmt.Sprintf("Write %s as plain text on this disk?", what)) {
+		return errors.New("unseal cancelled")
+	}
+	if c.All {
+		n, err := sealAll(ctx, false)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Unsealed %d keyring(s); new keyrings will be plain.\n", n)
+		return nil
+	}
+	return sealOne(ctx, c.Project, false)
+}
+
+func sealOne(ctx *cliCtx, explicit string, seal bool) error {
+	project, err := resolveProject(explicit)
+	if err != nil {
+		return err
+	}
+	store, err := secretStoreFor(ctx)
+	if err != nil {
+		return err
+	}
+	if seal {
+		if _, err := keyringfile.EnsureCacheKey(store); err != nil {
+			return err
+		}
+	}
+	if err := keystore.New().SetSealed(project, seal); err != nil {
+		return err
+	}
+	state := "plain"
+	if seal {
+		state = "sealed"
+	}
+	fmt.Printf("%s is now %s.\n", project, state)
+	return nil
 }
 
 // KeyringMigrateCmd imports keys from repositories.

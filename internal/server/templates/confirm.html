@@ -1,0 +1,23 @@
+{{template "head" .}}
+<h1>Confirm this sign-in</h1>
+<table class="kv">
+  <tr><th>Code</th><td><code>{{.Code}}</code></td></tr>
+  <tr><th>Device name</th><td>{{.Device.Name}}</td></tr>
+  <tr><th>Platform</th><td>{{.Device.Platform}}</td></tr>
+  <tr><th>Requested from</th><td>{{.Device.RegisterIP}}</td></tr>
+  <tr><th>Requested at</th><td>{{ts .Device.Created}}</td></tr>
+  <tr><th>Device fingerprint</th><td><code>{{.Words}}</code></td></tr>
+</table>
+{{if .Existing}}
+<p>This signs in your existing device <strong>{{.Existing.Name}}</strong> again.</p>
+{{else}}
+<p>This is a <strong>new device</strong>. After you confirm, it still cannot decrypt anything until you approve it from a trusted device (<code>esec vault devices approve</code>), or it uses your recovery phrase or an SSH-agent unlock slot.</p>
+{{end}}
+<p>Check that the code and fingerprint match your terminal.</p>
+<form method="post" action="/device/confirm" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="code" value="{{.Code}}">
+  <button type="submit" name="decision" value="approve">Confirm sign-in</button>
+  <button type="submit" name="decision" value="deny" class="secondary">Deny</button>
+</form>
+{{template "foot" .}}

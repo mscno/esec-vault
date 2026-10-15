@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"github.com/mscno/esec-vault/internal/account"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -176,6 +177,11 @@ type IdentityRotateCmd struct{}
 
 // Run implements the rotate command.
 func (c *IdentityRotateCmd) Run(ctx *cliCtx) error {
+	if _, err := account.LoadState(); err == nil {
+		// Signed in: the user key is shared by every device and recorded in
+		// the device chain, so it must rotate through the server.
+		return accountRotate(ctx)
+	}
 	mnemonic, err := promptMnemonic("Paste your 24-word recovery phrase to authorize rotation: ")
 	if err != nil {
 		return err

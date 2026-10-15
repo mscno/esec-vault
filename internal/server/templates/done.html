@@ -1,0 +1,11 @@
+{{template "head" .}}
+{{if .Approved}}
+<h1>Signed in</h1>
+<p>Return to your terminal.</p>
+{{if not .Existing}}<p>Next, approve <strong>{{.Device.Name}}</strong> from a trusted device with <code>esec vault devices approve</code>, or follow the other options the terminal shows.</p>{{end}}
+{{else}}
+<h1>Sign-in denied</h1>
+<p>The device was not signed in. If you did not start this sign-in, review your devices on the <a href="/account">account page</a>.</p>
+{{end}}
+<p><a href="/account">Account page</a></p>
+{{template "foot" .}}

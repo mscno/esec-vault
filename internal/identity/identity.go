@@ -20,7 +20,7 @@ package identity
 
 import (
 	"bytes"
-	"crypto/rand"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -70,10 +70,16 @@ var ErrNotFound = errors.New("no identity found; run 'esec-vault identity init' 
 // passphrase and none was supplied.
 var ErrPassphraseRequired = errors.New("this identity is protected by a passphrase")
 
-// Identity is the user's day-to-day keypair.
+// Identity is the user's day-to-day keypair, the "user key" U of the vault
+// server design: an X25519 half that opens vault blobs and shares, and an
+// Ed25519 half that signs the user's device chain. Identities created before
+// v0.4 have no signing half until EnsureSigningKey adds one.
 type Identity struct {
 	Public  [32]byte
 	Private [32]byte
+
+	// Sign is the Ed25519 signing key, or nil for an identity that predates it.
+	Sign ed25519.PrivateKey
 
 	// PassphraseProtected records whether the master key was derived with a
 	// non-empty passphrase. Surfaced by `esec-vault status`.
@@ -81,6 +87,15 @@ type Identity struct {
 
 	// Derivation is the HKDF info string the master key came from.
 	Derivation string
+}
+
+// SignPublic returns the Ed25519 public key, or nil when there is none.
+func (i *Identity) SignPublic() ed25519.PublicKey {
+	if i.Sign == nil {
+		return nil
+	}
+	pub, _ := i.Sign.Public().(ed25519.PublicKey)
+	return pub
 }
 
 // PublicHex returns the hex-encoded public key.
@@ -151,8 +166,12 @@ func identityFromPrivate(priv [32]byte) (*Identity, error) {
 //	flags uint8 | sealed box
 //
 // Flag bit 0 set means the master key was derived with a non-empty passphrase.
+// Version 3 ("ESECID3") appends the Ed25519 signing public key to the header
+// and carries the signing seed inside the sealed payload. Version 2 files
+// remain readable; they are rewritten as v3 when a signing key is added.
 const (
 	fileMagic       = "ESECID2"
+	fileMagicV3     = "ESECID3"
 	flagPassphrased = 1
 )
 
@@ -162,6 +181,7 @@ type fileHeader struct {
 	Passphrased    bool     `json:"passphrased"`
 	MasterPublic   [32]byte `json:"master_public"`
 	IdentityPublic [32]byte `json:"identity_public"`
+	SignPublic     [32]byte `json:"sign_public,omitzero"`
 }
 
 func encodeHeader(h fileHeader) []byte {
@@ -176,7 +196,11 @@ func encodeHeader(h fileHeader) []byte {
 	}
 	out = append(out, flags)
 	out = append(out, h.MasterPublic[:]...)
-	return append(out, h.IdentityPublic[:]...)
+	out = append(out, h.IdentityPublic[:]...)
+	if h.Magic == fileMagicV3 {
+		out = append(out, h.SignPublic[:]...)
+	}
+	return out
 }
 
 func decodeHeader(data []byte) (fileHeader, []byte, error) {
@@ -184,16 +208,22 @@ func decodeHeader(data []byte) (fileHeader, []byte, error) {
 	if len(data) < len(fileMagic)+2+1 {
 		return h, nil, fmt.Errorf("identity file is truncated")
 	}
-	if string(data[:len(fileMagic)]) != fileMagic {
+	keys := 64
+	switch string(data[:len(fileMagic)]) {
+	case fileMagic:
+		h.Magic = fileMagic
+	case fileMagicV3:
+		h.Magic = fileMagicV3
+		keys = 96
+	default:
 		return h, nil, fmt.Errorf("identity file has an unrecognised format")
 	}
 	rest := data[len(fileMagic):]
 	n := int(binary.BigEndian.Uint16(rest[:2]))
 	rest = rest[2:]
-	if len(rest) < n+1+64 {
+	if len(rest) < n+1+keys {
 		return h, nil, fmt.Errorf("identity file is truncated")
 	}
-	h.Magic = fileMagic
 	h.Derivation = string(rest[:n])
 	h.Passphrased = rest[n]&flagPassphrased != 0
 	if rest[n] & ^byte(flagPassphrased) != 0 || h.Derivation != masterInfo {
@@ -201,7 +231,10 @@ func decodeHeader(data []byte) (fileHeader, []byte, error) {
 	}
 	copy(h.MasterPublic[:], rest[n+1:n+33])
 	copy(h.IdentityPublic[:], rest[n+33:n+65])
-	return h, rest[n+65:], nil
+	if h.Magic == fileMagicV3 {
+		copy(h.SignPublic[:], rest[n+65:n+97])
+	}
+	return h, rest[n+1+keys:], nil
 }
 
 // writeWrapped seals the identity private key to the master public key and
@@ -218,7 +251,14 @@ func writeWrapped(id *Identity, masterPub *[32]byte, passphraseProtected bool) e
 // embedding in a vault backup.
 func Wrapped(id *Identity, masterPub *[32]byte, passphraseProtected bool) ([]byte, error) {
 	h := fileHeader{Magic: fileMagic, Derivation: masterInfo, Passphrased: passphraseProtected, MasterPublic: *masterPub, IdentityPublic: id.Public}
-	plain, err := json.Marshal(wrappedPayload{Header: h, Private: id.Private})
+	p := wrappedPayload{Private: id.Private}
+	if id.Sign != nil {
+		h.Magic = fileMagicV3
+		copy(h.SignPublic[:], id.SignPublic())
+		p.SignSeed = id.Sign.Seed()
+	}
+	p.Header = h
+	plain, err := json.Marshal(p)
 	if err != nil {
 		return nil, err
 	}
@@ -271,8 +311,30 @@ func UnwrapBytes(data []byte, masterPub, masterPriv [32]byte, passphraseProtecte
 	if id.Public != h.IdentityPublic {
 		return nil, fmt.Errorf("identity public key mismatch")
 	}
+	if err := attachSign(id, h, p.SignSeed); err != nil {
+		return nil, err
+	}
 	id.PassphraseProtected = h.Passphrased
 	return id, nil
+}
+
+// attachSign installs the signing seed from a v3 payload, checking it against
+// the header. A v2 file must carry no seed.
+func attachSign(id *Identity, h fileHeader, seed []byte) error {
+	if h.Magic != fileMagicV3 {
+		if len(seed) != 0 {
+			return fmt.Errorf("identity header authentication failed")
+		}
+		return nil
+	}
+	if len(seed) != ed25519.SeedSize {
+		return fmt.Errorf("identity signing key missing from v3 identity")
+	}
+	id.Sign = ed25519.NewKeyFromSeed(seed)
+	if !bytes.Equal(id.SignPublic(), h.SignPublic[:]) {
+		return fmt.Errorf("identity signing key mismatch")
+	}
+	return nil
 }
 
 // Load returns the identity from the OS keyring.
@@ -292,6 +354,17 @@ func Load(kr keyring.Keyring) (*Identity, error) {
 	copy(key[:], priv)
 	id, err := identityFromPrivate(key)
 	if err != nil {
+		return nil, err
+	}
+	seedHex, err := kr.Get(keyring.IdentitySignPrivateKey)
+	switch {
+	case err == nil:
+		seed, derr := hex.DecodeString(strings.TrimSpace(seedHex))
+		if derr != nil || len(seed) != ed25519.SeedSize {
+			return nil, fmt.Errorf("invalid identity signing key in keyring")
+		}
+		id.Sign = ed25519.NewKeyFromSeed(seed)
+	case !errors.Is(err, keyring.ErrNotFound):
 		return nil, err
 	}
 	// Recover passphrase protection from the wrapped file when it is present,
@@ -357,13 +430,10 @@ func InitConfirmed(kr keyring.Keyring, passphrase string, confirmOverwrite func(
 		return "", err
 	}
 
-	var id Identity
-	pub, priv, err := box.GenerateKey(rand.Reader) // random identity keypair
+	id, err := NewRandom()
 	if err != nil {
 		return "", err
 	}
-	id.Public, id.Private = *pub, *priv
-	id.Derivation = masterInfo
 	id.PassphraseProtected = passphrase != ""
 	if confirmPhrase != nil {
 		if err := confirmPhrase(mnemonic); err != nil {
@@ -371,7 +441,7 @@ func InitConfirmed(kr keyring.Keyring, passphrase string, confirmOverwrite func(
 		}
 	}
 
-	if err := commit(kr, &id, &masterPub); err != nil {
+	if err := commit(kr, id, &masterPub); err != nil {
 		return "", fmt.Errorf("failed to store identity in keyring: %w", err)
 	}
 	return mnemonic, nil
@@ -463,18 +533,15 @@ func Rotate(kr keyring.Keyring, mnemonic, passphrase string) (*Identity, error) 
 	if current.Public != verified.Public {
 		return nil, fmt.Errorf("keychain and wrapped identity disagree")
 	}
-	var id Identity
-	pub, priv, err := box.GenerateKey(rand.Reader)
+	id, err := NewRandom()
 	if err != nil {
 		return nil, err
 	}
-	id.Public, id.Private = *pub, *priv
-	id.Derivation = masterInfo
 	id.PassphraseProtected = passphrase != ""
-	if err := commit(kr, &id, &masterPub); err != nil {
+	if err := commit(kr, id, &masterPub); err != nil {
 		return nil, err
 	}
-	return &id, nil
+	return id, nil
 }
 
 // MaxMemoryHint reports the Argon2id memory cost in MiB, so callers can warn

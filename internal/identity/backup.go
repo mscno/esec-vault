@@ -8,8 +8,9 @@ import (
 )
 
 type wrappedPayload struct {
-	Header  fileHeader `json:"header"`
-	Private [32]byte   `json:"private"`
+	Header   fileHeader `json:"header"`
+	Private  [32]byte   `json:"private"`
+	SignSeed []byte     `json:"sign_seed,omitempty"`
 }
 
 // BackupMaterial returns the existing encrypted identity and recovery public

@@ -1,0 +1,12 @@
+{{template "head" .}}
+<h1>Connect a device</h1>
+<p>Enter the code shown in your terminal by <code>esec vault login</code>.</p>
+{{with .Error}}<p class="error">{{.}}</p>{{end}}
+<form method="post" action="/device">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label for="code">Code</label>
+  <input id="code" name="code" value="{{.Code}}" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" placeholder="XXXX-XXXX" required>
+  <button type="submit">Continue</button>
+</form>
+<p class="muted">Only enter a code you started yourself. If someone sent you this link, close the page.</p>
+{{template "foot" .}}

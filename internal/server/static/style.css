@@ -1,0 +1,37 @@
+:root {
+  --bg: #fbfbf9; --fg: #1c1c1a; --muted: #6b6b66; --line: #deddd8;
+  --accent: #2f5d50; --accent-fg: #ffffff; --danger: #a33a2c; --code: #f0efea;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --fg: #ecebe6; --muted: #9b9a94; --line: #34332f;
+    --accent: #7fb8a4; --accent-fg: #10201b; --danger: #e48c7f; --code: #24231f;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; padding: 1rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font-weight: 600; color: var(--fg); text-decoration: none; }
+main { max-width: 60rem; margin: 0 auto; padding: 1rem; }
+footer { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; font-size: 0.875rem; }
+h1 { font-size: 1.5rem; margin: 1rem 0; }
+h2 { font-size: 1.125rem; margin: 2rem 0 0.5rem; }
+a { color: var(--accent); }
+code { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: var(--code); padding: 0.1em 0.3em; border-radius: 3px; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+.error { color: var(--danger); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9375rem; }
+th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.kv th { width: 12rem; font-weight: 500; color: var(--muted); }
+.scroll { overflow-x: auto; }
+form { margin: 0.5rem 0; }
+form.inline button { margin-right: 0.5rem; }
+.actions form { margin: 0 0 0.25rem; }
+label { display: block; margin-bottom: 0.25rem; }
+input { font: inherit; padding: 0.5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); width: 12rem; text-transform: uppercase; letter-spacing: 0.1em; }
+button, .button { font: inherit; display: inline-block; padding: 0.45rem 0.9rem; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: var(--accent-fg); cursor: pointer; text-decoration: none; }
+button.secondary { background: transparent; color: var(--accent); }
+button.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+.status-active { color: var(--accent); }
+.status-suspended, .status-revoked { color: var(--danger); }
+.logout { margin-top: 2rem; }

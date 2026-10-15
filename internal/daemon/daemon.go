@@ -88,6 +88,10 @@ type Server struct {
 	cancel     context.CancelFunc
 	boot       string
 	watchReady chan struct{}
+	// serverWake asks the vault-server loop to sync now.
+	serverWake chan struct{}
+	// lastGeneration is the local snapshot generation last seen by automatic.
+	lastGeneration uint64
 }
 
 // New constructs a locked daemon. Tests inject an in-memory keyring.
@@ -114,7 +118,7 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	if interval <= 0 {
 		return nil, fmt.Errorf("daemon requires a positive policy.interval")
 	}
-	return &Server{Keyring: kr, Logger: logger, Broker: b, UID: uint32(os.Getuid()), Interval: interval, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{})}, nil //nolint:gosec // supported platforms have a nonnegative uid
+	return &Server{Keyring: kr, Logger: logger, Broker: b, UID: uint32(os.Getuid()), Interval: interval, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{}), serverWake: make(chan struct{}, 1)}, nil //nolint:gosec // supported platforms have a nonnegative uid
 }
 
 // Serve runs both endpoints and the scheduler until cancellation. The OS user
@@ -140,6 +144,7 @@ func (s *Server) Serve(parent context.Context) error {
 	workers.Go(func() { s.watch(ctx) })
 	<-s.watchReady
 	workers.Go(func() { s.work(ctx) })
+	workers.Go(func() { s.serverLoop(ctx) })
 	brokerDone := make(chan error, 1)
 	workers.Go(func() { brokerDone <- s.Broker.Serve(ctx, paths.SocketPath()); cancel() })
 	workers.Go(func() { <-ctx.Done(); ln.Close() })
@@ -247,6 +252,7 @@ func (s *Server) dispatch(ctx context.Context, uid, pid uint32, r Request) Respo
 		case s.wake <- struct{}{}:
 		default:
 		}
+		s.wakeServer()
 		return Response{OK: true}
 	case "backup", "snapshot":
 		return s.enqueue(ctx, r)
@@ -369,13 +375,28 @@ func (s *Server) automatic(parent context.Context) {
 	defer cancel()
 	id, err := identity.Load(s.Keyring)
 	if err == nil {
-		_, err = remote.BuildSnapshot(id, keystore.New())
+		var snap *remote.Snapshot
+		snap, err = remote.BuildSnapshot(id, keystore.New())
 		if err == nil {
+			if snap.Generation != s.lastGeneration {
+				if s.lastGeneration != 0 {
+					s.wakeServer()
+				}
+				s.lastGeneration = snap.Generation
+			}
 			_, err = remote.MaybePush(ctx, id, keystore.New(), "")
 		}
 	}
 	if err != nil && parent.Err() == nil {
 		s.Logger.Warn("backup pending; will retry", "error", err)
+	}
+}
+
+// wakeServer asks the vault-server loop to sync soon.
+func (s *Server) wakeServer() {
+	select {
+	case s.serverWake <- struct{}{}:
+	default:
 	}
 }
 

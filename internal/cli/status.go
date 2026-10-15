@@ -55,12 +55,16 @@ type status struct {
 	Stale        bool             `json:"stale"`
 	Pending      bool             `json:"push_pending"`
 	Destinations *remote.State    `json:"destinations,omitempty"`
+	VaultServer  *serverStatus    `json:"vault_server,omitempty"`
+	SecretStore  *storeStatus     `json:"secret_store,omitempty"`
 	Problems     []string         `json:"problems,omitempty"`
 }
 
 // Run displays last verified upload and current snapshot state.
 func (c *StatusCmd) Run(ctx *cliCtx) error {
 	s := inspect(ctx)
+	s.SecretStore = inspectStore(ctx, &s.Problems)
+	s.VaultServer = inspectServer(ctx, &s.Problems)
 	cctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil {
@@ -70,6 +74,7 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 		return printJSON(s)
 	}
 	fmt.Printf("Identity: %s\nSnapshot: generation %d, %d projects, recovery material: %t\nStale: %t; upload pending: %t\n", s.Identity, s.Generation, s.Projects, s.Recoverable, s.Stale, s.Pending)
+	printServerStatus(s.VaultServer, s.SecretStore)
 	if s.Daemon != nil {
 		fmt.Printf("Daemon: running (pid %d), broker unlocked: %t\n", s.Daemon.PID, s.Daemon.Unlocked)
 		if s.Daemon.Version != "" && s.Daemon.Version != ctx.Version {
@@ -155,11 +160,13 @@ type DoctorCmd struct {
 // Run reports actionable problems and fails when protection is incomplete.
 func (c *DoctorCmd) Run(ctx *cliCtx) error {
 	s := inspect(ctx)
+	inspectStore(ctx, &s.Problems)
+	server := inspectServer(ctx, &s.Problems)
 	issues := s.Problems
 	if cfg, err := remote.Load(); err != nil {
 		issues = append(issues, err.Error())
-	} else if cfg.Default == "" {
-		issues = append(issues, "no default remote; run remote add or remote set-default")
+	} else if cfg.Default == "" && server == nil {
+		issues = append(issues, "no backup destination: sign in to a vault server (esec vault login) or add a remote (remote add)")
 	}
 	issues = append(issues, permissionIssues()...)
 	issues = append(issues, daemonVersionIssues(ctx)...)

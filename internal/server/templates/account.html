@@ -1,0 +1,73 @@
+{{template "head" .}}
+<h1>Account</h1>
+<table class="kv">
+  <tr><th>GitHub</th><td>{{.User.Login}} (ID {{.User.GitHubID}})</td></tr>
+  <tr><th>Account key</th><td>{{if .AccountWords}}<code>{{.AccountWords}}</code>{{else}}<span class="muted">not created yet</span>{{end}}</td></tr>
+</table>
+
+<h2>Devices</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Name</th><th>Status</th><th>Added by</th><th>Fingerprint</th><th>Last seen</th><th>Sessions</th><th></th></tr></thead>
+  <tbody>
+  {{range .Devices}}
+  <tr>
+    <td>{{.Name}}<br><span class="muted">{{.Platform}} · {{.ID}}</span></td>
+    <td class="status-{{.Status}}">{{.Status}}</td>
+    <td>{{if .Method}}{{.Method}}{{else}}—{{end}}</td>
+    <td><code>{{.Words}}</code></td>
+    <td>{{ts .LastSeen}}<br><span class="muted">{{.LastIP}}</span></td>
+    <td>{{.Sessions}}</td>
+    <td class="actions">
+      {{if or (eq .Status "active") (eq .Status "pending")}}
+      <form method="post" action="/account/devices/{{.ID}}/suspend"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger">Suspend</button></form>
+      {{end}}
+      {{if gt .Sessions 0}}
+      <form method="post" action="/account/sessions/{{.ID}}/end"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">End sessions</button></form>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="7" class="muted">No devices yet. Run <code>esec vault login</code>.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p class="muted">Suspending blocks a device at once. Finish the revocation from a trusted device with <code>esec vault devices revoke ID</code>, which rotates your user key.</p>
+
+<h2>SSH-agent unlock slots</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Slot</th><th>SSH key</th><th>Expires</th><th>State</th><th></th></tr></thead>
+  <tbody>
+  {{range .Slots}}
+  <tr>
+    <td>{{.SlotID}}</td>
+    <td><code>{{.SSHKeyFP}}</code></td>
+    <td>{{ts .Expires}}</td>
+    <td>{{if .Disabled}}disabled{{else if $.Now.After .Expires}}expired{{else}}enabled{{end}}</td>
+    <td>{{if not .Disabled}}<form method="post" action="/account/slots/{{.SlotID}}/disable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger">Disable</button></form>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No slots. Add one with <code>esec vault agent-unlock enable</code>.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2>Audit log</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Action</th><th>Detail</th><th>Device</th><th>IP</th></tr></thead>
+  <tbody>
+  {{range .Audit}}
+  <tr><td>{{ts .Time}}</td><td>{{.Action}}</td><td>{{.Detail}}</td><td>{{.DeviceID}}</td><td>{{.IP}}</td></tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No entries.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<form method="post" action="/auth/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Sign out of this browser</button></form>
+{{template "foot" .}}

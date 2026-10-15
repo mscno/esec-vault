@@ -11,13 +11,25 @@ import (
 )
 
 func commit(kr keyring.Keyring, id *Identity, master *[32]byte) error {
-	old, err := kr.Get(keyring.IdentityPrivateKey)
-	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
+	body, err := Wrapped(id, master, id.PassphraseProtected)
+	if err != nil {
 		return err
 	}
-	oldPub, err := kr.Get(keyring.IdentityPublicKey)
-	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
-		return err
+	return commitWrapped(kr, id, body)
+}
+
+// commitWrapped stores id in the keyring and wrapped as identity.esec. The
+// previous identity file is kept as identity.esec.previous, and keyring
+// entries are rolled back if any step fails.
+func commitWrapped(kr keyring.Keyring, id *Identity, wrapped []byte) error {
+	names := []string{keyring.IdentityPrivateKey, keyring.IdentityPublicKey, keyring.IdentitySignPrivateKey}
+	old := map[string]string{}
+	for _, name := range names {
+		v, err := kr.Get(name)
+		if err != nil && !errors.Is(err, keyring.ErrNotFound) {
+			return err
+		}
+		old[name] = v
 	}
 	raw, err := os.ReadFile(paths.IdentityFile())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -30,7 +42,7 @@ func commit(kr keyring.Keyring, id *Identity, master *[32]byte) error {
 	}
 	rollback := func() error {
 		var errs []error
-		for k, v := range map[string]string{keyring.IdentityPrivateKey: old, keyring.IdentityPublicKey: oldPub} {
+		for k, v := range old {
 			if v == "" {
 				errs = append(errs, kr.Delete(k))
 			} else {
@@ -39,13 +51,26 @@ func commit(kr keyring.Keyring, id *Identity, master *[32]byte) error {
 		}
 		return errors.Join(errs...)
 	}
-	if err := kr.Set(keyring.IdentityPrivateKey, hex.EncodeToString(id.Private[:])); err != nil {
-		return err
+	next := map[string]string{
+		keyring.IdentityPrivateKey: hex.EncodeToString(id.Private[:]),
+		keyring.IdentityPublicKey:  id.PublicHex(),
 	}
-	if err := kr.Set(keyring.IdentityPublicKey, id.PublicHex()); err != nil {
-		return errors.Join(err, rollback())
+	if id.Sign != nil {
+		next[keyring.IdentitySignPrivateKey] = hex.EncodeToString(id.Sign.Seed())
 	}
-	if err := writeWrapped(id, master, id.PassphraseProtected); err != nil {
+	for _, name := range names {
+		v, ok := next[name]
+		var err error
+		if ok {
+			err = kr.Set(name, v)
+		} else {
+			err = kr.Delete(name)
+		}
+		if err != nil {
+			return errors.Join(err, rollback())
+		}
+	}
+	if err := storage.Write(paths.IdentityFile(), wrapped); err != nil {
 		return errors.Join(err, rollback())
 	}
 	return nil

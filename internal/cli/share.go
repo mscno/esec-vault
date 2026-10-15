@@ -37,11 +37,17 @@ func (c *ShareCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
-// SyncCmd opens committed share blobs into the global keyring store.
-type SyncCmd struct{}
+// SyncCmd opens committed share blobs into the global keyring store, or with
+// --server syncs the vault with the vault server.
+type SyncCmd struct {
+	Server bool `help:"Sync your vault with the vault server instead of importing committed shares"`
+}
 
 // Run implements sync.
 func (c *SyncCmd) Run(ctx *cliCtx) error {
+	if c.Server {
+		return serverSync(ctx, true)
+	}
 	id, err := identity.Load(ctx.Keyring)
 	if err != nil {
 		return err

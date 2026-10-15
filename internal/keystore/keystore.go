@@ -15,14 +15,64 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/mscno/esec"
+	"github.com/mscno/esec/pkg/keyringfile"
 	"github.com/mscno/esec/pkg/projectfile"
+	"github.com/mscno/esec/pkg/secretstore"
 
 	"github.com/mscno/esec-vault/internal/paths"
 )
 
 // Store is the global keyring store rooted at Dir.
+//
+// Keyring files may be plain or sealed (see esec's pkg/keyringfile). Reads
+// accept both. Writes keep an existing file's form; new files are sealed when
+// secret-store.toml sets seal_keyrings.
 type Store struct {
 	Dir string
+	// Secrets holds the keyring cache key. Nil means the default secret store.
+	Secrets secretstore.Store
+}
+
+func (s *Store) codec() keyringfile.Codec { return keyringfile.Codec{Store: s.Secrets} }
+
+// readPlain returns the decoded text of a keyring file, refusing symlinks.
+func (s *Store) readPlain(p string) ([]byte, bool, error) {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil, false, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, false, fmt.Errorf("refusing keyring symlink: %s", p)
+	}
+	data, err := os.ReadFile(p) //nolint:gosec // path derived from a validated project id inside the store dir
+	if err != nil {
+		return nil, false, err
+	}
+	sealed := keyringfile.IsSealed(data)
+	plain, err := s.codec().Decode(p, data)
+	return plain, sealed, err
+}
+
+// IsSealed reports whether a project's keyring file is sealed.
+func (s *Store) IsSealed(project string) (bool, error) {
+	p, err := s.path(project)
+	if err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(p) //nolint:gosec // validated project path
+	if err != nil {
+		return false, err
+	}
+	return keyringfile.IsSealed(data), nil
+}
+
+// SetSealed rewrites a project's keyring sealed or plain, keeping its entries.
+func (s *Store) SetSealed(project string, sealed bool) error {
+	entries, err := s.Read(project)
+	if err != nil {
+		return err
+	}
+	return s.write(project, entries, true, &sealed)
 }
 
 // New returns the default store honoring ESEC_KEYRING_DIR / ~/.config.
@@ -34,28 +84,27 @@ func (s *Store) Read(project string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Lstat(p)
+	plain, _, err := s.readPlain(p)
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing keyring symlink: %s", p)
-	}
-	f, err := os.Open(p) //nolint:gosec // path derived from a validated project id inside the store dir
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return godotenv.Parse(f)
+	return godotenv.Parse(bytes.NewReader(plain))
 }
 
 // Write atomically writes the project's keyring (0600). It refuses to follow
 // symlinks and, unless force is set, to overwrite an existing file.
 func (s *Store) Write(project string, entries map[string]string, force bool) error {
+	return s.write(project, entries, force, nil)
+}
+
+// write stores entries; sealed nil keeps the existing form or applies the
+// default for new files.
+func (s *Store) write(project string, entries map[string]string, force bool, sealed *bool) error {
 	p, err := s.path(project)
 	if err != nil {
 		return err
 	}
+	seal := keyringfile.SealNewByDefault()
 	if info, err := os.Lstat(p); err == nil {
 		if !force {
 			return fmt.Errorf("keyring already exists at %s (use force to overwrite)", p)
@@ -63,8 +112,16 @@ func (s *Store) Write(project string, entries map[string]string, force bool) err
 		if info.Mode()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to follow symlink at %s", p)
 		}
+		data, err := os.ReadFile(p) //nolint:gosec // validated project path
+		if err != nil {
+			return err
+		}
+		seal = keyringfile.IsSealed(data)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if sealed != nil {
+		seal = *sealed
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
@@ -83,12 +140,16 @@ func (s *Store) Write(project string, entries map[string]string, force bool) err
 	for _, k := range keys {
 		fmt.Fprintf(&buf, "%s=%s\n", k, entries[k])
 	}
+	out, err := s.codec().Encode(p, buf.Bytes(), seal)
+	if err != nil {
+		return err
+	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(p), ".keyring-*.tmp")
 	if err != nil {
 		return err
 	}
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
+	if _, err := tmp.Write(out); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err
@@ -141,7 +202,7 @@ func (s *Store) List() ([]string, error) {
 			projects = append(projects, "default")
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.Dir, name)) //nolint:gosec // name comes from ReadDir of the configured store
+		data, _, err := s.readPlain(filepath.Join(s.Dir, name))
 		if err != nil {
 			return nil, err
 		}
@@ -220,15 +281,14 @@ func (s *Store) Migrate(repoDir string, deleteLocal bool, confirm func(question 
 // ".esec-keyring" is ensured in the repo's .gitignore.
 func (s *Store) migrateOne(repoDir, project string, deleteLocal bool, confirm func(question string) bool) error {
 	localPath := filepath.Join(repoDir, esec.DefaultKeyringFilename)
-	f, err := os.Open(localPath) //nolint:gosec // repoDir is user-provided
+	raw, err := os.ReadFile(localPath) //nolint:gosec // repoDir is user-provided
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("no repo-local keyring at %s", localPath)
 		}
 		return err
 	}
-	entries, err := godotenv.Parse(f)
-	f.Close()
+	entries, err := s.codec().Parse(localPath, raw)
 	if err != nil {
 		return fmt.Errorf("failed to parse %s: %w", localPath, err)
 	}
@@ -293,6 +353,11 @@ func (s *Store) path(project string) (string, error) {
 	}
 	p := filepath.Join(s.Dir, projectfile.KeyringName(project))
 	if data, err := os.ReadFile(p); err == nil { //nolint:gosec // validated project flattened into the configured store
+		if keyringfile.IsSealed(data) {
+			if data, err = s.codec().Decode(p, data); err != nil {
+				return "", err
+			}
+		}
 		for _, line := range strings.Split(string(data), "\n") {
 			if declared, ok := strings.CutPrefix(line, "# ESEC_PROJECT="); ok && declared != project {
 				return "", fmt.Errorf("project name collision: %s belongs to %s", p, declared)

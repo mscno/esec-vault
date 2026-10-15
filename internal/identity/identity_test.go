@@ -283,7 +283,7 @@ func TestIdentityFileHasHeaderAnd0600(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Magic != fileMagic {
+	if h.Magic != fileMagicV3 {
 		t.Fatalf("bad magic %q", h.Magic)
 	}
 	if h.Derivation != masterInfo {
