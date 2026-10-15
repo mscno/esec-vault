@@ -1,3 +1,9 @@
+# v0.4.1
+
+- While the server is closed to new devices (`new_devices = "closed"`), no
+  new device is created for any account, including through a registration
+  that reuses another account's trusted device key.
+
 # v0.4.0
 
 Vault server and device sync. Requires esec v0.9.0 or later.

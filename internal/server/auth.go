@@ -362,7 +362,7 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo // RFC 8628 state machine plus device matching, kept in order for review
+func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo,maintidx // RFC 8628 state machine plus device matching, kept in order for review
 	now := s.now()
 	ctx := r.Context()
 	body, err := readBody(w, r, maxSmallBody)
@@ -489,6 +489,13 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 		if dev == nil {
 			if reg.Status != wire.DeviceRegistering {
 				denied = "device registration is no longer valid"
+				return nil
+			}
+			// The emergency switch also holds here: a registration admitted
+			// because its keys belong to a trusted device (of any account)
+			// must not become a new device of another account.
+			if s.cfg.newDevicesClosed() {
+				denied = "this server is not accepting new devices right now"
 				return nil
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE devices SET user_id = ?, status = ?, pending_expires = ? WHERE id = ?`, user.ID, wire.DevicePending, now.Add(pendingDeviceTT).Unix(), reg.ID); err != nil {

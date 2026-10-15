@@ -1138,3 +1138,25 @@ func TestEmergencySwitchRefusesOnlyNewDevicesAndBrowsers(t *testing.T) {
 		t.Fatalf("trusted device while closed: %v", err)
 	}
 }
+
+func TestEmergencySwitchHoldsAcrossAccounts(t *testing.T) {
+	h := servertest.Start(t, ownerID, 7)
+	h.GitHub.AddUser(ownerID, "mscno")
+	h.GitHub.AddUser(7, "teammate")
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	other := h.Browser("teammate")
+	if _, _, err := other.Get("/account"); err != nil {
+		t.Fatal(err)
+	}
+	h.Config.NewDevices = server.NewDevicesClosed
+	// Registering with the owner's trusted key passes the closed check, but
+	// confirming it as another account must not create a device there.
+	c, reg := register(t, h, owner.key, "laptop")
+	if err := other.Confirm(reg.UserCode, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PollToken(context.Background(), reg.DeviceCode); code(err) != wire.ErrAccessDenied {
+		t.Fatalf("closed server added a device to another account: %v", err)
+	}
+}
