@@ -148,6 +148,18 @@ func (c *Client) AgentSlots(ctx context.Context) ([]wire.AgentSlot, error) {
 	return out.Slots, err
 }
 
+// Recovery proves the recovery phrase and returns the chain and identity.
+func (c *Client) Recovery(ctx context.Context, req wire.RecoveryRequest) (*wire.RecoveryResponse, error) {
+	var out wire.RecoveryResponse
+	return &out, c.do(ctx, http.MethodPost, "/v1/recovery", authenticated, req, &out)
+}
+
+// AgentUnlock proves an SSH key and returns the chain and its slot.
+func (c *Client) AgentUnlock(ctx context.Context, req wire.AgentUnlockRequest) (*wire.AgentUnlockResponse, error) {
+	var out wire.AgentUnlockResponse
+	return &out, c.do(ctx, http.MethodPost, "/v1/agent-slots/unlock", authenticated, req, &out)
+}
+
 // DisableSlot disables an agent slot on the server.
 func (c *Client) DisableSlot(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/agent-slots/"+url.PathEscape(id), authenticated, nil, nil)

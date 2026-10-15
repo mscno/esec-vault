@@ -17,10 +17,13 @@ import (
 	"time"
 
 	"github.com/mscno/esec/pkg/projectfile"
+	"golang.org/x/crypto/ssh"
 
+	"github.com/mscno/esec-vault/internal/apisig"
 	"github.com/mscno/esec-vault/internal/chain"
 	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/identity"
+	"github.com/mscno/esec-vault/internal/sshagent"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/wire"
 )
@@ -57,6 +60,21 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func (s *Server) apiChain(w http.ResponseWriter, r *http.Request, c *reqCtx) {
+	// A device waiting for approval learns nothing about an existing
+	// account (devices, keys, slots) until it is approved or proves the
+	// recovery phrase or an SSH key (apiRecovery, apiAgentUnlock). It may
+	// only see that no account exists yet, to create one.
+	if c.device.Status == wire.DevicePending {
+		seq, err := s.db.chainSeq(r.Context(), s.db.sql, c.user.ID)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if seq > 0 {
+			writeErr(w, http.StatusForbidden, wire.ErrForbidden, "this device is not approved yet")
+			return
+		}
+	}
 	after, err := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
 	if r.URL.Query().Get("after") == "" {
 		after, err = 0, nil
@@ -909,4 +927,123 @@ func (s *Server) latestIndex(ctx context.Context, userID string) (*wire.VaultInd
 		return nil, nil, err
 	}
 	return &idx, &v, nil
+}
+
+// proofClock checks a proof timestamp against the server clock.
+func (s *Server) proofClock(ts int64) error {
+	if d := s.now().Sub(time.Unix(ts, 0)); d > apisig.MaxSkew || d < -apisig.MaxSkew {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "proof time is too far from the server's clock; check this machine's clock")
+	}
+	return nil
+}
+
+func (s *Server) verifiedChain(ctx context.Context, userID string) ([]*envelope.Envelope, *chain.State, error) {
+	links, err := s.db.chainLinks(ctx, s.db.sql, userID, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	st, err := chain.Verify(userID, links)
+	if err != nil {
+		return nil, nil, fmt.Errorf("stored chain for %s does not verify: %w", userID, err)
+	}
+	if st.Seq == 0 {
+		return nil, nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "no account exists yet")
+	}
+	return links, st, nil
+}
+
+// apiRecovery gives a device the chain and the master-wrapped identity once
+// it proves it can derive the master signing key from the recovery phrase.
+func (s *Server) apiRecovery(w http.ResponseWriter, r *http.Request, c *reqCtx) {
+	now := s.now()
+	if !s.limits.allow("recovery:"+c.user.ID, 10, time.Hour, now) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many recovery attempts; try again later")
+		return
+	}
+	var req wire.RecoveryRequest
+	if err := decodeStrict(c.body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
+		return
+	}
+	if err := s.proofClock(req.Timestamp); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	links, st, err := s.verifiedChain(r.Context(), c.user.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !ed25519.Verify(st.MasterSignPub, wire.RecoveryMessage(c.user.ID, c.device.ID, req.Timestamp), req.Sig) {
+		writeErr(w, http.StatusForbidden, wire.ErrForbidden, "the recovery phrase (and passphrase) does not match this account")
+		return
+	}
+	var out wire.RecoveryResponse
+	err = s.db.sql.QueryRowContext(r.Context(), `SELECT ukey_version, blob FROM identity_blobs WHERE user_id = ? ORDER BY ukey_version DESC LIMIT 1`, c.user.ID).Scan(&out.Identity.UKeyVersion, &out.Identity.Blob)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.db.audit(r.Context(), s.db.sql, c.user.ID, c.device.ID, c.ip, "recovery_proven", "", now); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	out.Links = links
+	writeJSON(w, http.StatusOK, out)
+}
+
+// apiAgentUnlock gives a device the chain and one unlock slot once it proves
+// it holds that slot's SSH key. The proof signs a different namespace than
+// the slot key derivation, so it reveals nothing about the slot key.
+func (s *Server) apiAgentUnlock(w http.ResponseWriter, r *http.Request, c *reqCtx) {
+	now := s.now()
+	if !s.limits.allow("slots:"+c.user.ID, 10, time.Hour, now) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many agent unlock attempts; try again later")
+		return
+	}
+	var req wire.AgentUnlockRequest
+	if err := decodeStrict(c.body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
+		return
+	}
+	if err := s.proofClock(req.Timestamp); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	pub, fp, err := sshagent.ParseAuthorizedKey([]byte(req.PublicKey))
+	if err != nil || sshagent.Supported(pub) != nil {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "unsupported SSH key")
+		return
+	}
+	var sig ssh.Signature
+	if err := ssh.Unmarshal(req.Signature, &sig); err != nil || (pub.Type() == ssh.KeyAlgoRSA && sig.Format != ssh.KeyAlgoRSASHA512 && sig.Format != ssh.KeyAlgoRSASHA256) {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid SSH signature")
+		return
+	}
+	if err := pub.Verify(sshagent.SignedData(wire.AgentAuthNamespace, wire.AgentAuthMessage(c.user.ID, c.device.ID, req.Timestamp)), &sig); err != nil {
+		writeErr(w, http.StatusForbidden, wire.ErrForbidden, "the SSH signature does not verify")
+		return
+	}
+	links, st, err := s.verifiedChain(r.Context(), c.user.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	slots, err := s.slots(r.Context(), c.user.ID, now, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	for _, sl := range slots {
+		if sl.SSHKeyFP != fp || sl.UKeyVersion != st.UKeyVersion {
+			continue
+		}
+		if err := s.db.audit(r.Context(), s.db.sql, c.user.ID, c.device.ID, c.ip, "agent_slot_proven", sl.SlotID, now); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, wire.AgentUnlockResponse{Links: links, Slot: sl})
+		return
+	}
+	writeErr(w, http.StatusNotFound, wire.ErrNotFound, "no enabled unlock slot for this SSH key")
 }

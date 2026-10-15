@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/nacl/box"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/mscno/esec-vault/internal/apisig"
 	"github.com/mscno/esec-vault/internal/chain"
@@ -26,6 +27,7 @@ import (
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/server"
 	"github.com/mscno/esec-vault/internal/servertest"
+	"github.com/mscno/esec-vault/internal/sshagent"
 	"github.com/mscno/esec-vault/internal/ukey"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/wire"
@@ -890,5 +892,51 @@ func TestRegistrationNeedsTheDeviceKey(t *testing.T) {
 	stale := owner.key.Registration("laptop", "linux/amd64", h.Now().Add(-5*time.Minute))
 	if _, err := c.RegisterDevice(ctx, stale); code(err) != wire.ErrInvalidRequest {
 		t.Fatalf("replayed old registration: %v", err)
+	}
+}
+
+func TestPendingDevicesSeeNothingWithoutProof(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	a := create(t, owner)
+	vm := signIn(t, h, nil, "vm")
+	ctx := context.Background()
+	if _, err := vm.c.Chain(ctx, 0); code(err) != wire.ErrForbidden {
+		t.Fatalf("pending device read the chain: %v", err)
+	}
+	if _, err := vm.c.Identity(ctx); code(err) != wire.ErrForbidden {
+		t.Fatalf("pending device read the wrapped identity: %v", err)
+	}
+	if _, err := vm.c.AgentSlots(ctx); code(err) != wire.ErrForbidden {
+		t.Fatalf("pending device listed agent slots: %v", err)
+	}
+	// A recovery proof by another key is refused; the real master signing
+	// key gets the chain and the identity.
+	ts := h.Now().Unix()
+	_, wrong, _ := ed25519.GenerateKey(rand.Reader)
+	if _, err := vm.c.Recovery(ctx, wire.RecoveryRequest{Timestamp: ts, Sig: ed25519.Sign(wrong, wire.RecoveryMessage(user, vm.info.ID, ts))}); code(err) != wire.ErrForbidden {
+		t.Fatalf("wrong recovery proof: %v", err)
+	}
+	// A proof made for another device is refused too.
+	if _, err := vm.c.Recovery(ctx, wire.RecoveryRequest{Timestamp: ts, Sig: ed25519.Sign(a.masterSign, wire.RecoveryMessage(user, owner.info.ID, ts))}); code(err) != wire.ErrForbidden {
+		t.Fatalf("recovery proof for another device: %v", err)
+	}
+	res, err := vm.c.Recovery(ctx, wire.RecoveryRequest{Timestamp: ts, Sig: ed25519.Sign(a.masterSign, wire.RecoveryMessage(user, vm.info.ID, ts))})
+	if err != nil || len(res.Links) != 2 || len(res.Identity.Blob) == 0 {
+		t.Fatalf("valid recovery proof: %v", err)
+	}
+	// An SSH proof for a key without a slot finds nothing.
+	_, sshPriv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(sshPriv)
+	sig, err := signer.Sign(rand.Reader, sshagent.SignedData(wire.AgentAuthNamespace, wire.AgentAuthMessage(user, vm.info.ID, ts)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.c.AgentUnlock(ctx, wire.AgentUnlockRequest{PublicKey: string(ssh.MarshalAuthorizedKey(signer.PublicKey())), Timestamp: ts, Signature: ssh.Marshal(sig)}); code(err) != wire.ErrNotFound {
+		t.Fatalf("unlock proof for a key without a slot: %v", err)
+	}
+	bad, _ := signer.Sign(rand.Reader, []byte("something else"))
+	if _, err := vm.c.AgentUnlock(ctx, wire.AgentUnlockRequest{PublicKey: string(ssh.MarshalAuthorizedKey(signer.PublicKey())), Timestamp: ts, Signature: ssh.Marshal(bad)}); code(err) != wire.ErrForbidden {
+		t.Fatalf("invalid SSH proof: %v", err)
 	}
 }

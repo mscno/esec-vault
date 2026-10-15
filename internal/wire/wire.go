@@ -125,6 +125,13 @@ type Me struct {
 	ChainSeq       uint64     `json:"chain_seq"`
 	SessionExpires time.Time  `json:"session_expires"`
 	PendingExpires time.Time  `json:"pending_expires,omitzero"`
+	// AccountMasterPub and AccountMasterSignPub are the public recovery keys
+	// of an existing account (hex). A device that already holds an identity
+	// uses them to refuse an account created with another recovery phrase
+	// before it waits for approval; it checks again against the verified
+	// chain afterwards.
+	AccountMasterPub     string `json:"account_master_pub,omitempty"`
+	AccountMasterSignPub string `json:"account_master_sign_pub,omitempty"`
 }
 
 // Chain lists chain links.
@@ -288,4 +295,46 @@ type AuditEntry struct {
 // Audit is a page of audit entries, newest first.
 type Audit struct {
 	Entries []AuditEntry `json:"entries"`
+}
+
+// RecoveryRequest proves knowledge of the recovery phrase: Sig is made by
+// the master signing key over RecoveryMessage. Only then does a device that
+// is not approved yet receive the chain and the wrapped identity.
+type RecoveryRequest struct {
+	Timestamp int64  `json:"timestamp"`
+	Sig       []byte `json:"sig"`
+}
+
+// RecoveryMessage returns the bytes a recovery proof covers.
+func RecoveryMessage(user, deviceID string, timestamp int64) []byte {
+	return []byte(fmt.Sprintf("esec-vault recovery v1\n%s\n%s\n%d", user, deviceID, timestamp))
+}
+
+// RecoveryResponse returns what a recovering device needs.
+type RecoveryResponse struct {
+	Links    []*envelope.Envelope `json:"links"`
+	Identity IdentityBlob         `json:"identity"`
+}
+
+// AgentAuthNamespace is the SSHSIG namespace of agent unlock proofs. It
+// differs from the slot key namespace, so a proof never reveals a slot key.
+const AgentAuthNamespace = "esec-vault-unlock-auth"
+
+// AgentUnlockRequest proves possession of an SSH key: Signature is an SSH
+// signature (wire format) over the SSHSIG data of AgentAuthMessage.
+type AgentUnlockRequest struct {
+	PublicKey string `json:"public_key"`
+	Timestamp int64  `json:"timestamp"`
+	Signature []byte `json:"signature"`
+}
+
+// AgentAuthMessage returns the message an agent unlock proof signs.
+func AgentAuthMessage(user, deviceID string, timestamp int64) []byte {
+	return []byte(fmt.Sprintf("esec-vault agent-auth v1\n%s\n%s\n%d", user, deviceID, timestamp))
+}
+
+// AgentUnlockResponse returns the chain and the slot of the proven key.
+type AgentUnlockResponse struct {
+	Links []*envelope.Envelope `json:"links"`
+	Slot  AgentSlot            `json:"slot"`
 }

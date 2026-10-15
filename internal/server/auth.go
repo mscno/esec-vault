@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -519,6 +520,16 @@ func (s *Server) apiMe(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		return
 	}
 	me := wire.Me{User: c.user.wire(), Device: c.device.wire(false), ChainSeq: seq, SessionExpires: c.expires}
+	if seq > 0 {
+		links, err := s.db.chainLinks(r.Context(), s.db.sql, c.user.ID, 0)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if st, err := chain.Verify(c.user.ID, links); err == nil {
+			me.AccountMasterPub, me.AccountMasterSignPub = hex.EncodeToString(st.MasterPub[:]), hex.EncodeToString(st.MasterSignPub)
+		}
+	}
 	if c.device.Status == wire.DevicePending {
 		me.PendingExpires = c.device.PendingExpires
 	}

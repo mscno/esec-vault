@@ -164,10 +164,22 @@ CLI                                   Server                       Browser (any 
 
 ### Session lifecycle
 
-- A device that has never been approved gets a **pending** session. It can do
-  only these things: read its own status, read the master-wrapped identity
-  (recovery path), read its agent slots (§8), and post a self-signed
-  `device_add` link. All of these are useless without U.
+- A device that has never been approved gets a **pending** session. It learns
+  nothing about an existing account: not the chain, not the wrapped
+  identity, not the agent slots. It may only:
+  - read its own status and the account's two public recovery keys;
+  - create the account when none exists;
+  - prove the recovery phrase (a signature by the phrase-derived master
+    signing key over its device id and the time, `POST /v1/recovery`) to get
+    the chain and the wrapped identity;
+  - prove an SSH key (an SSHSIG in its own namespace over its device id and
+    the time, `POST /v1/agent-slots/unlock`) to get the chain and that key's
+    slot;
+  - post a self-signed `device_add` link.
+
+  A device signed in with a phished code therefore learns nothing and can
+  do nothing until someone approves it, which requires its own fingerprint
+  words.
 - After approval the same session becomes **active**. No second sign-in is
   needed.
 - The session token is opaque and checked against SQLite. **Every request is
@@ -575,14 +587,16 @@ and a request signed with `D.sign`.
 | `POST auth/device`, `POST auth/token` | Device code flow |
 | `GET me` | Account, device status, account-key fingerprint |
 | `POST auth/logout` | End this session |
-| `GET chain?after=` | Read links |
+| `GET chain?after=` | Read links (devices waiting for approval: only while no account exists) |
 | `POST commit` | Append links together with the device boxes, identity, vault and slot data they need, in one transaction. Approval, revocation, rotation, renames and slots all go through it. |
 | `POST devices/self/proof` | Store this device's self-signed proof (pending devices) |
 | `GET devices`, `POST devices/{id}/suspend` | Devices |
 | `GET devices/self/box` | Encrypted U for this device |
-| `GET identity` | Master-wrapped U |
+| `GET identity` | Master-wrapped U (approved devices) |
+| `POST recovery` | Prove the recovery phrase; returns the chain and the master-wrapped U |
+| `POST agent-slots/unlock` | Prove an SSH key; returns the chain and its slot |
 | `GET/PUT vault`, `GET vault/versions`, `GET vault/versions/{v}` | Vault sync (CAS on PUT; blob and index signed by U) |
-| `GET agent-slots`, `DELETE agent-slots/{id}` | §8 |
+| `GET agent-slots`, `DELETE agent-slots/{id}` | §8 (approved devices) |
 | `GET events?after=&wait=` | Long poll for the daemon |
 | `GET audit` | Audit log |
 
@@ -702,6 +716,7 @@ server (`httptest`) with a memory secret store.
 | Login state saved before confirmation | Commands refuse an account this machine never pinned; a declined account key deletes the half-finished login | A declined account could otherwise be installed by the next background sync (found in security review). |
 | Root signature over the user key only | Also covers the master X25519 key; passphrase changes refresh it, and are blocked while signed in | A stale authorization could make recovery impossible (found in security review). |
 | Approve with y/N after comparing words | Type the new device's fingerprint words | A yes-click could approve a phished device (found in review). |
+| Devices waiting for approval read the chain, identity and slots | They read nothing until approved or until they prove the phrase or an SSH key | A phished sign-in learns nothing about the account (found in review). |
 | Link with the code prefilled | Code always typed; `?code=` ignored | Removes one-click code phishing (RFC 8628 §5.4). |
 | Rate limits on all code entries | Limits on wrong codes, on both forms, per address (IPv6 /64) and per user; caps on open registrations, OAuth states and pending devices | Found in security review. |
 

@@ -123,9 +123,8 @@ func writeString(b *bytes.Buffer, s []byte) {
 	b.Write(s)
 }
 
-// Secret signs message in namespace with key and returns key material: the
-// signature format and blob, length-prefixed.
-func (a *Agent) Secret(key *Key, namespace string, message []byte) ([]byte, error) {
+// Sign signs the SSHSIG data of message in namespace and checks the result.
+func (a *Agent) Sign(key *Key, namespace string, message []byte) (*ssh.Signature, error) {
 	if err := Supported(key.Public); err != nil {
 		return nil, err
 	}
@@ -143,6 +142,16 @@ func (a *Agent) Secret(key *Key, namespace string, message []byte) ([]byte, erro
 	}
 	if key.Public.Type() == ssh.KeyAlgoRSA && sig.Format != ssh.KeyAlgoRSASHA512 {
 		return nil, fmt.Errorf("SSH agent signed with %s instead of rsa-sha2-512", sig.Format)
+	}
+	return sig, nil
+}
+
+// Secret signs message in namespace with key and returns key material: the
+// signature format and blob, length-prefixed.
+func (a *Agent) Secret(key *Key, namespace string, message []byte) ([]byte, error) {
+	sig, err := a.Sign(key, namespace, message)
+	if err != nil {
+		return nil, err
 	}
 	var b bytes.Buffer
 	writeString(&b, []byte(sig.Format))

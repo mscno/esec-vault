@@ -2,9 +2,11 @@ package account
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"runtime"
@@ -22,6 +24,7 @@ import (
 	"github.com/mscno/esec-vault/internal/sshagent"
 	"github.com/mscno/esec-vault/internal/ukey"
 	"github.com/mscno/esec-vault/internal/wire"
+	"golang.org/x/crypto/ssh"
 )
 
 // Methods for obtaining the user key on a new device.
@@ -261,25 +264,34 @@ func (a *Account) enroll(ctx context.Context, info wire.DeviceInfo, opts LoginOp
 	if err := a.Client.UploadProof(ctx, proof); err != nil {
 		return fmt.Errorf("upload device proof: %w", err)
 	}
-	st, err := a.VerifiedChain(ctx)
+	// An unapproved device sees nothing of an existing account. It learns
+	// only whether one exists, then proves the recovery phrase or an SSH
+	// key, or waits for approval.
+	me, err := a.Client.Me(ctx)
 	if err != nil {
 		return err
 	}
-	if st.Seq == 0 {
-		return a.createAccount(ctx, d, proof, opts)
+	if me.ChainSeq == 0 {
+		st, err := a.VerifiedChain(ctx)
+		if err != nil {
+			return err
+		}
+		if st.Seq == 0 {
+			return a.createAccount(ctx, d, proof, opts)
+		}
 	}
-	if err := a.checkSameRecoveryKey(st, opts); err != nil {
+	if err := a.checkRecoveryKeys(me.AccountMasterPub, me.AccountMasterSignPub, opts); err != nil {
 		return err
 	}
 	switch opts.Method {
 	case LoginRecover:
-		id, err := a.fromPhrase(ctx, st, opts)
+		id, st, err := a.fromPhrase(ctx, d, opts)
 		if err != nil {
 			return err
 		}
 		return a.selfAdd(ctx, st, d, proof, id, chain.MethodRecovery, "")
 	case LoginSSHAgent:
-		id, slot, err := a.fromAgent(ctx, st, opts.AgentSocket)
+		id, st, slot, err := a.fromAgent(ctx, d, opts)
 		if err != nil {
 			return err
 		}
@@ -361,11 +373,17 @@ func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *enve
 	return nil
 }
 
-// checkSameRecoveryKey refuses to join an account created with a different
+// checkSameRecoveryKey checks the verified chain's recovery keys; see
+// checkRecoveryKeys.
+func (a *Account) checkSameRecoveryKey(st *chain.State, opts LoginOptions) error {
+	return a.checkRecoveryKeys(hex.EncodeToString(st.MasterPub[:]), hex.EncodeToString(st.MasterSignPub), opts)
+}
+
+// checkRecoveryKeys refuses to join an account created with a different
 // recovery phrase than this machine's identity. Someone who controlled the
 // GitHub account before its first login could have created the account with
 // their own keys; a machine that already has the user's identity notices.
-func (a *Account) checkSameRecoveryKey(st *chain.State, opts LoginOptions) error {
+func (a *Account) checkRecoveryKeys(masterPub, masterSignPub string, opts LoginOptions) error {
 	raw, err := identity.WrappedFile()
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -377,12 +395,12 @@ func (a *Account) checkSameRecoveryKey(st *chain.State, opts LoginOptions) error
 	if err != nil {
 		return fmt.Errorf("read this machine's identity: %w", err)
 	}
-	foreign := h.MasterPublic != st.MasterPub
+	foreign := hex.EncodeToString(h.MasterPublic[:]) != masterPub
 	ra, err := identity.LoadRootAuth()
 	if err != nil {
 		return err
 	}
-	if ra != nil && ra.MasterPub == hex.EncodeToString(h.MasterPublic[:]) && ra.MasterSignPub != hex.EncodeToString(st.MasterSignPub) {
+	if ra != nil && ra.MasterPub == hex.EncodeToString(h.MasterPublic[:]) && ra.MasterSignPub != masterSignPub {
 		foreign = true
 	}
 	if foreign && !opts.ReplaceIdentity {
@@ -457,64 +475,119 @@ func (a *Account) selfAdd(ctx context.Context, st *chain.State, d chain.Device, 
 	return nil
 }
 
-// fromPhrase recovers the user key from the recovery phrase and the
-// server's master-wrapped copy, then checks it against the chain.
-func (a *Account) fromPhrase(ctx context.Context, st *chain.State, opts LoginOptions) (*identity.Identity, error) {
-	blob, err := a.Client.Identity(ctx)
-	if err != nil {
-		return nil, err
+// fromPhrase proves the recovery phrase to the server, which then returns
+// the chain and the master-wrapped identity, and recovers the user key.
+func (a *Account) fromPhrase(ctx context.Context, d chain.Device, opts LoginOptions) (*identity.Identity, *chain.State, error) {
+	mnemonic := opts.Mnemonic
+	pass := opts.Passphrase
+	var err error
+	if mnemonic == "" {
+		if mnemonic, err = a.UI.Secret("Recovery phrase (24 words): "); err != nil {
+			return nil, nil, err
+		}
+		if pass, err = a.UI.Secret("Recovery passphrase (press Enter if you set none): "); err != nil && !errors.Is(err, io.EOF) {
+			return nil, nil, err
+		}
 	}
-	h, err := identity.ReadHeader(blob.Blob)
+	keys, err := identity.DeriveMasterKeys(normalizeMnemonic(mnemonic), pass)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	keys, err := a.masterKeys(h, opts)
+	ts := a.Now().Unix()
+	res, err := a.Client.Recovery(ctx, wire.RecoveryRequest{Timestamp: ts, Sig: ed25519.Sign(keys.Sign, wire.RecoveryMessage(a.State.User, d.ID, ts))})
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("that recovery phrase (and passphrase) does not belong to this account: %w", err)
+	}
+	st, err := a.verifyLinks(res.Links)
+	if err != nil {
+		return nil, nil, err
 	}
 	// Both master keys must match the chain root. The X25519 key is public
 	// and a server could build a chain around it; the signing key's
 	// authorization of the root can only come from the phrase.
 	if keys.Public != st.MasterPub || !keys.SignPublic().Equal(st.MasterSignPub) {
-		return nil, errors.New("that recovery phrase (and passphrase) does not belong to this account, or the server's account was not created with it")
+		return nil, nil, errors.New("that recovery phrase (and passphrase) does not belong to this account, or the server's account was not created with it")
 	}
-	id, err := identity.UnwrapBytes(blob.Blob, keys.Public, keys.Private, h.Passphrased)
+	if err := a.checkSameRecoveryKey(st, opts); err != nil {
+		return nil, nil, err
+	}
+	h, err := identity.ReadHeader(res.Identity.Blob)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	id, err := identity.UnwrapBytes(res.Identity.Blob, keys.Public, keys.Private, h.Passphrased)
+	if err != nil {
+		return nil, nil, err
 	}
 	m, err := ukey.FromIdentity(a.State.User, st.UKeyVersion, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return m.Check(st)
+	id, err = m.Check(st)
+	return id, st, err
 }
 
-// fromAgent unwraps the user key from an agent unlock slot.
-func (a *Account) fromAgent(ctx context.Context, st *chain.State, socket string) (*identity.Identity, string, error) {
+// verifyLinks verifies a full chain returned by the server and checks it
+// against this machine's pin.
+func (a *Account) verifyLinks(links []*envelope.Envelope) (*chain.State, error) {
+	st, err := chain.Verify(a.State.User, links)
+	if err != nil {
+		return nil, fmt.Errorf("the server's device chain does not verify: %w", err)
+	}
+	if err := a.State.checkPin(st); err != nil {
+		return nil, err
+	}
+	return st, nil
+}
+
+// fromAgent proves an SSH key to the server, which then returns the chain
+// and that key's unlock slot, and unwraps the user key from the slot.
+func (a *Account) fromAgent(ctx context.Context, d chain.Device, opts LoginOptions) (*identity.Identity, *chain.State, string, error) {
 	var ag *sshagent.Agent
 	var err error
-	if socket != "" {
-		ag, err = sshagent.DialPath(socket)
+	if opts.AgentSocket != "" {
+		ag, err = sshagent.DialPath(opts.AgentSocket)
 	} else {
 		ag, err = sshagent.Dial()
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	defer ag.Close()
-	slots, err := a.Client.AgentSlots(ctx)
+	keys, err := ag.Keys()
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	now := a.Now()
 	lastErr := errors.New("no SSH-agent unlock slot matches a key in the agent; add one with 'esec vault agent-unlock enable' on a trusted device")
-	for _, sl := range slots {
-		cs, ok := st.UsableSlot(sl.SlotID, now)
-		if !ok || cs.SSHKeyFP != sl.SSHKeyFP || sl.UKeyVersion != st.UKeyVersion {
+	for i := range keys {
+		key := &keys[i]
+		if sshagent.Supported(key.Public) != nil {
 			continue
 		}
-		key, err := ag.Find(sl.SSHKeyFP)
+		ts := a.Now().Unix()
+		sig, err := ag.Sign(key, wire.AgentAuthNamespace, wire.AgentAuthMessage(a.State.User, d.ID, ts))
 		if err != nil {
+			lastErr = err
+			continue
+		}
+		res, err := a.Client.AgentUnlock(ctx, wire.AgentUnlockRequest{PublicKey: string(ssh.MarshalAuthorizedKey(key.Public)), Timestamp: ts, Signature: ssh.Marshal(sig)})
+		if err != nil {
+			if !client.IsCode(err, wire.ErrNotFound) {
+				lastErr = err
+			}
+			continue
+		}
+		st, err := a.verifyLinks(res.Links)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		if err := a.checkSameRecoveryKey(st, opts); err != nil {
+			return nil, nil, "", err
+		}
+		sl := res.Slot
+		cs, ok := st.UsableSlot(sl.SlotID, a.Now())
+		if !ok || cs.SSHKeyFP != sl.SSHKeyFP || sl.SSHKeyFP != key.Fingerprint || sl.UKeyVersion != st.UKeyVersion {
+			lastErr = errors.New("the server returned an unlock slot the verified chain does not list")
 			continue
 		}
 		a.UI.Printf("Unlocking with SSH key %s (slot %s); your agent may ask for confirmation.\n", key.Fingerprint, sl.SlotID)
@@ -525,7 +598,7 @@ func (a *Account) fromAgent(ctx context.Context, st *chain.State, socket string)
 		}
 		kek, err := ukey.SlotKEK(secret, sl.Salt)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		m, err := ukey.OpenSlot(sl.Box, kek, a.State.User, sl.SlotID)
 		if err != nil {
@@ -537,9 +610,9 @@ func (a *Account) fromAgent(ctx context.Context, st *chain.State, socket string)
 			lastErr = err
 			continue
 		}
-		return id, sl.SlotID, nil
+		return id, st, sl.SlotID, nil
 	}
-	return nil, "", lastErr
+	return nil, nil, "", lastErr
 }
 
 // waitForApproval waits until a trusted device approves this one, then
@@ -573,6 +646,9 @@ func (a *Account) waitForApproval(ctx context.Context, d chain.Device, opts Logi
 	ds, ok := st.ActiveDevice(d.ID)
 	if !ok || ds.EncPub != d.EncPub || ds.SignPub != d.SignPub {
 		return errors.New("the server approved this device, but the verified chain does not include it")
+	}
+	if err := a.checkSameRecoveryKey(st, opts); err != nil {
+		return err
 	}
 	// Anyone can seal a box to this device's public key, so an approval
 	// alone does not prove the account is genuine. Unless this machine
