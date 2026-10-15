@@ -41,7 +41,7 @@ func TestSafeNext(t *testing.T) {
 		"":                       "/account",
 		"/account":               "/account",
 		"/projects":              "/projects",
-		"/device?code=k7qm-2xdp": "/device?code=K7QM-2XDP",
+		"/device?code=k7qm-2xdp": "/device",
 		"/device?code=<x>":       "/device",
 		"https://evil.example":   "/account",
 		"//evil.example/account": "/account",

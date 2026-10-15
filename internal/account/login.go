@@ -213,13 +213,13 @@ func deviceGrant(ctx context.Context, c *client.Client, ui UI, dev *devicekey.Ke
 	}
 	// Everything printed here comes from the server; only print it in the
 	// shape this client expects.
-	if !userCodePattern.MatchString(reg.UserCode) || reg.VerificationURI != c.Base+"/device" || reg.VerificationURIComplete != c.Base+"/device?code="+reg.UserCode {
+	if !userCodePattern.MatchString(reg.UserCode) || reg.VerificationURI != c.Base+"/device" {
 		return nil, errors.New("the server returned an unexpected sign-in code or link")
 	}
-	ui.Printf("Open %s\n(or go to %s and enter %s)\n", reg.VerificationURIComplete, reg.VerificationURI, reg.UserCode)
+	ui.Printf("Open %s and enter %s\n", reg.VerificationURI, reg.UserCode)
 	ui.Printf("Device %q  fingerprint: %s\n", name, dev.Words())
 	if open != nil {
-		_ = open(reg.VerificationURIComplete)
+		_ = open(reg.VerificationURI)
 	}
 	c.DeviceID, c.Key = reg.DeviceID, dev.Sign
 	interval := time.Duration(reg.Interval) * time.Second

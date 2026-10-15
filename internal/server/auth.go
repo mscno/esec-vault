@@ -317,14 +317,13 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, wire.DeviceRegisterResponse{
-		DeviceID:                dev.ID,
-		DeviceCreated:           created,
-		DeviceCode:              deviceCode,
-		UserCode:                userCode,
-		VerificationURI:         s.cfg.BaseURL + "/device",
-		VerificationURIComplete: s.cfg.BaseURL + "/device?code=" + userCode,
-		Interval:                int(pollInterval / time.Second),
-		ExpiresIn:               int(deviceCodeTTL / time.Second),
+		DeviceID:        dev.ID,
+		DeviceCreated:   created,
+		DeviceCode:      deviceCode,
+		UserCode:        userCode,
+		VerificationURI: s.cfg.BaseURL + "/device",
+		Interval:        int(pollInterval / time.Second),
+		ExpiresIn:       int(deviceCodeTTL / time.Second),
 	})
 }
 

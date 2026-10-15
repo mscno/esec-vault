@@ -215,7 +215,7 @@ func TestDeviceGrant(t *testing.T) { //nolint:gocyclo // one sequential story
 	h := harness(t)
 	key, _ := devicekey.Generate()
 	c, reg := register(t, h, key, "laptop")
-	if !strings.HasPrefix(reg.VerificationURIComplete, h.URL+"/device?code=") || len(reg.UserCode) != 9 {
+	if reg.VerificationURI != h.URL+"/device" || reg.VerificationURIComplete != "" || len(reg.UserCode) != 9 {
 		t.Fatalf("registration: %+v", reg)
 	}
 	ctx := context.Background()

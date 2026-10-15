@@ -69,14 +69,17 @@ func RegistrationMessage(r *DeviceRegisterRequest) []byte {
 
 // DeviceRegisterResponse carries the codes for the device authorization grant.
 type DeviceRegisterResponse struct {
-	DeviceID                string    `json:"device_id"`
-	DeviceCreated           time.Time `json:"device_created"`
-	DeviceCode              string    `json:"device_code"`
-	UserCode                string    `json:"user_code"`
-	VerificationURI         string    `json:"verification_uri"`
-	VerificationURIComplete string    `json:"verification_uri_complete"`
-	Interval                int       `json:"interval"`
-	ExpiresIn               int       `json:"expires_in"`
+	DeviceID        string    `json:"device_id"`
+	DeviceCreated   time.Time `json:"device_created"`
+	DeviceCode      string    `json:"device_code"`
+	UserCode        string    `json:"user_code"`
+	VerificationURI string    `json:"verification_uri"`
+	// VerificationURIComplete is never set: the code must be typed in the
+	// browser, never prefilled from a link someone else could send
+	// (RFC 8628 §5.4).
+	VerificationURIComplete string `json:"verification_uri_complete,omitempty"`
+	Interval                int    `json:"interval"`
+	ExpiresIn               int    `json:"expires_in"`
 }
 
 // TokenRequest polls for the session. The request is signed by the device key

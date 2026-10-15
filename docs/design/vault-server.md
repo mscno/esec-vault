@@ -41,7 +41,7 @@ No rclone, S3 credentials, or `remote.toml` on the new machine.
 | Question | Decision |
 |---|---|
 | How does a new machine get keys? | Approval from another device. The recovery phrase is the fallback. An SSH-agent unlock slot is optional (§8). The server never holds a key that unlocks anything on its own. |
-| How does the CLI sign in? | Our own OAuth device authorization grant (RFC 8628), with a Crockford base32 `XXXX-XXXX` user code and a prefilled link. GitHub is the only identity provider. The server issues its own sessions; GitHub tokens are used once and thrown away. |
+| How does the CLI sign in? | Our own OAuth device authorization grant (RFC 8628), with a Crockford base32 `XXXX-XXXX` user code that is always typed in the browser (no prefilled link). GitHub is the only identity provider. The server issues its own sessions; GitHub tokens are used once and thrown away. |
 | Email sign-in? | Not in v1. It adds SMTP to run, and anyone who takes over the mailbox could sign in. The identity-provider interface leaves room to add it later. |
 | Local key storage | Core esec reads a keyring file encrypted under a per-device cache key held in the OS secret store. Plaintext keyrings keep working (§7). |
 
@@ -130,9 +130,9 @@ CLI                                   Server                       Browser (any 
  | POST /v1/auth/device               |                             |
  |  {name, platform, D.enc, D.sign}   |                             |
  |<- device_code, user_code K7QM-2XDP |                             |
- |   verification_uri(+_complete)     |                             |
+ |   verification_uri                 |                             |
  | print code + link; poll /token  -->|                             |
- |                                    |<-- GET /device?code=K7QM-2XDP
+ |                                    |<-- GET /device, code typed   |
  |                                    |    GitHub OAuth (if needed)  |
  |                                    |--> confirm page: code, device name,
  |                                    |    platform, IP, D fingerprint words
@@ -144,8 +144,10 @@ CLI                                   Server                       Browser (any 
   expire after 10 minutes. Wrong codes are limited per address and per
   signed-in user (see "Rate limits"). Input is normalized: case-folded, `O→0`,
   `I/L→1`, dashes and spaces removed.
-- The prefilled link still needs an explicit **Confirm** click, with the code
-  shown. This defends against someone mailing you a link they started.
+- **The code is always typed.** The server never issues a link with the code
+  in it, and the page ignores a `?code=` parameter (RFC 8628 §5.4). A link
+  someone mails you therefore cannot carry their code; you would have to type
+  a code you did not see in your own terminal.
 - The device keys are registered with the device code, so a session is bound
   to a device key from the start.
 - The polling interval is 5 seconds. Polling faster returns `slow_down`.
@@ -189,8 +191,7 @@ CLI                                   Server                       Browser (any 
 
 ```
 vm$ esec vault login https://vault.example.com
-  Open https://vault.example.com/device?code=K7QM-2XDP
-  (or go to https://vault.example.com/device and enter K7QM-2XDP)
+  Open https://vault.example.com/device and enter K7QM-2XDP
   ✓ Signed in as mscno (GitHub 1234567)
   New device "hetzner-3"  fingerprint: tiger-lamp-orbit-maple
   Waiting for approval. On a trusted device run: esec vault devices approve
@@ -643,9 +644,10 @@ secret store.
 | Full server and database compromise | Metadata (devices, times, IPs, and project/env names if the index is on); refuse service; delete data (local cache plus offline remotes are the fallback); hold back updates (heads pinned). **Cannot** decrypt, add devices, or plant keys: chain links, vault blobs and the index are signed by U. Cannot inject a fake U into existing devices. A brand-new device is protected by the account-key words (§4). |
 | GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. At most 5 devices can wait for approval at once. Before the user's first login, the attacker could create the account with their own keys. A machine holding the user's identity refuses to join it (different master key), and a new device sees unknown account-key words. |
 | Takeover before the first login | Creating an account needs the server's bootstrap token, which the operator hands out separately; a GitHub session alone cannot create one. If the token also leaked: a machine with the user's identity refuses the foreign account, and a new device warns that the account already exists and asks for the account key, which a user who never set up esec vault must reject. |
+| Flooding sign-ins from thousands of networks | Availability only: new devices and new browsers may have to wait for the flood to pass. Devices and browsers that signed in before keep working, and nothing is disclosed. Resisting floods of that size needs upstream protection (a proxy or WAF), as for any internet service. |
 | Filling the 5 pending-device slots | Someone with the GitHub session can keep approval slots full. The owner suspends those devices on the web page and secures the GitHub account. |
 | Chain at `MaxLinks` (10,000 links) | The account freezes: no more revocations or rotations. That is far beyond normal use; start a new account if it ever happens. |
-| Phishing with a prefilled code link | The victim must click Continue and Confirm on a page warning that only self-started sign-ins should be confirmed. A confirmed attacker device is only pending: it can read the chain, the wrapped identity and slot data (all useless without the phrase or agent). It cannot be approved by answering yes: `devices approve` requires typing the fingerprint words from the new device's own terminal, which only the attacker sees. |
+| Code phishing | There are no prefilled links: the victim would have to type an attacker's code into the page by hand, on a page warning that only self-started sign-ins should be confirmed. Even then the attacker's device is only pending: it can read the chain, the wrapped identity and slot data (all useless without the phrase or agent). It cannot be approved by answering yes: `devices approve` requires typing the fingerprint words from the new device's own terminal, which only the attacker sees. |
 | Stolen session token | Useless without `D.sign`. |
 | Stolen VM disk | With macOS Keychain or a TPM-bound secret store, sealed keyrings are useless without C. With the 0600 file store, everything is exposed: revoke and rotate. |
 | Live compromise of an active device | Everything that device can decrypt. Response: revoke, rotate U, rotate env keys, rotate values. |
@@ -700,6 +702,7 @@ server (`httptest`) with a memory secret store.
 | Login state saved before confirmation | Commands refuse an account this machine never pinned; a declined account key deletes the half-finished login | A declined account could otherwise be installed by the next background sync (found in security review). |
 | Root signature over the user key only | Also covers the master X25519 key; passphrase changes refresh it, and are blocked while signed in | A stale authorization could make recovery impossible (found in security review). |
 | Approve with y/N after comparing words | Type the new device's fingerprint words | A yes-click could approve a phished device (found in review). |
+| Link with the code prefilled | Code always typed; `?code=` ignored | Removes one-click code phishing (RFC 8628 §5.4). |
 | Rate limits on all code entries | Limits on wrong codes, on both forms, per address (IPv6 /64) and per user; caps on open registrations, OAuth states and pending devices | Found in security review. |
 
 ## Later phases (sketch)

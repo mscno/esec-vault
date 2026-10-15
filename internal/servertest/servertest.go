@@ -243,7 +243,7 @@ func CSRF(page string) string {
 
 // Confirm signs in (if needed) and confirms or denies a device code.
 func (b *Browser) Confirm(code string, approve bool) error {
-	status, page, err := b.Get("/device?code=" + url.QueryEscape(code))
+	status, page, err := b.Get("/device")
 	if err != nil {
 		return err
 	}

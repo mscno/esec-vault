@@ -92,7 +92,7 @@ the server operator gives you:
 esec vault login https://vault.example.com
 ```
 
-1. Open the printed link, or go to the printed address and enter the code.
+1. Open the printed address and type the code your terminal shows.
 2. Sign in with GitHub, check that the code matches, and confirm.
 3. The first login creates your account and uploads your vault.
 

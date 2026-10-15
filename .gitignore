@@ -3,3 +3,7 @@
 *.keyring
 coverage.out
 /tmp/
+
+# Local workspace linking ../esec until esec v0.9.0 is released.
+go.work
+go.work.sum

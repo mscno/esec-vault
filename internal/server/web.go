@@ -139,9 +139,6 @@ func safeNext(next string) string {
 	case "/account":
 		return "/account"
 	case "/device":
-		if code := normalizeUserCode(u.Query().Get("code")); code != "" {
-			return "/device?code=" + formatUserCode(code)
-		}
 		return "/device"
 	}
 	return "/account"
@@ -296,11 +293,10 @@ func (s *Server) webDevice(w http.ResponseWriter, r *http.Request) {
 	if ws == nil {
 		return
 	}
-	code := ""
-	if n := normalizeUserCode(r.URL.Query().Get("code")); n != "" {
-		code = formatUserCode(n)
-	}
-	s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf, "Code": code})
+	// A code in the link is ignored on purpose: the person must type the
+	// code shown in their own terminal, so a link someone else sends cannot
+	// carry the attacker's code.
+	s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf})
 }
 
 // allowCode reserves one code attempt for the address and the signed-in

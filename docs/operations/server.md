@@ -94,10 +94,12 @@ Run a single machine. The database is SQLite on the volume.
 Use a dedicated bucket for Litestream, with credentials limited to it. Keep
 those credentials outside the vault: you need them to restore the server.
 
-The Docker build needs esec v0.9.0 or later from the module proxy. While
-`go.mod` still has `replace github.com/mscno/esec => ../esec`, the build
-context does not contain `../esec`, and the build fails. Tag the esec release
-and remove the `replace` before you deploy.
+The code needs esec v0.9.0, which is not released yet. Until then `go.mod`
+pins v0.8.1, and a local `go.work` (not committed) builds against the
+`feat/sealed-keyring` branch in `../esec`. A Docker or CI build without that
+workspace fails. Tag and push esec v0.9.0, run
+`go get github.com/mscno/esec@v0.9.0`, and commit `go.mod` and `go.sum`
+before you deploy.
 
 ## Step 4: Connect your first machine
 
@@ -128,8 +130,8 @@ lines are visible to other users of the machine.
 Changing the bootstrap secret invalidates tokens not yet used; existing
 accounts are not affected.
 
-1. Open the printed link and sign in with GitHub.
-2. Check that the code matches, then confirm.
+1. Open the printed address and sign in with GitHub.
+2. Type the code your terminal shows, then confirm.
 3. The first login creates the account and uploads the vault.
 
 Write down the **Account key** words it prints. Every later device shows the
