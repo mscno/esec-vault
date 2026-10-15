@@ -449,10 +449,51 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM events WHERE created_at < ?`, []any{unix(now.Add(-30 * 24 * time.Hour))}},
 		// Audit retention: a year, and at most auditKeep entries per account.
 		{`DELETE FROM audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
-		{`DELETE FROM audit WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id DESC) AS n FROM audit) WHERE n > ?)`, []any{auditKeep}},
 	}
 	for _, s := range stmts {
 		if _, err := d.sql.ExecContext(ctx, s.q, s.args...); err != nil {
+			return err
+		}
+	}
+	return d.trimAudit(ctx)
+}
+
+// auditAccounts lists every account id plus "" (account-less entries).
+func (d *DB) auditAccounts(ctx context.Context) ([]string, error) {
+	rows, err := d.sql.QueryContext(ctx, `SELECT id FROM users UNION SELECT ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// trimAudit keeps the newest auditKeep entries of each account (and of the
+// account-less entries, such as denied sign-ins). Each account costs one
+// index seek on audit(user_id, id), not a scan of the table.
+func (d *DB) trimAudit(ctx context.Context) error {
+	users, err := d.auditAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
+		var cut int64
+		err := d.sql.QueryRowContext(ctx, `SELECT id FROM audit WHERE user_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?`, u, auditKeep).Scan(&cut)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := d.sql.ExecContext(ctx, `DELETE FROM audit WHERE user_id = ? AND id <= ?`, u, cut); err != nil {
 			return err
 		}
 	}

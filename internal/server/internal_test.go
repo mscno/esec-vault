@@ -233,3 +233,14 @@ func queryPlan(t *testing.T, db *DB, q string) string {
 	}
 	return plan
 }
+
+func TestAuditTrimUsesTheIndex(t *testing.T) {
+	db, err := OpenDB(t.TempDir() + "/a.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if plan := queryPlan(t, db, `EXPLAIN QUERY PLAN SELECT id FROM audit WHERE user_id = 'gh:1' ORDER BY id DESC LIMIT 1 OFFSET 10000`); !strings.Contains(plan, "audit_user") {
+		t.Fatalf("audit trim does not use the index:\n%s", plan)
+	}
+}
