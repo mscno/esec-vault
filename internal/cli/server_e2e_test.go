@@ -458,6 +458,12 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 		}
 	}
 
+	// --- An already-trusted device signs in again without any approval. ---
+	out = login(t, h, laptop, "").wait(true)
+	if !strings.Contains(out, "is already trusted") || !strings.Contains(out, "Account key: "+accountKey) {
+		t.Fatalf("re-login of a trusted device:\n%s", out)
+	}
+
 	// --- Logout ends the session; the server rejects the old token. ---
 	vm3.run("", "logout")
 	vm3.runFail("", "sync", "--server")
