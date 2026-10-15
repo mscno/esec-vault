@@ -5,6 +5,7 @@ package wire
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/envelope"
@@ -46,12 +47,21 @@ const (
 	DeviceRevoked     = "revoked"
 )
 
-// DeviceRegisterRequest starts the device authorization grant.
+// DeviceRegisterRequest starts the device authorization grant. Sig is the
+// device key's signature over RegistrationMessage, proving the registrant
+// holds the private key it registers.
 type DeviceRegisterRequest struct {
-	Name     string `json:"name"`
-	Platform string `json:"platform"`
-	EncPub   string `json:"enc_pub"`
-	SignPub  string `json:"sign_pub"`
+	Name      string `json:"name"`
+	Platform  string `json:"platform"`
+	EncPub    string `json:"enc_pub"`
+	SignPub   string `json:"sign_pub"`
+	Timestamp int64  `json:"timestamp"`
+	Sig       []byte `json:"sig"`
+}
+
+// RegistrationMessage returns the bytes a registration signature covers.
+func RegistrationMessage(r *DeviceRegisterRequest) []byte {
+	return []byte(fmt.Sprintf("esec-vault register v1\n%s\n%s\n%s\n%s\n%d", r.Name, r.Platform, r.EncPub, r.SignPub, r.Timestamp))
 }
 
 // DeviceRegisterResponse carries the codes for the device authorization grant.

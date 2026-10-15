@@ -62,7 +62,7 @@ func register(t *testing.T, h *servertest.Harness, key *devicekey.Key, name stri
 		t.Fatal(err)
 	}
 	c.Now = h.Now
-	reg, err := c.RegisterDevice(context.Background(), wire.DeviceRegisterRequest{Name: name, Platform: "linux/amd64", EncPub: key.EncPubHex(), SignPub: key.SignPubHex()})
+	reg, err := c.RegisterDevice(context.Background(), key.Registration(name, "linux/amd64", h.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestDeviceGrant(t *testing.T) { //nolint:gocyclo // one sequential story
 
 	// Registrations are rate limited per address.
 	for i := 0; i < 10; i++ {
-		_, err := c.RegisterDevice(ctx, wire.DeviceRegisterRequest{Name: "x", Platform: "linux/amd64", EncPub: key.EncPubHex(), SignPub: key.SignPubHex()})
+		_, err := c.RegisterDevice(ctx, key.Registration("x", "linux/amd64", h.Now()))
 		if code(err) == wire.ErrRateLimited {
 			return
 		}
@@ -843,7 +843,7 @@ func TestKnownDevicesAndBrowsersBypassGlobalCaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fresh.RegisterDevice(ctx, wire.DeviceRegisterRequest{Name: "new", Platform: "linux/amd64", EncPub: newKey.EncPubHex(), SignPub: newKey.SignPubHex()}); code(err) != wire.ErrRateLimited {
+	if _, err := fresh.RegisterDevice(ctx, newKey.Registration("new", "linux/amd64", h.Now())); code(err) != wire.ErrRateLimited {
 		t.Fatalf("new device during a flood: %v", err)
 	}
 	// The trusted laptop can still sign in again, in a browser that signed
@@ -861,5 +861,27 @@ func TestKnownDevicesAndBrowsersBypassGlobalCaps(t *testing.T) {
 	}
 	if status, _, _ := h.Browser("mscno").Get("/auth/github?next=/account"); status != http.StatusServiceUnavailable {
 		t.Fatalf("a new browser during a flood got %d", status)
+	}
+}
+
+func TestRegistrationNeedsTheDeviceKey(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	c, err := client.New(h.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Someone who knows the owner device's public keys signs a registration
+	// with a different key.
+	thief, _ := devicekey.Generate()
+	req := thief.Registration("laptop", "linux/amd64", h.Now())
+	req.EncPub, req.SignPub = owner.key.EncPubHex(), owner.key.SignPubHex()
+	if _, err := c.RegisterDevice(ctx, req); code(err) != wire.ErrInvalidRequest {
+		t.Fatalf("registration with copied keys: %v", err)
+	}
+	stale := owner.key.Registration("laptop", "linux/amd64", h.Now().Add(-5*time.Minute))
+	if _, err := c.RegisterDevice(ctx, stale); code(err) != wire.ErrInvalidRequest {
+		t.Fatalf("replayed old registration: %v", err)
 	}
 }

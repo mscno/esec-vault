@@ -122,8 +122,9 @@ allowlisted GitHub account before its owner's first login could create the
 vault account with their own keys.
 
 A token works only for its own GitHub id. Give each person theirs through
-another channel. Avoid `--bootstrap-token` on the command line, which ends
-up in shell history; use the prompt or `ESEC_VAULT_BOOTSTRAP_TOKEN`.
+another channel. The CLI reads it from a hidden prompt or from
+`ESEC_VAULT_BOOTSTRAP_TOKEN`; there is no command-line flag, because command
+lines are visible to other users of the machine.
 Changing the bootstrap secret invalidates tokens not yet used; existing
 accounts are not affected.
 

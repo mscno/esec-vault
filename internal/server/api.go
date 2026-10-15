@@ -535,7 +535,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 		return nil, fmt.Errorf("stored chain for %s does not verify: %w", c.user.ID, err)
 	}
 	if hasInit(req) && subtle.ConstantTimeCompare([]byte(hashHex(req.BootstrapToken)), []byte(hashHex(UserBootstrapToken(s.cfg.BootstrapToken, c.user.GitHubID)))) != 1 {
-		return nil, clientErr(http.StatusForbidden, wire.ErrBootstrapRequired, "creating an account needs the server's bootstrap token (ask the server operator; pass --bootstrap-token)")
+		return nil, clientErr(http.StatusForbidden, wire.ErrBootstrapRequired, "creating an account needs the server's bootstrap token (ask the server operator; enter it when asked or set ESEC_VAULT_BOOTSTRAP_TOKEN)")
 	}
 	pending := c.device.Status == wire.DevicePending
 	if pending {

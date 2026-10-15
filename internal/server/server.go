@@ -45,6 +45,8 @@ type Server struct {
 	// Server-wide caps on open sign-ins; see WithSignInCaps.
 	maxRegistrations int
 	maxOAuthStates   int
+	// Per-address and per-network registrations per hour.
+	regPerAddr, regPerNet int
 }
 
 // Option customizes a Server, mainly for tests.
@@ -57,6 +59,13 @@ func WithClock(now func() time.Time) Option { return func(s *Server) { s.now = n
 // hour) and open GitHub sign-ins (per 10 minutes). Tests use small values.
 func WithSignInCaps(registrations, oauthStates int) Option {
 	return func(s *Server) { s.maxRegistrations, s.maxOAuthStates = registrations, oauthStates }
+}
+
+// WithRegistrationLimits overrides the per-address and per-network
+// registration limits (per hour). Tests that sign in many devices from
+// localhost raise them.
+func WithRegistrationLimits(perAddr, perNet int) Option {
+	return func(s *Server) { s.regPerAddr, s.regPerNet = perAddr, perNet }
 }
 
 // WithGitHub overrides the GitHub client.
@@ -81,7 +90,7 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, db: db, log: log, tmpl: tmpl, now: time.Now, anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates}
+	s := &Server{cfg: cfg, db: db, log: log, tmpl: tmpl, now: time.Now, anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates, regPerAddr: 10, regPerNet: 100}
 	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
 	for _, o := range opts {
 		o(s)

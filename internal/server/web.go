@@ -280,7 +280,14 @@ func (s *Server) webLogout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if c, err := r.Cookie(s.cookieName("esec_known")); err == nil {
+		if _, err := s.db.sql.ExecContext(r.Context(), `DELETE FROM known_browsers WHERE token_hash = ?`, hashHex(c.Value)); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+	}
 	s.clearCookie(w, "esec_session", "/")
+	s.clearCookie(w, "esec_known", "/")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

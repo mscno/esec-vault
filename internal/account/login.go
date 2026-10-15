@@ -207,7 +207,7 @@ func normalizeWords(s string) string {
 
 // deviceGrant runs the device authorization grant and returns the session.
 func deviceGrant(ctx context.Context, c *client.Client, ui UI, dev *devicekey.Key, name string, open func(string) error, poll time.Duration) (*wire.TokenResponse, error) {
-	reg, err := c.RegisterDevice(ctx, wire.DeviceRegisterRequest{Name: name, Platform: runtime.GOOS + "/" + runtime.GOARCH, EncPub: dev.EncPubHex(), SignPub: dev.SignPubHex()})
+	reg, err := c.RegisterDevice(ctx, dev.Registration(name, runtime.GOOS+"/"+runtime.GOARCH, c.Now()))
 	if err != nil {
 		return nil, err
 	}

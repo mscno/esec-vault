@@ -23,6 +23,7 @@ import (
 
 	"github.com/mscno/esec/pkg/keyringfile"
 
+	"github.com/mscno/esec-vault/internal/server"
 	"github.com/mscno/esec-vault/internal/servertest"
 )
 
@@ -262,7 +263,9 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 		t.Skip("unix sockets")
 	}
 	bin := buildBinaries(t)
-	h := servertest.Start(t, 53101343)
+	// Many machines sign in from localhost here, above the real per-address
+	// limit; the limits themselves are tested in the server package.
+	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(100, 1000)}, 53101343)
 	h.GitHub.AddUser(53101343, "mscno")
 	h.GitHub.AddUser(4242, "intruder")
 	sock, fp := testAgent(t)
@@ -287,8 +290,9 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	laptop.tool(repo, "encrypt", "dev", "-f", "env")
 
 	// Without the operator's bootstrap token no account can be created.
-	login(t, h, laptop, "", "--bootstrap-token", "wrong-token-wrong-token").wait(false)
-	p := login(t, h, laptop, "", "--bootstrap-token", servertest.BootstrapToken)
+	login(t, h, laptop.with("ESEC_VAULT_BOOTSTRAP_TOKEN=wrong-token-wrong-token"), "").wait(false)
+	login(t, h, laptop, "esb_from_the_prompt_but_wrong\n").wait(false)
+	p := login(t, h, laptop.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "")
 	out = p.wait(true)
 	for _, want := range []string{"Signed in as mscno", "Created the vault account", "Account key:", "Sealed"} {
 		if !strings.Contains(out, want) {

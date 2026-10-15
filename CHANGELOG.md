@@ -42,8 +42,12 @@ Vault server and device sync. Requires esec v0.9.0 or later.
 - The recovery passphrase cannot change while signed in to a vault server.
 - Creating an account needs a per-user token derived from the server's
   bootstrap secret (`ESEC_SERVER_BOOTSTRAP_TOKEN`; print one with
-  `esec-vault-server -bootstrap-token-for <id>`), so a taken-over GitHub
-  account cannot create the vault account first.
+  `esec-vault-server -bootstrap-token-for <id>`; the CLI asks for it or reads
+  `ESEC_VAULT_BOOTSTRAP_TOKEN`), so a taken-over GitHub account cannot create
+  the vault account first.
+- `devices approve` requires typing the new device's fingerprint words.
+- Trusted devices and browsers that signed in before bypass the server-wide
+  sign-in caps, so a flood only delays new ones.
 
 # v0.3.6
 

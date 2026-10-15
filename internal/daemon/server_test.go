@@ -136,7 +136,7 @@ func TestServerLoopSyncsAndNotifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := c.RegisterDevice(ctx, wire.DeviceRegisterRequest{Name: "vm-new", Platform: "linux/amd64", EncPub: key.EncPubHex(), SignPub: key.SignPubHex()})
+	reg, err := c.RegisterDevice(ctx, key.Registration("vm-new", "linux/amd64", time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}

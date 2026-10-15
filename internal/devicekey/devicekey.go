@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/nacl/box"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/mscno/esec-vault/internal/fpwords"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
+	"github.com/mscno/esec-vault/internal/wire"
 )
 
 // Secret store entries.
@@ -134,6 +136,13 @@ func (k *Key) Words() string { return Words(k.EncPubHex(), k.SignPubHex()) }
 // hex. Both sides of an approval compute them independently.
 func Words(encPubHex, signPubHex string) string {
 	return fpwords.Words(fpwords.DeviceWords, fpwords.DomainDevice, []byte(strings.ToLower(encPubHex)), []byte(strings.ToLower(signPubHex)))
+}
+
+// Registration builds a signed registration request for this device.
+func (k *Key) Registration(name, platform string, now time.Time) wire.DeviceRegisterRequest {
+	r := wire.DeviceRegisterRequest{Name: name, Platform: platform, EncPub: k.EncPubHex(), SignPub: k.SignPubHex(), Timestamp: now.Unix()}
+	r.Sig = ed25519.Sign(k.Sign, wire.RegistrationMessage(&r))
+	return r
 }
 
 // Proof signs a device proof binding this key to user and device d.

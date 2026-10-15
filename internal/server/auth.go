@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
 	"errors"
@@ -219,7 +220,7 @@ func (s *Server) verifySignature(ctx context.Context, r *http.Request, body []by
 func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	ip := s.clientIP(r)
-	if !s.allowAnon("register", ip, 10, 100, time.Hour) {
+	if !s.allowAnon("register", ip, s.regPerAddr, s.regPerNet, time.Hour) {
 		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many device registrations from this address")
 		return
 	}
@@ -231,6 +232,17 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	var req wire.DeviceRegisterRequest
 	if err := decodeStrict(body, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
+		return
+	}
+	// The registrant must hold the private key it registers, so nobody can
+	// register (or use the known-device path with) someone else's keys.
+	signPub, err := chain.ParseSignKey(strings.ToLower(req.SignPub))
+	if err != nil || !ed25519.Verify(signPub, wire.RegistrationMessage(&req), req.Sig) {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "registration is not signed by the device key")
+		return
+	}
+	if d := now.Sub(time.Unix(req.Timestamp, 0)); d > apisig.MaxSkew || d < -apisig.MaxSkew {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "registration time is too far from the server's clock; check this machine's clock")
 		return
 	}
 	// The server-wide cap protects the database from floods of new
