@@ -1009,3 +1009,41 @@ func TestWaitingDeviceWordsAreNeverShownOnTheWeb(t *testing.T) {
 		t.Fatal("the account page shows the waiting device's fingerprint words")
 	}
 }
+
+func TestDevicesCannotFloodWrites(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	vm := signIn(t, h, nil, "vm")
+	ctx := context.Background()
+	count := func(q string) int {
+		var n int
+		if err := h.DB.SQL().QueryRow(q).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	events := count(`SELECT COUNT(*) FROM events`)
+	proof, err := vm.key.Proof(user, vm.chainDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		_ = vm.c.UploadProof(ctx, proof)
+	}
+	if got := count(`SELECT COUNT(*) FROM events`); got != events {
+		t.Fatalf("repeated proof uploads added %d events", got-events)
+	}
+	// A waiting device is limited to 60 signed requests a minute, so it
+	// cannot add nonces without bound either.
+	limited := false
+	for range 100 {
+		if _, err := vm.c.Me(ctx); code(err) == wire.ErrRateLimited {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("a waiting device was not rate limited")
+	}
+}

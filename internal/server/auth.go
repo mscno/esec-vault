@@ -201,6 +201,16 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 			writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large")
 			return
 		}
+		// Every signed request records a nonce, so requests are limited per
+		// device before that write; waiting devices get a tighter limit.
+		perMinute := 600
+		if dev.Status == wire.DevicePending {
+			perMinute = 60
+		}
+		if !s.limits.allow("api:"+dev.ID, perMinute, time.Minute, now) {
+			writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests from this device; slow down")
+			return
+		}
 		if err := s.verifySignature(ctx, r, body, dev, now); err != nil {
 			s.signatureFailure(w, r, err)
 			return

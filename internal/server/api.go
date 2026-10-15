@@ -95,6 +95,12 @@ func (s *Server) apiChain(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 }
 
 func (s *Server) apiDeviceProof(w http.ResponseWriter, r *http.Request, c *reqCtx) {
+	// A proof is stored once; later uploads change nothing and emit no
+	// event, so a device cannot use them to fill the database.
+	if len(c.device.Proof) > 0 {
+		writeJSON(w, http.StatusOK, struct{}{})
+		return
+	}
 	var req wire.DeviceProofUpload
 	if err := decodeStrict(c.body, &req); err != nil || req.Proof == nil {
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
