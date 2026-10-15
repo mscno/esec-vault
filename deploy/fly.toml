@@ -1,0 +1,34 @@
+# Fly.io deployment for the esec vault server. One machine: the database is
+# SQLite on a volume, replicated continuously by Litestream.
+app = "REPLACE-esec-vault"
+primary_region = "arn"
+
+# Deploy from the repository root:
+#   fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+
+[env]
+  ESEC_SERVER_BASE_URL = "https://REPLACE-esec-vault.fly.dev"
+  ESEC_SERVER_CLIENT_IP_HEADER = "Fly-Client-IP"
+  ESEC_SERVER_DB_PATH = "/data/esec-vault.db"
+
+[mounts]
+  source = "esec_vault_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -1,0 +1,23 @@
+# esec vault server configuration. Every setting can be overridden with an
+# ESEC_SERVER_* environment variable. The GitHub client secret is read only
+# from ESEC_SERVER_GITHUB_CLIENT_SECRET.
+base_url = "https://vault.example.com"
+listen = ":8080"
+db_path = "/data/esec-vault.db"
+vault_history = 50
+# Set when a trusted proxy supplies the client address (Fly.io does).
+client_ip_header = "Fly-Client-IP"
+
+[github]
+client_id = "REPLACE_WITH_OAUTH_APP_CLIENT_ID"
+
+[access]
+# Numeric GitHub user IDs (gh api user --jq .id). Never usernames: a
+# username can be renamed and later claimed by someone else.
+allowed_github_ids = [
+  53101343, # mscno (owner)
+]
+
+[sessions]
+idle = "720h"      # 30 days
+absolute = "2160h" # 90 days

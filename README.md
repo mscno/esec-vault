@@ -9,6 +9,7 @@ Both forms run the same program.
 ## Find a guide
 
 - [Set up your personal vault](#first-setup).
+- [Sync keys between machines with a vault server](#sync-keys-with-a-vault-server).
 - [Set up a project and its marker](#set-up-a-project).
 - [Add environments and keys](#add-environments-and-keys).
 - [Use keys in subfolders](#use-keys-in-subfolders).
@@ -70,6 +71,129 @@ esec vault identity migrate
 Use `project init` for a new project. Do not create a new personal identity for
 each project. See [upgrading existing installations](#upgrading-existing-installations)
 for details about the older backup format.
+
+## Sync keys with a vault server
+
+A vault server moves your keys to a new machine without rclone, cloud
+credentials or a config file. You sign in with GitHub, and an existing device
+approves the new one. The server stores only ciphertext: signing in never
+decrypts anything.
+
+To run your own server, follow the [server runbook](docs/operations/server.md).
+The [design document](docs/design/vault-server.md) explains the security model.
+
+### Connect your first machine
+
+Use the machine that already has your identity and keyrings:
+
+```sh
+esec vault login https://vault.example.com
+```
+
+1. Open the printed link, or go to the printed address and enter the code.
+2. Sign in with GitHub, check that the code matches, and confirm.
+3. The first login creates your account and uploads your vault.
+
+Write down the **Account key** words it prints. Every device of your account
+shows the same words.
+
+On this machine, login also seals the keyring files under a per-machine
+cache key, if the `esec` on your PATH is v0.9.0 or later. Use `--no-seal` to
+keep them plain.
+
+### Add a machine
+
+On the new machine:
+
+```sh
+esec vault login https://vault.example.com
+```
+
+After you confirm the code in the browser, the machine waits for approval and
+prints its fingerprint words. On a trusted machine, run:
+
+```sh
+esec vault devices approve
+```
+
+Approve only if both terminals show the same fingerprint, and the new machine
+shows your account key words. The new machine then installs your keys and
+syncs the vault.
+
+There are two other ways to unlock a new machine:
+
+| Method | Command | Needs |
+|---|---|---|
+| Recovery phrase | `esec vault login --recover` | Your 24 words |
+| SSH-agent unlock | `esec vault login --ssh-agent` | A forwarded SSH agent holding an enabled key |
+
+To enable SSH-agent unlock, run this on a trusted machine:
+
+```sh
+esec vault agent-unlock enable --key ~/.ssh/id_ed25519.pub --expires 90d
+```
+
+Only `ssh-ed25519` and `ssh-rsa` keys work. Use a dedicated key with
+per-use confirmation (`ssh-add -c`, or your agent's prompt). Every use is
+recorded, and your other devices show a notification.
+
+A signed-in machine stays signed in across restarts. On headless Linux, keys
+are kept in a TPM-sealed store when a TPM is available, otherwise in a 0600
+file. `esec vault status` shows which one is used.
+
+### Keep machines in sync
+
+The daemon syncs automatically: it pushes key changes and pulls changes from
+other devices. Without the daemon, commands that change keys push right away.
+To sync by hand and answer any conflict questions:
+
+```sh
+esec vault sync --server
+```
+
+A key changed on one machine replaces the old value on the others. A key
+changed differently on two machines is a conflict, and sync asks which value
+to keep.
+
+### Manage devices
+
+```sh
+esec vault devices                      # list devices with fingerprints and methods
+esec vault devices rename d_abc… laptop
+esec vault devices revoke d_abc…        # remove a device and rotate your user key
+esec vault devices suspend d_abc…       # block it on the server at once
+```
+
+Revoking rotates your user key, so the revoked device cannot open anything
+stored afterwards. It already saw the keys that existed before, so `revoke`
+lists those projects. Rotate their environment keys:
+
+```sh
+cd ~/projects/store
+esec vault env rotate prod
+```
+
+`env rotate` creates a new key, re-encrypts every file that used the old one,
+and keeps the old key so git history still decrypts. Commit the re-encrypted
+files. If the old key may have leaked, also change the secret values
+themselves.
+
+### Browse projects in the web UI
+
+Sign in at your server and open **Projects**. It shows project ids,
+environment names and public keys, never private keys or values. Each device
+publishes this index with its vault pushes. Turn it off on a device with:
+
+```sh
+esec vault index off
+```
+
+### Sign out
+
+```sh
+esec vault logout                  # end the session, keep keys on this machine
+esec vault logout --forget-device  # also delete this device's keys
+```
 
 ## Set up a project
 

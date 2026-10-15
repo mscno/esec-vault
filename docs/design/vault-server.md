@@ -1,6 +1,9 @@
 # Design: esec vault server, device sync, and encrypted key cache
 
-Status: draft, not implemented. Covers phases 1–2 in detail and sketches 3–4.
+Status: phases 1–2 implemented (branch `feat/vault-server`; core esec branch
+`feat/sealed-keyring`). Phases 3–4 are sketched at the end. The section
+"Changes made during implementation" lists where the code differs from the
+first draft.
 
 ## Goal
 
@@ -62,11 +65,17 @@ Every signed object is sent as the exact bytes that were signed. Nothing is
 re-encoded into a canonical form:
 
 ```json
-{"v":1,"kind":"chain-link","body":"<base64 of JSON bytes>","signer":"<key fp>","sig":"<base64 Ed25519>"}
+{"v":1,"kind":"chain-link","body":"<base64 of JSON bytes>","sigs":[{"key":"<hex Ed25519 public key>","sig":"<base64>"}]}
 ```
 
-The signature covers `"esec-vault/" + kind + "/v1\n" + body`. Each kind has its
-own prefix, so a signature made for one kind cannot be passed off as another.
+Each signature covers `"esec-vault/" + kind + "/v1\n" + body`. Each kind has
+its own prefix, so a signature made for one kind cannot be passed off as
+another.
+
+An envelope can carry several signatures: `ukey_rotate` is signed by the old
+and the new user key. The envelope hash covers the kind and body only. The
+chain's `prev` links therefore refer to content, not to a particular set of
+signatures.
 
 ### Fingerprint words
 
@@ -87,8 +96,9 @@ only authority for which U version is current and which devices are trusted.
 | Type | Signed by | Body |
 |---|---|---|
 | `init` | U(1) | `U.enc`, `U.sign` public keys, master public key |
-| `device_add` | current U **and** the new D (proves the device holds D) | device id, name, `D.enc`, `D.sign`, method: `approval\|recovery\|ssh_agent\|first`, approving device id or slot id |
+| `device_add` | current U; the body embeds a `device-proof` envelope signed by the new D (proves the device holds D and binds it to this user) | device, proof, method: `approval\|recovery\|ssh_agent\|first`, approving device id or slot id |
 | `device_revoke` | current U | device id, reason |
+| `device_rename` | current U | device id, new name |
 | `ukey_rotate` | old U **and** new U | new public keys, list of surviving devices |
 | `agent_slot_add` / `agent_slot_remove` | current U | slot id, SSH key fingerprint, expiry |
 
@@ -101,6 +111,8 @@ Rules every client enforces:
   that was not carried over by a `ukey_rotate`.
 - The server verifies too, but only to reject bad data early. Clients never
   rely on the server's check.
+- The **account key** words come from the hash of the first link. They stay
+  the same across user-key rotations and are the same on every device.
 
 Users are keyed by numeric GitHub user ID, never login. A login can be renamed
 and later claimed by someone else.
@@ -125,8 +137,9 @@ CLI                                   Server                       Browser (any 
 ```
 
 - User codes use Crockford base32 (no I, L, O, U): 8 characters, 40 bits. They
-  expire after 10 minutes and allow 5 failed confirmations per code. Input is
-  normalized: case-folded, `O→0`, `I/L→1`, dashes removed.
+  expire after 10 minutes. Wrong codes are limited per address and per
+  signed-in user (see "Rate limits"). Input is normalized: case-folded, `O→0`,
+  `I/L→1`, dashes and spaces removed.
 - The prefilled link still needs an explicit **Confirm** click, with the code
   shown. This defends against someone mailing you a link they started.
 - The device keys are registered with the device code, so a session is bound
@@ -249,18 +262,36 @@ If you sign in from a machine with no identity, it offers `identity init` or
 
 ## 5. Personal vault sync
 
-- **The object** is today's `ESECVLT` v2 blob. It is already sealed to U and to
-  the master key, and it has a monotonic generation counter inside. The server
-  stores a version history, keeping the last 50 versions by default.
-- **Writes** use `PUT /v1/vault` with `If-Match: <server version>`. If another
-  write landed first, the client gets 409 and does the following:
-  1. Pull and open the latest blob.
-  2. Merge keyrings with the existing `sync` semantics: union of entries; the
-     same name with a different value asks the user; the daemon never resolves
-     a conflict on its own and leaves it pending.
-  3. Push again.
+- **The object** is today's `ESECVLT` v2 blob. It is sealed to U and to the
+  master key, and it has a monotonic generation counter inside. It holds the
+  keyrings and the master-wrapped identity. It does not hold local settings
+  (policy, trust pins, remote config), which differ between machines. The
+  server stores a version history, keeping the last 50 versions by default.
+- **Every upload is signed by U.** A sealed box can be created by anyone who
+  knows U's public key, the server included. Without a signature, a server
+  could plant its own environment keys. The signature covers
+  `"esec-vault/vault/v1\n" + user + "\n" + sha256(blob)`. The server checks it
+  against the chain's current key, and every client checks it again before
+  opening the blob.
+- **Writes** use compare-and-swap (`if_match`: the server version the client
+  last saw). If another write landed first, the client gets 409, pulls,
+  merges, and pushes again.
+- **Three-way merge.** Each machine keeps the last vault version it synced
+  (`vault-server.esec`, the server's own ciphertext) as the common ancestor:
+  - An entry changed only on the server is taken from it, for example a key
+    another device rotated.
+  - An entry changed only locally is kept and pushed.
+  - An entry changed on both sides is a conflict. An interactive sync asks; the
+    daemon leaves it, reports it in `status`, and pushes nothing until it is
+    resolved.
+  - Nothing local is ever deleted.
 - **Rollback protection:** a client rejects a blob whose inner generation is
   lower than the last one it applied.
+- **Project index (optional, on by default).** With each push, a device can
+  publish a separately signed, secret-free index for the web UI's `/projects`
+  page. It holds project ids, environment names and public keys. The server
+  validates every string before storing it. Turn it off with
+  `esec vault index off` or `login --no-index`.
 - **The daemon** reuses the existing change detection, debounce, and job
   machinery. It pushes on change and long-polls `GET /v1/events?after=<id>` to
   pull, merge, and refresh the broker cache.
@@ -494,7 +525,7 @@ nonces(device_id, nonce, seen_at)                 -- PoP replay cache, pruned
 chain_links(user_id, seq, hash, envelope, created_at)   PRIMARY KEY(user_id, seq)
 device_boxes(device_id, ukey_version, box)
 identity_blobs(user_id, ukey_version, blob)       -- master-wrapped U
-vault_versions(user_id, version, blob, sha256, pushed_by_device, created_at)
+vault_versions(user_id, version, blob, sig, index_json, sha256, pushed_by, created_at)
 agent_slots(id, user_id, ssh_key_fp, salt, box, ukey_version, expires_at, disabled_at)
 audit(id, user_id, device_id, ip, action, detail_json, created_at)
 ```
@@ -508,12 +539,15 @@ and a request signed with `D.sign`.
 |---|---|
 | `POST auth/device`, `POST auth/token` | Device code flow |
 | `GET me` | Account, device status, account-key fingerprint |
-| `GET chain?after=`, `POST chain` | Read and append links (append checks seq and prev) |
-| `GET devices`, `POST devices/{id}/approve`, `POST devices/{id}/revoke`, `POST devices/{id}/suspend` | Devices |
+| `POST auth/logout` | End this session |
+| `GET chain?after=` | Read links |
+| `POST commit` | Append links together with the device boxes, identity, vault and slot data they need, in one transaction. Approval, revocation, rotation, renames and slots all go through it. |
+| `POST devices/self/proof` | Store this device's self-signed proof (pending devices) |
+| `GET devices`, `POST devices/{id}/suspend` | Devices |
 | `GET devices/self/box` | Encrypted U for this device |
-| `GET/PUT identity` | Master-wrapped U |
-| `GET/PUT vault`, `GET vault/versions`, `GET vault/versions/{v}` | Vault sync (CAS on PUT) |
-| `GET/POST/DELETE agent-slots` | §8 |
+| `GET identity` | Master-wrapped U |
+| `GET/PUT vault`, `GET vault/versions`, `GET vault/versions/{v}` | Vault sync (CAS on PUT; blob and index signed by U) |
+| `GET agent-slots`, `DELETE agent-slots/{id}` | §8 |
 | `GET events?after=&wait=` | Long poll for the daemon |
 | `GET audit` | Audit log |
 
@@ -524,6 +558,7 @@ and a request signed with `D.sign`.
 | `/` | GitHub sign-in |
 | `/device` | Code entry and confirm |
 | `/account` | Devices (status, method, last seen, suspend), sessions (end), agent slots (disable), audit log, account-key fingerprint |
+| `/projects` | The published project index: projects, environments, public keys |
 
 The pages use secure cookies (`SameSite=Lax` for OAuth), CSRF tokens, a strict
 CSP, and no third-party scripts.
@@ -532,16 +567,19 @@ CSP, and no third-party scripts.
 
 | Action | Limit |
 |---|---|
-| Code confirmation | 5 per code, 30 per IP per hour |
+| Code entry | 30 per IP per hour, 10 per signed-in user per 10 minutes |
+| GitHub sign-in starts | 30 per IP per hour |
 | `auth/device` | 10 per IP per hour |
 | Agent-slot reads | 10 per user per hour |
 
 ## 11. CLI changes
 
 ```
-esec vault login [URL] [--ssh-agent | --recover] [--name NAME]
-esec vault logout                          # ends session; keeps device keys
-esec vault devices [list|approve [ID]|revoke ID|rename ID NAME]
+esec vault login [URL] [--ssh-agent | --recover] [--name NAME] [--no-index] [--no-seal]
+esec vault logout [--forget-device]        # ends session; keeps device keys unless asked
+esec vault devices [list|approve [ID]|revoke ID|rename ID NAME|suspend ID]
+esec vault sync --server                   # interactive pull, merge and push
+esec vault index [on|off]                  # publish the secret-free project index
 esec vault agent-unlock [enable --key K [--expires D]|list|disable ID]
 esec vault keyring [seal [--all]|unseal]
 esec vault env rotate ENV                  # phase 2
@@ -556,7 +594,7 @@ secret store.
 
 | Attacker | Outcome |
 |---|---|
-| Full server and database compromise | Metadata (project/env names, devices, times, IPs); refuse service; delete data (local cache plus offline remotes are the fallback); hold back updates (heads pinned). **Cannot** decrypt or add devices. Cannot inject a fake U into existing devices. A brand-new device is protected by the account-key words (§4). |
+| Full server and database compromise | Metadata (devices, times, IPs, and project/env names if the index is on); refuse service; delete data (local cache plus offline remotes are the fallback); hold back updates (heads pinned). **Cannot** decrypt, add devices, or plant keys: chain links, vault blobs and the index are signed by U. Cannot inject a fake U into existing devices. A brand-new device is protected by the account-key words (§4). |
 | GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. |
 | Stolen session token | Useless without `D.sign`. |
 | Stolen VM disk | With macOS Keychain or a TPM-bound secret store, sealed keyrings are useless without C. With the 0600 file store, everything is exposed: revoke and rotate. |
@@ -590,6 +628,20 @@ server (`httptest`) with a memory secret store.
    CI.
 9. **`env rotate`.**
 10. **Deployment:** Fly config, Litestream, and an operations runbook.
+
+## Changes made during implementation
+
+| Draft | Built | Why |
+|---|---|---|
+| `device_add` signed by U and D | Signed by U; the body embeds a `device-proof` envelope signed by D | The proof is created when the device registers, before anyone approves it. |
+| Account key words from U | From the first chain link | Stays the same across key rotations. |
+| `POST chain` plus separate writes | One `POST /v1/commit` | Links and the boxes, identity and vault they require are written atomically. |
+| Vault blob only sealed | Sealed **and** signed by U | Sealed boxes do not authenticate the sender; see §5. |
+| Union merge with prompts | Three-way merge against the last synced version | A plain union let a stale device undo a key rotation. |
+| Local settings in the synced vault | Keyrings and identity only | Settings differ per machine and caused needless pushes. |
+| `--secret-store keyctl` as default for VMs | TPM or 0600 file by default; keyctl opt-in | Signed-in VMs must survive restarts. |
+| No project browsing | Optional signed index and a `/projects` page | Requested during implementation. |
+| — | `device_rename` link | `devices rename` needs the chain to agree on names. |
 
 ## Later phases (sketch)
 

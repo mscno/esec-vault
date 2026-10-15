@@ -1,0 +1,13 @@
+# Continuous replication of the server database to an S3-compatible bucket
+# (Cloudflare R2, S3, B2). Credentials come from the environment:
+# LITESTREAM_ACCESS_KEY_ID and LITESTREAM_SECRET_ACCESS_KEY.
+dbs:
+  - path: ${ESEC_SERVER_DB_PATH}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: esec-vault-server
+        endpoint: ${LITESTREAM_ENDPOINT}
+        region: ${LITESTREAM_REGION}
+        sync-interval: 1s
+        retention: 720h

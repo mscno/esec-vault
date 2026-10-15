@@ -3,6 +3,7 @@ package server
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUserCodes(t *testing.T) {
@@ -82,5 +83,20 @@ func TestConfigValidation(t *testing.T) {
 	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "")
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("missing client secret accepted")
+	}
+}
+
+// TestDeployConfigLoads keeps the shipped example configuration valid.
+func TestDeployConfigLoads(t *testing.T) {
+	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "s")
+	c, err := LoadConfig("../../deploy/server.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Allowed(53101343) || len(c.Access.AllowedGitHubIDs) != 1 {
+		t.Fatalf("allowlist: %v", c.Access.AllowedGitHubIDs)
+	}
+	if c.ClientIPHeader != "Fly-Client-IP" || c.Sessions.Idle.Duration != 720*time.Hour {
+		t.Fatalf("config: %+v", c)
 	}
 }

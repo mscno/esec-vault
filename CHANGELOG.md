@@ -1,3 +1,35 @@
+# Unreleased
+
+Vault server and device sync. Requires esec v0.9.0 or later.
+
+- Add `esec-vault-server`:
+  - GitHub sign-in for an allowlist of numeric GitHub user ids, and a device
+    authorization grant for the CLI.
+  - Ciphertext-only storage for vaults, device boxes, the master-wrapped
+    identity and SSH-agent unlock slots.
+  - Pages for code confirmation, devices, slots, the audit log and projects.
+  - Every API request is signed with the device key, so a stolen session
+    token alone is useless.
+- Add `login`, `logout`, `devices` (list, approve, revoke, rename, suspend),
+  `agent-unlock`, `sync --server` and `index`. A new machine gets your keys
+  by approval from another device, by the recovery phrase, or from a
+  forwarded SSH agent.
+- Add a signed, hash-linked device chain that every client verifies and pins.
+  A server cannot add devices, swap keys, or roll back history unnoticed.
+- Vault uploads are signed by the user key, and sync merges three ways
+  against the last synced version.
+- Revoking a device rotates the user key. `env rotate` replaces an environment
+  key and re-encrypts its files, keeping the old key for history.
+- Seal keyring files under a per-machine cache key (`keyring seal`/`unseal`;
+  default on signed-in machines). Device secrets live in a shared secret
+  store: the OS keychain, a TPM, a 0600 file, or the Linux kernel keyring.
+- `identity.esec` becomes version 3 with an Ed25519 signing key. The upgrade
+  needs no recovery phrase. Older esec-vault versions cannot read version 3
+  files.
+- The daemon syncs with the server, refreshes an unlocked broker, and
+  notifies about pending devices and devices added by phrase or SSH agent.
+- Add `deploy/` (Dockerfile, Litestream, Fly.io) and a server runbook.
+
 # v0.3.6
 
 - Add `env show-key ENV` to print a named environment's private key after
