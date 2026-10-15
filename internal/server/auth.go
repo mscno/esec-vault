@@ -201,8 +201,15 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 			writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large")
 			return
 		}
-		// Every signed request records a nonce, so requests are limited per
-		// device before that write; waiting devices get a tighter limit.
+		// Order: verify the signature (CPU only), then count the request
+		// against the device's limit, then record the nonce. Only requests
+		// signed with the device key count, so a stolen token cannot use up
+		// the device's limit, and the nonce writes stay bounded.
+		signed, err := s.checkSignature(r, body, dev, now)
+		if err != nil {
+			s.signatureFailure(w, r, err)
+			return
+		}
 		perMinute := 600
 		if dev.Status == wire.DevicePending {
 			perMinute = 60
@@ -211,7 +218,7 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 			writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests from this device; slow down")
 			return
 		}
-		if err := s.verifySignature(ctx, r, body, dev, now); err != nil {
+		if err := s.recordNonce(ctx, dev.ID, signed.Nonce, now); err != nil {
 			s.signatureFailure(w, r, err)
 			return
 		}
@@ -231,21 +238,35 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 // verifySignature checks the device signature and records the nonce so the
 // same signed request cannot be replayed.
 func (s *Server) verifySignature(ctx context.Context, r *http.Request, body []byte, dev *deviceRow, now time.Time) error {
-	signed, err := apisig.Parse(r)
+	signed, err := s.checkSignature(r, body, dev, now)
 	if err != nil {
 		return err
 	}
+	return s.recordNonce(ctx, dev.ID, signed.Nonce, now)
+}
+
+// checkSignature verifies a request signature without writing anything.
+func (s *Server) checkSignature(r *http.Request, body []byte, dev *deviceRow, now time.Time) (*apisig.Signed, error) {
+	signed, err := apisig.Parse(r)
+	if err != nil {
+		return nil, err
+	}
 	if signed.DeviceID != dev.ID {
-		return apisig.ErrInvalid
+		return nil, apisig.ErrInvalid
 	}
 	pub, err := chain.ParseSignKey(dev.SignPub)
 	if err != nil {
-		return apisig.ErrInvalid
+		return nil, apisig.ErrInvalid
 	}
 	if err := signed.Verify(r, body, pub, now); err != nil {
-		return err
+		return nil, err
 	}
-	res, err := s.db.sql.ExecContext(ctx, `INSERT INTO nonces (device_id, nonce, seen_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, dev.ID, signed.Nonce, now.Unix())
+	return signed, nil
+}
+
+// recordNonce stores a request nonce, refusing a replay.
+func (s *Server) recordNonce(ctx context.Context, deviceID, nonce string, now time.Time) error {
+	res, err := s.db.sql.ExecContext(ctx, `INSERT INTO nonces (device_id, nonce, seen_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, deviceID, nonce, now.Unix())
 	if err != nil {
 		return fmt.Errorf("record nonce: %w", err)
 	}

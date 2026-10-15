@@ -185,6 +185,9 @@ func OpenDB(path string) (*DB, error) {
 // Close closes the database.
 func (d *DB) Close() error { return d.sql.Close() }
 
+// Cleanup runs the periodic cleanup once (operations tooling and tests).
+func (d *DB) Cleanup(ctx context.Context, now time.Time) error { return d.cleanup(ctx, now) }
+
 // SQL exposes the underlying database for operations tooling and tests that
 // simulate a misbehaving server.
 func (d *DB) SQL() *sql.DB { return d.sql }
@@ -424,6 +427,9 @@ func (d *DB) auditEntries(ctx context.Context, userID string, limit int) ([]wire
 	return out, rows.Err()
 }
 
+// auditKeep is the most audit entries kept per account.
+const auditKeep = 10000
+
 // cleanup removes expired short-lived rows.
 func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 	stmts := []struct {
@@ -441,6 +447,9 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM devices WHERE status = 'pending' AND pending_expires < ?`, []any{unix(now.Add(-24 * time.Hour))}},
 		{`DELETE FROM sessions WHERE device_id NOT IN (SELECT id FROM devices)`, nil},
 		{`DELETE FROM events WHERE created_at < ?`, []any{unix(now.Add(-30 * 24 * time.Hour))}},
+		// Audit retention: a year, and at most auditKeep entries per account.
+		{`DELETE FROM audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
+		{`DELETE FROM audit WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id DESC) AS n FROM audit) WHERE n > ?)`, []any{auditKeep}},
 	}
 	for _, s := range stmts {
 		if _, err := d.sql.ExecContext(ctx, s.q, s.args...); err != nil {

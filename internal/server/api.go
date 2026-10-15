@@ -166,9 +166,12 @@ func (s *Server) apiIdentity(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		s.internalError(w, r, err)
 		return
 	}
-	if err := s.db.audit(r.Context(), s.db.sql, c.user.ID, c.device.ID, c.ip, "identity_read", "", s.now()); err != nil {
-		s.internalError(w, r, err)
-		return
+	// Logged at most once an hour per device, so reads cannot grow the log.
+	if s.limits.allow("audit-identity:"+c.device.ID, 1, time.Hour, s.now()) {
+		if err := s.db.audit(r.Context(), s.db.sql, c.user.ID, c.device.ID, c.ip, "identity_read", "", s.now()); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, b)
 }
@@ -521,6 +524,10 @@ func (s *Server) apiCommit(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	var req wire.Commit
 	if err := decodeStrict(c.body, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
+		return
+	}
+	if len(req.Links) == 0 && len(req.DeviceBoxes) == 0 && len(req.Identity) == 0 && req.Vault == nil && len(req.AgentSlots) == 0 {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "empty commit")
 		return
 	}
 	if len(req.Links) > maxLinksPer || len(req.DeviceBoxes) > maxBoxesPer || len(req.AgentSlots) > maxSlotsPer {

@@ -1047,3 +1047,60 @@ func TestDevicesCannotFloodWrites(t *testing.T) {
 		t.Fatal("a waiting device was not rate limited")
 	}
 }
+
+func TestStolenTokenCannotExhaustTheDeviceLimit(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	ctx := context.Background()
+	other, _ := devicekey.Generate()
+	thief := *owner.c
+	thief.Key = other.Sign
+	for range 700 {
+		_, _ = thief.Me(ctx)
+	}
+	if _, err := owner.c.Me(ctx); err != nil {
+		t.Fatalf("requests with a stolen token used up the device's limit: %v", err)
+	}
+}
+
+func TestAuditLogIsBounded(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	ctx := context.Background()
+	count := func() int {
+		var n int
+		if err := h.DB.SQL().QueryRow(`SELECT COUNT(*) FROM audit`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := count()
+	for range 50 {
+		if _, err := owner.c.Identity(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := count() - before; got > 1 {
+		t.Fatalf("50 identity reads added %d audit entries", got)
+	}
+	if _, err := owner.c.Commit(ctx, &wire.Commit{}); code(err) != wire.ErrInvalidRequest {
+		t.Fatalf("empty commit: %v", err)
+	}
+	// Retention trims to the newest entries per account.
+	if _, err := h.DB.SQL().Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 10050)
+		INSERT INTO audit (user_id, action, created_at) SELECT ?, 'filler', ? FROM n`, user, h.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DB.Cleanup(ctx, h.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := h.DB.SQL().QueryRow(`SELECT COUNT(*) FROM audit WHERE user_id = ?`, user).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 10000 {
+		t.Fatalf("audit entries after cleanup: %d", n)
+	}
+}
