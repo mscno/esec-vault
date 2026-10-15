@@ -93,6 +93,9 @@ func (s *Server) Run(ctx context.Context) error {
 		MaxHeaderBytes:    64 << 10,
 	}
 	go s.housekeeping(ctx)
+	if s.cfg.ClientIPHeader == "" && s.cfg.Secure() {
+		s.log.Warn("client_ip_header is not set: rate limits and audit addresses use the TCP peer; behind a reverse proxy that is the proxy, so set client_ip_header")
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	s.log.Info("esec vault server listening", "addr", s.cfg.Listen, "base_url", s.cfg.BaseURL)
@@ -189,10 +192,11 @@ func (s *Server) secure(next http.Handler) http.Handler {
 // clientIP returns the caller's address.
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg.ClientIPHeader != "" {
-		if v := strings.TrimSpace(r.Header.Get(s.cfg.ClientIPHeader)); v != "" {
-			if ip := net.ParseIP(v); ip != nil {
-				return ip.String()
-			}
+		// A proxy that appends to a list puts the address it saw last; the
+		// earlier entries come from the client and cannot be trusted.
+		values := strings.Split(r.Header.Get(s.cfg.ClientIPHeader), ",")
+		if ip := net.ParseIP(strings.TrimSpace(values[len(values)-1])); ip != nil {
+			return ip.String()
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -200,6 +204,16 @@ func (s *Server) clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// rateKey groups addresses for rate limiting: IPv4 per address, IPv6 per /64,
+// since one IPv6 user usually controls a whole /64.
+func rateKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ip
+	}
+	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 // ---- JSON helpers ----
@@ -271,6 +285,10 @@ type limiter struct {
 	m  map[string]*window
 }
 
+// maxLimiterKeys bounds the limiter's memory. When it is full of live
+// windows, new keys are refused rather than tracked.
+const maxLimiterKeys = 100000
+
 func newLimiter() *limiter { return &limiter{m: map[string]*window{}} }
 
 // allow counts one event for key and reports whether it is within max per
@@ -279,12 +297,31 @@ func (l *limiter) allow(key string, limit int, period time.Duration, now time.Ti
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w, ok := l.m[key]
+	if !ok && len(l.m) >= maxLimiterKeys {
+		for k, old := range l.m {
+			if now.Sub(old.start) > 2*time.Hour {
+				delete(l.m, k)
+			}
+		}
+		if len(l.m) >= maxLimiterKeys {
+			return false
+		}
+	}
 	if !ok || now.Sub(w.start) >= period {
 		w = &window{start: now}
 		l.m[key] = w
 	}
 	w.count++
 	return w.count <= limit
+}
+
+// blocked reports whether key already used up max events in its window,
+// without counting a new one.
+func (l *limiter) blocked(key string, limit int, period time.Duration, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w, ok := l.m[key]
+	return ok && now.Sub(w.start) < period && w.count >= limit
 }
 
 func (l *limiter) prune(now time.Time) {

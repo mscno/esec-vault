@@ -26,6 +26,8 @@ type cliCtx struct {
 	Quiet   bool
 	// Version is this binary's build string, compared against the daemon's.
 	Version string
+	// keyringLocked is set while a mutating command holds the keyring lock.
+	keyringLocked bool
 }
 
 type cli struct {
@@ -84,6 +86,7 @@ func Execute(version string) {
 
 	app := &cliCtx{Logger: logger, Keyring: keyring.NewOS(), Quiet: c.Quiet, Version: version}
 	mutation := isMutation(ctx.Command())
+	app.keyringLocked = mutation
 	err := runCommand(func() error { return ctx.Run(app) }, mutation)
 	if mutation && !daemon.Notify() {
 		// Persist even partially successful imports; offline upload failures leave

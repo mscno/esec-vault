@@ -20,8 +20,11 @@ import (
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
+	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/remote"
+	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/sshagent"
+	"github.com/mscno/esec-vault/internal/storage"
 )
 
 // cliUI implements account.UI on the terminal.
@@ -36,7 +39,12 @@ func (cliUI) Confirm(q string) bool               { return confirm(q) }
 func (cliUI) Secret(label string) (string, error) { return promptSecret(label) }
 
 func openAccount(ctx *cliCtx) (*account.Account, error) {
-	return account.Open(ctx.Keyring, cliUI{quiet: ctx.Quiet})
+	a, err := account.Open(ctx.Keyring, cliUI{quiet: ctx.Quiet})
+	if err != nil {
+		return nil, err
+	}
+	a.KeyringLocked = ctx.keyringLocked
+	return a, nil
 }
 
 func timeout(d time.Duration) (context.Context, context.CancelFunc) {
@@ -53,6 +61,7 @@ type LoginCmd struct {
 	NoBrowser       bool   `help:"Do not try to open a browser"`
 	NoSeal          bool   `help:"Do not seal keyrings on this machine"`
 	NoIndex         bool   `help:"Do not publish project and environment names for the web UI"`
+	AccountKey      string `help:"Expected account key words (as shown by 'esec vault status' on another device); skips the interactive check"`
 }
 
 // Run implements login.
@@ -70,7 +79,7 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	if _, err := secretstore.EnsureSelected(); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
-	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex}
+	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex, AccountKey: c.AccountKey}
 	if !c.NoBrowser {
 		opts.OpenBrowser = openBrowser
 	}
@@ -178,6 +187,13 @@ func enableSealing(ctx *cliCtx) error {
 func secretStoreFor(ctx *cliCtx) (secretstore.Store, error) { return keyring.SecretStore(ctx.Keyring) }
 
 func sealAll(ctx *cliCtx, seal bool) (int, error) {
+	if !ctx.keyringLocked {
+		unlock, err := storage.Lock(paths.KeyringDir())
+		if err != nil {
+			return 0, err
+		}
+		defer unlock()
+	}
 	store, err := secretStoreFor(ctx)
 	if err != nil {
 		return 0, err
@@ -264,7 +280,7 @@ func (c *DevicesListCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Account: %s  key: %s\n", a.State.Login, a.State.Chain.AccountWords)
+	fmt.Printf("Account: %s  key: %s\n", safetext.Clean(a.State.Login), a.State.Chain.AccountWords)
 	for _, d := range devices {
 		mark := " "
 		if d.Self {
@@ -282,7 +298,7 @@ func (c *DevicesListCmd) Run(ctx *cliCtx) error {
 		if method == "" {
 			method = "-"
 		}
-		fmt.Printf("%s %-16s %-24s %-10s %-9s %-26s last seen %s\n", mark, d.ID, d.Name, status, method, d.Words, seen)
+		fmt.Printf("%s %-16s %-24s %-10s %-9s %-40s last seen %s\n", mark, safetext.Clean(d.ID), safetext.Clean(d.Name), safetext.Clean(status), safetext.Clean(method), d.Words, seen)
 	}
 	return nil
 }
@@ -312,7 +328,7 @@ func (c *DevicesApproveCmd) Run(ctx *cliCtx) error {
 		if c.ID != "" && p.Info.ID != c.ID {
 			continue
 		}
-		fmt.Printf("Pending: %s  %s  from %s  %s ago\n", p.Proof.Device.Name, p.Proof.Device.Platform, p.Info.LastIP, time.Since(p.Info.Created).Round(time.Second))
+		fmt.Printf("Pending: %s  %s  from %s  %s ago\n", p.Proof.Device.Name, p.Proof.Device.Platform, safetext.IP(p.Info.LastIP), time.Since(p.Proof.Device.Created).Round(time.Second))
 		fmt.Printf("Fingerprint: %s      ← computed here from the device's own keys\n", p.Words)
 		fmt.Printf("Account key: %s\n", a.State.Chain.AccountWords)
 		if !confirm("Does the fingerprint match the new device's terminal? Approve") {
@@ -354,6 +370,7 @@ func (c *DevicesRevokeCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	fmt.Printf("✓ Revoked %s (%s). Your user key is now version %d; every other device picks it up on its next sync.\n", res.Device.Name, res.Device.ID, res.UKeyVersion)
+	rewrapSlots(bg, a, res.Slots)
 	if len(res.Projects) > 0 {
 		fmt.Println("The revoked device could read the keys of these projects:")
 		for _, p := range res.Projects {
@@ -521,6 +538,40 @@ func (c *AgentUnlockDisableCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
+// rewrapSlots re-creates agent unlock slots that a key rotation disabled,
+// for keys the SSH agent still holds, keeping their original expiry.
+func rewrapSlots(ctx context.Context, a *account.Account, slots []chain.SlotState) {
+	if len(slots) == 0 {
+		return
+	}
+	ag, err := sshagent.Dial()
+	if err != nil {
+		fmt.Printf("The rotation disabled %d SSH-agent unlock slot(s). Re-enable them with: esec vault agent-unlock enable --key <key>\n", len(slots))
+		return
+	}
+	defer ag.Close()
+	for _, s := range slots {
+		ttl := time.Until(s.Expires)
+		key, err := ag.Find(s.SSHKeyFP)
+		if err != nil || ttl < time.Minute {
+			fmt.Printf("Slot %s (%s) was disabled by the rotation; re-enable it with: esec vault agent-unlock enable --key %s\n", s.SlotID, s.SSHKeyFP, s.SSHKeyFP)
+			continue
+		}
+		// A revoked device may have held this SSH key; re-creating the
+		// slot would let it back in. Only an explicit yes re-creates it.
+		if !confirm(fmt.Sprintf("The rotation disabled SSH-agent unlock for %s. Re-create it? Answer yes only if no revoked device ever had this SSH key", s.SSHKeyFP)) {
+			fmt.Printf("Left slot %s disabled.\n", s.SlotID)
+			continue
+		}
+		id, err := a.EnableAgentSlot(ctx, ag, key, ttl)
+		if err != nil {
+			fmt.Printf("! Could not re-create the slot for %s: %v\n", s.SSHKeyFP, err)
+			continue
+		}
+		fmt.Printf("✓ Re-created SSH-agent unlock slot %s for %s.\n", id, s.SSHKeyFP)
+	}
+}
+
 // parseTTL accepts Go durations plus a "d" (days) suffix.
 func parseTTL(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
@@ -565,10 +616,11 @@ func accountRotate(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(5 * time.Minute)
 	defer cancel()
-	v, err := a.RotateUserKey(bg, "manual rotation")
+	v, slots, err := a.RotateUserKey(bg, "manual rotation")
 	if err != nil {
 		return err
 	}
+	rewrapSlots(bg, a, slots)
 	id, err := identity.Load(ctx.Keyring)
 	if err != nil {
 		return err

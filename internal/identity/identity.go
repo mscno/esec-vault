@@ -126,20 +126,53 @@ func ShortFingerprint(fp string) string {
 // The passphrase may be empty, which yields an identity protected by the
 // mnemonic alone.
 func DeriveMaster(mnemonic string, passphrase string) (pub, priv [32]byte, err error) {
+	keys, err := DeriveMasterKeys(mnemonic, passphrase)
+	if err != nil {
+		return pub, priv, err
+	}
+	return keys.Public, keys.Private, nil
+}
+
+// MasterKeys are all keys derived from the recovery phrase.
+type MasterKeys struct {
+	Public  [32]byte
+	Private [32]byte
+	// Sign is an Ed25519 key derived from the same stretched seed. It signs
+	// the root of a vault account, so a device recovering with the phrase
+	// can tell the real account from one a server made up around the
+	// (public) master key.
+	Sign ed25519.PrivateKey
+}
+
+// SignPublic returns the public half of the master signing key.
+func (k *MasterKeys) SignPublic() ed25519.PublicKey {
+	pub, _ := k.Sign.Public().(ed25519.PublicKey)
+	return pub
+}
+
+// masterSignInfo is the HKDF info string for the master signing key.
+const masterSignInfo = "esec-master-sign-v1"
+
+// DeriveMasterKeys derives the master X25519 keypair and signing key.
+func DeriveMasterKeys(mnemonic string, passphrase string) (*MasterKeys, error) {
 	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, passphrase)
 	if err != nil {
-		return pub, priv, fmt.Errorf("invalid recovery phrase: %w", err)
+		return nil, fmt.Errorf("invalid recovery phrase: %w", err)
 	}
 	stretched := argon2.IDKey(seed, derivationSalt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	masterSeed, err := crypto.DeriveKey(stretched, masterInfo)
 	if err != nil {
-		return pub, priv, err
+		return nil, err
 	}
 	p, s, err := box.GenerateKey(bytes.NewReader(masterSeed[:]))
 	if err != nil {
-		return pub, priv, fmt.Errorf("failed to derive master keypair: %w", err)
+		return nil, fmt.Errorf("failed to derive master keypair: %w", err)
 	}
-	return *p, *s, nil
+	signSeed, err := crypto.DeriveKey(stretched, masterSignInfo)
+	if err != nil {
+		return nil, err
+	}
+	return &MasterKeys{Public: *p, Private: *s, Sign: ed25519.NewKeyFromSeed(signSeed[:])}, nil
 }
 
 // identityFromPrivate recovers the public half from a private key.
@@ -414,10 +447,11 @@ func InitConfirmed(kr keyring.Keyring, passphrase string, confirmOverwrite func(
 		return "", fmt.Errorf("failed to generate mnemonic: %w", err)
 	}
 
-	masterPub, _, err := DeriveMaster(mnemonic, passphrase)
+	keys, err := DeriveMasterKeys(mnemonic, passphrase)
 	if err != nil {
 		return "", err
 	}
+	masterPub := keys.Public
 
 	id, err := NewRandom()
 	if err != nil {
@@ -432,6 +466,9 @@ func InitConfirmed(kr keyring.Keyring, passphrase string, confirmOverwrite func(
 
 	if err := commit(kr, id, &masterPub); err != nil {
 		return "", fmt.Errorf("failed to store identity in keyring: %w", err)
+	}
+	if err := saveRootAuthFor(keys, id); err != nil {
+		return "", err
 	}
 	return mnemonic, nil
 }
@@ -449,10 +486,11 @@ func Recover(kr keyring.Keyring, mnemonic, passphrase string, wrapped []byte, co
 		return nil, err
 	}
 
-	masterPub, masterPriv, err := DeriveMaster(mnemonic, passphrase)
+	keys, err := DeriveMasterKeys(mnemonic, passphrase)
 	if err != nil {
 		return nil, err
 	}
+	masterPub, masterPriv := keys.Public, keys.Private
 
 	var id *Identity
 	if len(wrapped) > 0 {
@@ -466,7 +504,24 @@ func Recover(kr keyring.Keyring, mnemonic, passphrase string, wrapped []byte, co
 	if err := commit(kr, id, &masterPub); err != nil {
 		return nil, err
 	}
+	if err := saveRootAuthFor(keys, id); err != nil {
+		return nil, err
+	}
 	return id, nil
+}
+
+// saveRootAuthFor stores the phrase's root authorization for id when id can
+// sign; an identity without a signing key gets one, and an authorization, at
+// its first vault login.
+func saveRootAuthFor(keys *MasterKeys, id *Identity) error {
+	if id.Sign == nil {
+		return nil
+	}
+	ra, err := MakeRootAuth(keys, id)
+	if err != nil {
+		return err
+	}
+	return SaveRootAuth(ra)
 }
 
 // ChangePassphrase re-wraps the existing identity under a master key derived
@@ -507,10 +562,11 @@ func ChangePassphrase(kr keyring.Keyring, mnemonic, oldPassphrase, newPassphrase
 // share blobs sealed to the old identity must be re-sealed afterwards — use
 // ChangePassphrase instead if the goal is only to change protection.
 func Rotate(kr keyring.Keyring, mnemonic, passphrase string) (*Identity, error) {
-	masterPub, masterPriv, err := DeriveMaster(mnemonic, passphrase)
+	keys, err := DeriveMasterKeys(mnemonic, passphrase)
 	if err != nil {
 		return nil, err
 	}
+	masterPub, masterPriv := keys.Public, keys.Private
 	verified, err := unwrap(masterPub, masterPriv, passphrase != "")
 	if err != nil {
 		return nil, err
@@ -528,6 +584,9 @@ func Rotate(kr keyring.Keyring, mnemonic, passphrase string) (*Identity, error) 
 	}
 	id.PassphraseProtected = passphrase != ""
 	if err := commit(kr, id, &masterPub); err != nil {
+		return nil, err
+	}
+	if err := saveRootAuthFor(keys, id); err != nil {
 		return nil, err
 	}
 	return id, nil

@@ -411,7 +411,9 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM oauth_states WHERE created_at < ?`, []any{unix(now.Add(-time.Hour))}},
 		{`DELETE FROM web_sessions WHERE expires_at < ?`, []any{unix(now)}},
 		{`DELETE FROM sessions WHERE expires_at < ? OR (revoked_at > 0 AND revoked_at < ?)`, []any{unix(now), unix(now.Add(-24 * time.Hour))}},
-		{`DELETE FROM devices WHERE status IN ('registering', 'pending') AND created_at < ?`, []any{unix(now.Add(-24 * time.Hour))}},
+		{`DELETE FROM devices WHERE status = 'registering' AND created_at < ?`, []any{unix(now.Add(-24 * time.Hour))}},
+		{`DELETE FROM devices WHERE status = 'pending' AND pending_expires < ?`, []any{unix(now.Add(-24 * time.Hour))}},
+		{`DELETE FROM sessions WHERE device_id NOT IN (SELECT id FROM devices)`, nil},
 		{`DELETE FROM events WHERE created_at < ?`, []any{unix(now.Add(-30 * 24 * time.Hour))}},
 	}
 	for _, s := range stmts {

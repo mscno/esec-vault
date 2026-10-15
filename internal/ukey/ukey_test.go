@@ -2,8 +2,8 @@ package ukey
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"testing"
 	"time"
 
@@ -16,7 +16,8 @@ import (
 func state(t *testing.T, id *identity.Identity) *chain.State {
 	t.Helper()
 	s := chain.New("gh:1")
-	e, err := s.NewLink(chain.TypeInit, chain.InitBody{EncPub: hex.EncodeToString(id.Public[:]), SignPub: hex.EncodeToString(id.SignPublic()), MasterPub: hex.EncodeToString(bytes.Repeat([]byte{7}, 32))}, time.Now(), id.Sign)
+	_, ms, _ := ed25519.GenerateKey(rand.Reader)
+	e, err := s.NewLink(chain.TypeInit, chain.NewInitBody(id.Public, id.SignPublic(), [32]byte{7}, ms), time.Now(), id.Sign)
 	if err != nil {
 		t.Fatal(err)
 	}

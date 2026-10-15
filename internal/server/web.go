@@ -155,8 +155,17 @@ func (s *Server) webIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
-	if !s.limits.allow("oauth:"+s.clientIP(r), 30, time.Hour, now) {
+	if !s.limits.allow("oauth:"+rateKey(s.clientIP(r)), 30, time.Hour, now) {
 		s.webError(w, http.StatusTooManyRequests, "Too many sign-in attempts from this address. Try again later.")
+		return
+	}
+	var open int
+	if err := s.db.sql.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM oauth_states WHERE created_at > ?`, now.Add(-oauthStateTTL).Unix()).Scan(&open); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if open >= 2000 {
+		s.webError(w, http.StatusServiceUnavailable, "Too many sign-ins in progress. Try again in a few minutes.")
 		return
 	}
 	state := randomToken("")
@@ -259,6 +268,21 @@ func (s *Server) webDevice(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf, "Code": code})
 }
 
+// allowCode reports whether the address and the signed-in user may still
+// try codes. Only wrong codes count (see failedCode), on both the entry and
+// the confirmation form, so codes cannot be guessed through either.
+func (s *Server) allowCode(r *http.Request, ws *webSession) bool {
+	now := s.now()
+	return !s.limits.blocked("code:ip:"+rateKey(s.clientIP(r)), 30, time.Hour, now) && !s.limits.blocked("code:user:"+ws.user.ID, 10, 10*time.Minute, now)
+}
+
+// failedCode counts a wrong or expired code.
+func (s *Server) failedCode(r *http.Request, ws *webSession) {
+	now := s.now()
+	s.limits.allow("code:ip:"+rateKey(s.clientIP(r)), 30, time.Hour, now)
+	s.limits.allow("code:user:"+ws.user.ID, 10, 10*time.Minute, now)
+}
+
 // pendingCode is a device code waiting for confirmation, with its device.
 type pendingCode struct {
 	code     string
@@ -309,8 +333,7 @@ func (s *Server) webDeviceLookup(w http.ResponseWriter, r *http.Request) {
 		s.webError(w, http.StatusForbidden, "The form expired. Reload the page and try again.")
 		return
 	}
-	now := s.now()
-	if !s.limits.allow("code:ip:"+s.clientIP(r), 30, time.Hour, now) || !s.limits.allow("code:user:"+ws.user.ID, 10, 10*time.Minute, now) {
+	if !s.allowCode(r, ws) {
 		s.webError(w, http.StatusTooManyRequests, "Too many codes entered. Wait a few minutes and try again.")
 		return
 	}
@@ -320,6 +343,7 @@ func (s *Server) webDeviceLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pc == nil {
+		s.failedCode(r, ws)
 		s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf, "Error": "That code is not valid or has expired. Check the code in your terminal."})
 		return
 	}
@@ -342,6 +366,10 @@ func (s *Server) webDeviceConfirm(w http.ResponseWriter, r *http.Request) {
 		s.webError(w, http.StatusForbidden, "The form expired. Reload the page and try again.")
 		return
 	}
+	if !s.allowCode(r, ws) {
+		s.webError(w, http.StatusTooManyRequests, "Too many codes entered. Wait a few minutes and try again.")
+		return
+	}
 	ctx := r.Context()
 	now := s.now()
 	pc, err := s.lookupCode(ctx, ws.user.ID, r.PostForm.Get("code"))
@@ -350,6 +378,7 @@ func (s *Server) webDeviceConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pc == nil {
+		s.failedCode(r, ws)
 		s.webError(w, http.StatusBadRequest, "That code is no longer valid. Run 'esec vault login' again.")
 		return
 	}

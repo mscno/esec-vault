@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
+	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/servertest"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/wire"
@@ -51,6 +53,8 @@ func (u *testUI) Printf(format string, args ...any) {
 func (u *testUI) Confirm(string) bool           { return u.answer }
 func (u *testUI) Secret(string) (string, error) { return "", errors.New("no secrets in tests") }
 
+var lastMnemonic string
+
 func setup(t *testing.T) (*servertest.Harness, *account.Account) {
 	t.Helper()
 	h := servertest.Start(t, 53101343)
@@ -60,9 +64,11 @@ func setup(t *testing.T) (*servertest.Harness, *account.Account) {
 	t.Setenv("ESEC_KEYRING_DIR", "")
 	t.Setenv(secretstore.EnvBackend, secretstore.BackendFile)
 	kr := keyring.NewOS()
-	if _, err := identity.Init(kr, "", nil); err != nil {
+	mnemonic, err := identity.Init(kr, "", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	lastMnemonic = mnemonic
 	if err := keystore.New().Write("acme/store", map[string]string{"ESEC_PRIVATE_KEY_DEV": strings.Repeat("ab", 32)}, false); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +123,8 @@ func TestSyncRejectsChainRollbackAndFork(t *testing.T) {
 	exec(t, h, `DELETE FROM chain_links`)
 	fake, _ := identity.NewRandom()
 	st := chain.New(a.State.User)
-	e, err := st.NewLink(chain.TypeInit, chain.InitBody{EncPub: strings.Repeat("11", 32), SignPub: fmt.Sprintf("%x", fake.SignPublic()), MasterPub: strings.Repeat("22", 32)}, time.Now(), fake.Sign)
+	_, fakeMaster, _ := ed25519.GenerateKey(nil)
+	e, err := st.NewLink(chain.TypeInit, chain.NewInitBody(fake.Public, fake.SignPublic(), [32]byte{2}, fakeMaster), time.Now(), fake.Sign)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,5 +205,98 @@ func TestThreeWayMerge(t *testing.T) {
 	_ = h.DB.SQL().QueryRow(`SELECT COUNT(*) FROM vault_versions WHERE user_id = ?`, a.State.User).Scan(&n)
 	if n != 3 {
 		t.Fatalf("a conflicting sync pushed a version (%d versions)", n)
+	}
+}
+
+// TestRecoveryRejectsForgedAccount covers a server that builds a new chain
+// around the user's real master public key (which it knows) with its own
+// user key, and wraps that key to the real master key. Only the recovery
+// phrase's signing key can authorize a root, so recovery must refuse.
+func TestRecoveryRejectsForgedAccount(t *testing.T) {
+	h, a := setup(t)
+	user := a.State.User
+	wrapped, err := identity.WrappedFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr, _ := identity.ReadHeader(wrapped)
+	realMaster := hdr.MasterPublic
+
+	evil, _ := identity.NewRandom()
+	_, evilMasterSign, _ := ed25519.GenerateKey(nil)
+	st := chain.New(user)
+	e, err := st.NewLink(chain.TypeInit, chain.NewInitBody(evil.Public, evil.SignPublic(), realMaster, evilMasterSign), time.Now(), evil.Sign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evilWrapped, err := identity.Wrapped(evil, &realMaster, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(t, h, `DELETE FROM chain_links`)
+	exec(t, h, `DELETE FROM identity_blobs`)
+	exec(t, h, `INSERT INTO chain_links (user_id, seq, hash, envelope, created_at) VALUES (?, 1, ?, ?, 0)`, user, e.Hash(), raw)
+	exec(t, h, `INSERT INTO identity_blobs (user_id, ukey_version, blob, created_at) VALUES (?, 1, ?, 0)`, user, evilWrapped)
+
+	// A brand-new machine recovers with the genuine phrase.
+	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	ui := &testUI{t: t, h: h}
+	_, err = account.Login(context.Background(), keyring.NewOS(), ui, account.LoginOptions{Server: h.URL, Name: "vm", Method: account.LoginRecover, Mnemonic: lastMnemonic, Poll: 50 * time.Millisecond})
+	if err == nil || !strings.Contains(err.Error(), "does not belong to this account") {
+		t.Fatalf("forged account accepted during recovery: %v", err)
+	}
+	if id, err := identity.Load(keyring.NewOS()); err == nil && id.Public == evil.Public {
+		t.Fatal("the attacker's user key was installed")
+	}
+}
+
+// TestRefusesAccountWithAnotherRecoveryKey covers an account created by
+// someone else (for example after a GitHub account takeover): a machine
+// with the user's own identity refuses to join it.
+func TestRefusesAccountWithAnotherRecoveryKey(t *testing.T) {
+	h, _ := setup(t)
+	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	kr := keyring.NewOS()
+	if _, err := identity.Init(kr, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	ui := &testUI{t: t, h: h}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err := account.Login(ctx, kr, ui, account.LoginOptions{Server: h.URL, Name: "mine", Poll: 50 * time.Millisecond})
+	if err == nil || !strings.Contains(err.Error(), "different recovery phrase") {
+		t.Fatalf("joined an account with another recovery key: %v", err)
+	}
+}
+
+func TestReplacedIdentityIsKept(t *testing.T) {
+	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	kr := keyring.NewMemory()
+	if _, err := identity.Init(kr, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := identity.Load(kr)
+	for range 2 {
+		next, _ := identity.NewRandom()
+		wrapped, _ := identity.WrappedFile()
+		w, err := identity.WrapForMaster(next, wrapped)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := identity.Install(kr, next, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept, err := os.ReadFile(paths.IdentityFile() + ".previous-" + identity.ShortFingerprint(first.Fingerprint()))
+	if err != nil {
+		t.Fatalf("first identity not kept: %v", err)
+	}
+	h, err := identity.ReadHeader(kept)
+	if err != nil || h.IdentityPublic != first.Public {
+		t.Fatal("kept file is not the first identity")
 	}
 }

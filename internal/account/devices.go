@@ -121,7 +121,7 @@ func (a *Account) Devices(ctx context.Context) ([]DeviceView, error) {
 		out = append(out, v)
 	}
 	for _, d := range server {
-		if _, inChain := st.Devices[d.ID]; inChain || d.Status != wire.DevicePending {
+		if _, inChain := st.Devices[d.ID]; inChain || d.Status != wire.DevicePending || chain.ValidDeviceID(d.ID) != nil || chain.ValidDeviceName(d.Name) != nil {
 			continue
 		}
 		out = append(out, DeviceView{DeviceState: chain.DeviceState{Device: chain.Device{ID: d.ID, Name: d.Name, Platform: d.Platform, EncPub: d.EncPub, SignPub: d.SignPub, Created: d.Created}, Status: "pending"}, ServerStatus: d.Status, LastSeen: d.LastSeen, LastIP: d.LastIP})
@@ -134,6 +134,8 @@ func (a *Account) Devices(ctx context.Context) ([]DeviceView, error) {
 type RevokeResult struct {
 	Device      chain.DeviceState
 	UKeyVersion uint64
+	// Slots lists the agent unlock slots the rotation disabled.
+	Slots []chain.SlotState
 	// Projects lists the projects whose keys the revoked device could read.
 	Projects []string
 }
@@ -178,6 +180,7 @@ func (a *Account) revoke(ctx context.Context, deviceID, reason string) (*RevokeR
 	if err != nil {
 		return nil, err
 	}
+	slots := activeSlots(st, a.Now())
 	version, err := a.rotate(ctx, next, id, []*envelope.Envelope{revoke}, "revoked "+deviceID)
 	if err != nil {
 		return nil, err
@@ -186,34 +189,50 @@ func (a *Account) revoke(ctx context.Context, deviceID, reason string) (*RevokeR
 	if err != nil {
 		return nil, err
 	}
-	return &RevokeResult{Device: *target, UKeyVersion: version, Projects: projects}, nil
+	return &RevokeResult{Device: *target, UKeyVersion: version, Projects: projects, Slots: slots}, nil
 }
 
-// RotateUserKey holds the account lock; see rotateUserKey.
-func (a *Account) RotateUserKey(ctx context.Context, reason string) (uint64, error) {
+// activeSlots lists the usable agent slots of st.
+func activeSlots(st *chain.State, now time.Time) []chain.SlotState {
+	var out []chain.SlotState
+	for id := range st.Slots {
+		if s, ok := st.UsableSlot(id, now); ok {
+			out = append(out, *s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SlotID < out[j].SlotID })
+	return out
+}
+
+// RotateUserKey holds the account lock; see rotateUserKey. It returns the
+// new key version and the agent slots the rotation disabled.
+func (a *Account) RotateUserKey(ctx context.Context, reason string) (uint64, []chain.SlotState, error) {
 	var out uint64
+	var slots []chain.SlotState
 	err := a.Locked(func() error {
 		var err error
-		out, err = a.rotateUserKey(ctx, reason)
+		out, slots, err = a.rotateUserKey(ctx, reason)
 		return err
 	})
-	return out, err
+	return out, slots, err
 }
 
 // RotateUserKey replaces the user key without revoking a device.
-func (a *Account) rotateUserKey(ctx context.Context, reason string) (uint64, error) {
+func (a *Account) rotateUserKey(ctx context.Context, reason string) (uint64, []chain.SlotState, error) {
 	if _, err := a.sync(ctx, SyncOptions{}); err != nil {
-		return 0, fmt.Errorf("sync before rotating: %w", err)
+		return 0, nil, fmt.Errorf("sync before rotating: %w", err)
 	}
 	st, err := a.VerifiedChain(ctx)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	id, err := a.userKey(ctx, st)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return a.rotate(ctx, st, id, nil, reason)
+	slots := activeSlots(st, a.Now())
+	v, err := a.rotate(ctx, st, id, nil, reason)
+	return v, slots, err
 }
 
 // rotate appends a ukey_rotate link after prefix, seals the new key to every

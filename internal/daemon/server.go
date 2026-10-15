@@ -10,8 +10,6 @@ import (
 	"github.com/mscno/esec-vault/internal/chain"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/notify"
-	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/storage"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
@@ -82,8 +80,11 @@ func (s *Server) serverLoop(ctx context.Context) {
 			continue
 		}
 		for _, e := range ev.Events {
-			if e.Type == wire.EventDevicePending && !seenPending[e.Detail] {
+			switch {
+			case e.Type == wire.EventDevicePending && !seenPending[e.Detail]:
 				s.announcePending(ctx, a, e.Detail, seenPending)
+			case e.Type == wire.EventDeviceStatus:
+				s.announceSuspended(ctx, a, e.Detail)
 			}
 		}
 		if ev.Next != a.State.Events.Last {
@@ -98,11 +99,6 @@ func (s *Server) serverLoop(ctx context.Context) {
 // serverSync merges the server vault into local keyrings and pushes local
 // changes, holding the keyring lock so CLI edits are never lost.
 func (s *Server) serverSync(ctx context.Context, a *account.Account) error {
-	unlock, err := storage.Lock(paths.KeyringDir())
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	sctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	res, err := a.Sync(sctx, account.SyncOptions{})
@@ -160,6 +156,22 @@ func (s *Server) announcePending(ctx context.Context, a *account.Account, id str
 		msg := fmt.Sprintf("%q (%s) is waiting for approval. Fingerprint %s.", p.Proof.Device.Name, p.Proof.Device.Platform, p.Words)
 		s.Logger.Info("vault server: "+msg, "device", id)
 		Notifier("esec vault: approve device?", msg+" Run: esec vault devices approve")
+	}
+}
+
+// announceSuspended asks the user to finish revoking a device that was
+// suspended on the server (for example from the web page).
+func (s *Server) announceSuspended(ctx context.Context, a *account.Account, id string) {
+	devices, err := a.Devices(ctx)
+	if err != nil {
+		return
+	}
+	for _, d := range devices {
+		if d.ID == id && d.ServerStatus == wire.DeviceSuspended && d.Status == chain.StatusActive {
+			msg := fmt.Sprintf("Device %q was suspended. Finish revoking it: esec vault devices revoke %s", d.Name, d.ID)
+			s.Logger.Warn("vault server: "+msg, "device", d.ID)
+			Notifier("esec vault: device suspended", msg)
+		}
 	}
 }
 

@@ -238,6 +238,11 @@ type IdentityPassphraseCmd struct {
 
 // Run implements the passphrase command.
 func (c *IdentityPassphraseCmd) Run(ctx *cliCtx) error {
+	if _, err := account.LoadState(); err == nil {
+		// The account's root and wrapped identity are bound to the master key
+		// the phrase and passphrase derive; changing it would orphan both.
+		return errors.New("the recovery passphrase cannot change while this machine is signed in to a vault server: the account is bound to the current recovery key")
+	}
 	if _, err := identity.Load(ctx.Keyring); err != nil {
 		return err
 	}

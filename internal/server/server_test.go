@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -98,10 +99,11 @@ func signIn(t *testing.T, h *servertest.Harness, key *devicekey.Key, name string
 }
 
 type account struct {
-	u      *identity.Identity
-	master [32]byte
-	st     *chain.State
-	gen    uint64
+	u          *identity.Identity
+	master     [32]byte
+	masterSign ed25519.PrivateKey
+	st         *chain.State
+	gen        uint64
 }
 
 func (a *account) wrapped(t *testing.T) []byte {
@@ -172,8 +174,9 @@ func create(t *testing.T, d *dev) *account {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &account{u: u, master: *mpub, st: chain.New(user)}
-	initLink, st1 := a.link(t, chain.TypeInit, chain.InitBody{EncPub: hex.EncodeToString(u.Public[:]), SignPub: hex.EncodeToString(u.SignPublic()), MasterPub: hex.EncodeToString(mpub[:])})
+	_, msign, _ := ed25519.GenerateKey(rand.Reader)
+	a := &account{u: u, master: *mpub, masterSign: msign, st: chain.New(user)}
+	initLink, st1 := a.link(t, chain.TypeInit, chain.NewInitBody(u.Public, u.SignPublic(), *mpub, msign))
 	a.st = st1
 	addLink, st2 := a.link(t, chain.TypeDeviceAdd, a.addBody(t, d, chain.MethodFirst, ""))
 	if _, err := d.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{initLink, addLink}, DeviceBoxes: []wire.DeviceBox{a.box(t, st2, d)}, Identity: a.wrapped(t), Vault: a.vault(t, 0, map[string]map[string]string{"acme/store": {"ESEC_PRIVATE_KEY_DEV": strings.Repeat("ab", 32)}})}); err != nil {
@@ -443,7 +446,7 @@ func TestCommitAndVaultRules(t *testing.T) { //nolint:gocyclo // one sequential 
 
 	// A second init.
 	u2, _ := identity.NewRandom()
-	initAgain, err := a.st.NewLink(chain.TypeInit, chain.InitBody{EncPub: hex.EncodeToString(u2.Public[:]), SignPub: hex.EncodeToString(u2.SignPublic()), MasterPub: hex.EncodeToString(a.master[:])}, time.Now(), u2.Sign)
+	initAgain, err := a.st.NewLink(chain.TypeInit, chain.NewInitBody(u2.Public, u2.SignPublic(), a.master, a.masterSign), time.Now(), u2.Sign)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,5 +614,92 @@ func TestWebSecurity(t *testing.T) {
 	status, _, _ = other.Get("/auth/github/callback?code=code-1&state=forged")
 	if status != http.StatusBadRequest {
 		t.Fatalf("forged OAuth state: %d", status)
+	}
+}
+
+func TestCodeGuessingIsLimited(t *testing.T) {
+	h := harness(t)
+	b := h.Browser("mscno")
+	_, page, err := b.Get("/device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf := servertest.CSRF(page)
+	for i := range 10 {
+		form := url.Values{"code": {fmt.Sprintf("AAAA-%04d", i)}}
+		path := "/device"
+		if i%2 == 1 {
+			path = "/device/confirm"
+			form.Set("decision", "approve")
+		}
+		if status, _, _ := b.Post(path, csrf, form); status == http.StatusTooManyRequests {
+			t.Fatalf("limited after %d wrong codes", i)
+		}
+	}
+	// Both forms now refuse, even for a valid code.
+	key, _ := devicekey.Generate()
+	_, reg := register(t, h, key, "vm")
+	for _, path := range []string{"/device", "/device/confirm"} {
+		status, _, _ := b.Post(path, csrf, url.Values{"code": {reg.UserCode}, "decision": {"approve"}})
+		if status != http.StatusTooManyRequests {
+			t.Fatalf("%s after 10 wrong codes: %d", path, status)
+		}
+	}
+}
+
+func TestStoredKeysAreWriteOnce(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	a := create(t, owner)
+	vm := signIn(t, h, nil, "vm")
+	a.approve(t, owner, vm)
+	ctx := context.Background()
+	// An existing box cannot be replaced, and the identity cannot be
+	// replaced outside a key change.
+	if _, err := owner.c.Commit(ctx, &wire.Commit{DeviceBoxes: []wire.DeviceBox{{DeviceID: vm.info.ID, UKeyVersion: 1, Box: []byte("garbage")}}}); code(err) != wire.ErrConflict {
+		t.Fatalf("box overwrite: %v", err)
+	}
+	if _, err := owner.c.Commit(ctx, &wire.Commit{Identity: a.wrapped(t)}); code(err) != wire.ErrInvalidRequest {
+		t.Fatalf("identity overwrite: %v", err)
+	}
+	box, err := vm.c.DeviceBox(ctx)
+	if err != nil || string(box.Box) == "garbage" {
+		t.Fatalf("box changed: %v", err)
+	}
+	// Link times far from the server clock are refused.
+	e, err := a.st.NewLink(chain.TypeDeviceRename, chain.DeviceRenameBody{DeviceID: vm.info.ID, Name: "future"}, time.Now().Add(48*time.Hour), a.u.Sign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.c.Commit(ctx, &wire.Commit{Links: []*envelope.Envelope{e}}); code(err) != wire.ErrInvalidRequest {
+		t.Fatalf("future link: %v", err)
+	}
+}
+
+func TestPendingDeviceCap(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	for i := range 5 {
+		signIn(t, h, nil, fmt.Sprintf("vm%d", i))
+	}
+	key, _ := devicekey.Generate()
+	c, reg := register(t, h, key, "one-too-many")
+	if err := h.Browser("mscno").Confirm(reg.UserCode, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PollToken(context.Background(), reg.DeviceCode); code(err) != wire.ErrAccessDenied {
+		t.Fatalf("sixth pending device: %v", err)
+	}
+}
+
+func TestDeletedDeviceIsUnauthorized(t *testing.T) {
+	h := harness(t)
+	d := signIn(t, h, nil, "laptop")
+	if _, err := h.DB.SQL().Exec(`DELETE FROM devices WHERE id = ?`, d.info.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.c.Me(context.Background()); code(err) != wire.ErrUnauthorized {
+		t.Fatalf("deleted device: %v", err)
 	}
 }

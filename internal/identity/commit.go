@@ -39,6 +39,17 @@ func commitWrapped(kr keyring.Keyring, id *Identity, wrapped []byte) error {
 		if err := storage.Write(paths.IdentityFile()+".previous", raw); err != nil {
 			return err
 		}
+		// Also keep each replaced identity under its own fingerprint, and
+		// never overwrite such a copy: backups and shares sealed to an old
+		// identity stay recoverable with its recovery phrase.
+		if h, _, err := decodeHeader(raw); err == nil && h.IdentityPublic != id.Public {
+			keep := paths.IdentityFile() + ".previous-" + ShortFingerprint(Fingerprint(h.IdentityPublic))
+			if _, err := os.Stat(keep); errors.Is(err, os.ErrNotExist) {
+				if err := storage.Write(keep, raw); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	rollback := func() error {
 		var errs []error

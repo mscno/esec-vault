@@ -13,6 +13,7 @@
 {{else}}
 <p>This is a <strong>new device</strong>. After you confirm, it still cannot decrypt anything until you approve it from a trusted device (<code>esec vault devices approve</code>), or it uses your recovery phrase or an SSH-agent unlock slot.</p>
 {{end}}
+<p><strong>Only confirm a sign-in you started yourself, just now, with <code>esec vault login</code>.</strong> If someone sent you this link or asked you for a code, choose Deny: confirming lets their machine request access to your account.</p>
 <p>Check that the code and fingerprint match your terminal.</p>
 <form method="post" action="/device/confirm" class="inline">
   <input type="hidden" name="csrf" value="{{.CSRF}}">

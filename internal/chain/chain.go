@@ -77,11 +77,35 @@ type Link struct {
 	Body        json.RawMessage `json:"body"`
 }
 
-// InitBody starts a chain with the first user key.
+// InitBody starts a chain with the first user key. MasterSignPub is the
+// public half of a signing key derived from the recovery phrase, and RootSig
+// its signature over RootStatement. A device recovering with the phrase
+// derives that key itself, so a server cannot substitute an account of its
+// own around the user's (public) master key.
 type InitBody struct {
-	EncPub    string `json:"enc_pub"`
-	SignPub   string `json:"sign_pub"`
-	MasterPub string `json:"master_pub"`
+	EncPub        string `json:"enc_pub"`
+	SignPub       string `json:"sign_pub"`
+	MasterPub     string `json:"master_pub"`
+	MasterSignPub string `json:"master_sign_pub"`
+	RootSig       []byte `json:"root_sig"`
+}
+
+// NewInitBody builds an init body for a user key, authorized by masterSign.
+func NewInitBody(encPub [32]byte, signPub ed25519.PublicKey, masterPub [32]byte, masterSign ed25519.PrivateKey) InitBody {
+	msp, _ := masterSign.Public().(ed25519.PublicKey)
+	return InitBody{
+		EncPub:        hex.EncodeToString(encPub[:]),
+		SignPub:       hex.EncodeToString(signPub),
+		MasterPub:     hex.EncodeToString(masterPub[:]),
+		MasterSignPub: hex.EncodeToString(msp),
+		RootSig:       ed25519.Sign(masterSign, RootStatement(encPub, signPub)),
+	}
+}
+
+// RootStatement is what the master signing key signs to make a user key the
+// root of an account.
+func RootStatement(encPub [32]byte, signPub ed25519.PublicKey) []byte {
+	return []byte("esec-vault root v1\n" + hex.EncodeToString(encPub[:]) + "\n" + hex.EncodeToString(signPub) + "\n")
 }
 
 // Device describes a device's public identity.
@@ -175,8 +199,11 @@ type State struct {
 	EncPub      [32]byte
 	SignPub     ed25519.PublicKey
 	MasterPub   [32]byte
-	Devices     map[string]*DeviceState
-	Slots       map[string]*SlotState
+	// MasterSignPub is the recovery-phrase signing key that authorized the
+	// root user key.
+	MasterSignPub ed25519.PublicKey
+	Devices       map[string]*DeviceState
+	Slots         map[string]*SlotState
 	// Links holds the decoded links, in order.
 	Links []Link
 }
@@ -380,7 +407,7 @@ func (s *State) AccountWords() string {
 	if s.Root() == "" {
 		return ""
 	}
-	return fpwords.Words(fpwords.DomainAccount, []byte(s.User), []byte(s.Root()))
+	return fpwords.Words(fpwords.AccountWords, fpwords.DomainAccount, []byte(s.User), []byte(s.Root()))
 }
 
 // CheckPin returns ErrRollback unless s contains the pinned link at seq.
@@ -516,10 +543,17 @@ func (s *State) applyInit(e *envelope.Envelope, l Link) error {
 	if err != nil {
 		return err
 	}
+	masterSign, err := ParseSignKey(b.MasterSignPub)
+	if err != nil {
+		return fmt.Errorf("master signing key: %w", err)
+	}
+	if !ed25519.Verify(masterSign, RootStatement(enc, sign), b.RootSig) {
+		return fmt.Errorf("root key is not authorized by the master signing key")
+	}
 	if err := e.Require(KindLink, sign); err != nil {
 		return err
 	}
-	s.UKeyVersion, s.EncPub, s.SignPub, s.MasterPub = 1, enc, sign, master
+	s.UKeyVersion, s.EncPub, s.SignPub, s.MasterPub, s.MasterSignPub = 1, enc, sign, master, masterSign
 	return nil
 }
 

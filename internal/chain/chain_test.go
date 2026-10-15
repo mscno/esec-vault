@@ -35,9 +35,10 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{t: t, u: u, s: chain.New(user), now: t0}
-	master := make([]byte, 32)
+	var master [32]byte
 	master[0] = 9
-	f.add(chain.TypeInit, chain.InitBody{EncPub: hex.EncodeToString(u.Public[:]), SignPub: hex.EncodeToString(u.SignPublic()), MasterPub: hex.EncodeToString(master)}, u.Sign)
+	_, masterSign, _ := ed25519.GenerateKey(rand.Reader)
+	f.add(chain.TypeInit, chain.NewInitBody(u.Public, u.SignPublic(), master, masterSign), u.Sign)
 	return f
 }
 
@@ -211,6 +212,36 @@ func TestRejectsForgedAndMalformedLinks(t *testing.T) {
 	f.reject("init link", chain.TypeInit, chain.InitBody{EncPub: strings.Repeat("11", 32), SignPub: strings.Repeat("22", 32), MasterPub: strings.Repeat("33", 32)}, f.u.Sign)
 }
 
+func TestInitNeedsRootAuthorization(t *testing.T) {
+	u, _ := identity.NewRandom()
+	var master [32]byte
+	master[0] = 1
+	_, masterSign, _ := ed25519.GenerateKey(rand.Reader)
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	for name, body := range map[string]chain.InitBody{
+		"no root signature": {EncPub: hex.EncodeToString(u.Public[:]), SignPub: hex.EncodeToString(u.SignPublic()), MasterPub: hex.EncodeToString(master[:])},
+		"signature by another master key": func() chain.InitBody {
+			b := chain.NewInitBody(u.Public, u.SignPublic(), master, masterSign)
+			b.RootSig = chain.NewInitBody(u.Public, u.SignPublic(), master, other).RootSig
+			return b
+		}(),
+		"root signature for another user key": func() chain.InitBody {
+			v, _ := identity.NewRandom()
+			b := chain.NewInitBody(v.Public, v.SignPublic(), master, masterSign)
+			b.EncPub, b.SignPub = hex.EncodeToString(u.Public[:]), hex.EncodeToString(u.SignPublic())
+			return b
+		}(),
+	} {
+		e, err := chain.New(user).NewLink(chain.TypeInit, body, t0, u.Sign)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := chain.Verify(user, []*envelope.Envelope{e}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestRotationRules(t *testing.T) {
 	f := newFixture(t)
 	_, first := f.deviceAdd("d_laptop0001", chain.MethodFirst, "", "")
@@ -333,5 +364,4 @@ func TestSanitizeName(t *testing.T) {
 			t.Errorf("SanitizeName(%q) = %q is not a valid name", in, got)
 		}
 	}
-	_ = rand.Reader
 }

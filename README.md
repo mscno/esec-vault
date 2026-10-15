@@ -97,6 +97,11 @@ esec vault login https://vault.example.com
 Write down the **Account key** words it prints. Every device of your account
 shows the same words.
 
+If your identity was created before this version, account creation asks for
+your recovery phrase once. The phrase signs your identity as the account's
+root, so a machine that later recovers with the phrase can tell your real
+account from one a server made up.
+
 On this machine, login also seals the keyring files under a per-machine
 cache key, if the `esec` on your PATH is v0.9.0 or later. Use `--no-seal` to
 keep them plain.
@@ -116,15 +121,16 @@ prints its fingerprint words. On a trusted machine, run:
 esec vault devices approve
 ```
 
-Approve only if both terminals show the same fingerprint, and the new machine
-shows your account key words. The new machine then installs your keys and
-syncs the vault.
+Approve only if both terminals show the same fingerprint. The new machine
+then shows the account key and asks you to confirm it matches your other
+devices (`esec vault status` shows it). Nothing is installed until you
+confirm. In scripts, pass the words instead: `--account-key word-word-…`.
 
 There are two other ways to unlock a new machine:
 
 | Method | Command | Needs |
 |---|---|---|
-| Recovery phrase | `esec vault login --recover` | Your 24 words |
+| Recovery phrase | `esec vault login --recover` | Your 24 words (and passphrase, if set) |
 | SSH-agent unlock | `esec vault login --ssh-agent` | A forwarded SSH agent holding an enabled key |
 
 To enable SSH-agent unlock, run this on a trusted machine:

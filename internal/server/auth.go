@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -19,7 +20,24 @@ const (
 	deviceCodeTTL   = 10 * time.Minute
 	pollInterval    = 5 * time.Second
 	pendingDeviceTT = 15 * time.Minute
+	// maxOpenRegistrations caps unconfirmed registrations server-wide.
+	maxOpenRegistrations = 1000
+	// maxPendingPerUser caps devices waiting for approval per account.
+	maxPendingPerUser = 5
 )
+
+// errReplay marks a request whose nonce was already used.
+var errReplay = errors.New("request replayed")
+
+// signatureFailure maps verifySignature errors to a response: client errors
+// are 401 with our own message, anything else is an internal error.
+func (s *Server) signatureFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, apisig.ErrInvalid) || errors.Is(err, errReplay) {
+		writeErr(w, http.StatusUnauthorized, wire.ErrUnauthorized, err.Error())
+		return
+	}
+	s.internalError(w, r, err)
+}
 
 // crockford is Crockford's base32 alphabet: no I, L, O or U.
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -110,6 +128,10 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 			return
 		}
 		dev, err := s.db.device(ctx, s.db.sql, deviceID)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusUnauthorized, wire.ErrUnauthorized, "this device is no longer registered; run 'esec vault login'")
+			return
+		}
 		if err != nil {
 			s.internalError(w, r, err)
 			return
@@ -149,7 +171,7 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 			return
 		}
 		if err := s.verifySignature(ctx, r, body, dev, now); err != nil {
-			writeErr(w, http.StatusUnauthorized, wire.ErrUnauthorized, err.Error())
+			s.signatureFailure(w, r, err)
 			return
 		}
 		ip := s.clientIP(r)
@@ -184,10 +206,10 @@ func (s *Server) verifySignature(ctx context.Context, r *http.Request, body []by
 	}
 	res, err := s.db.sql.ExecContext(ctx, `INSERT INTO nonces (device_id, nonce, seen_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, dev.ID, signed.Nonce, now.Unix())
 	if err != nil {
-		return err
+		return fmt.Errorf("record nonce: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return errors.New("request replayed")
+		return errReplay
 	}
 	return nil
 }
@@ -195,8 +217,17 @@ func (s *Server) verifySignature(ctx context.Context, r *http.Request, body []by
 func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	ip := s.clientIP(r)
-	if !s.limits.allow("register:"+ip, 10, time.Hour, now) {
+	if !s.limits.allow("register:"+rateKey(ip), 10, time.Hour, now) {
 		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many device registrations from this address")
+		return
+	}
+	var open int
+	if err := s.db.sql.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM devices WHERE status = ? AND created_at > ?`, wire.DeviceRegistering, now.Add(-time.Hour).Unix()).Scan(&open); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if open >= maxOpenRegistrations {
+		writeErr(w, http.StatusServiceUnavailable, wire.ErrRateLimited, "too many sign-ins in progress; try again later")
 		return
 	}
 	body, err := readBody(w, r, maxSmallBody)
@@ -278,13 +309,17 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 		return
 	}
 	reg, err := s.db.device(ctx, s.db.sql, deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusBadRequest, wire.ErrExpiredToken, "unknown or expired device code")
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	// Only the holder of the registered device key may collect the session.
 	if err := s.verifySignature(ctx, r, body, reg, now); err != nil {
-		writeErr(w, http.StatusUnauthorized, wire.ErrUnauthorized, err.Error())
+		s.signatureFailure(w, r, err)
 		return
 	}
 	if _, err := s.db.sql.ExecContext(ctx, `UPDATE device_codes SET last_poll = ? WHERE device_code_hash = ?`, now.Unix(), hashHex(req.DeviceCode)); err != nil {
@@ -360,6 +395,16 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 		if dev == nil {
 			if reg.Status != wire.DeviceRegistering {
 				denied = "device registration is no longer valid"
+				return nil
+			}
+			waiting := 0
+			for _, d := range existing {
+				if d.Status == wire.DevicePending && now.Before(d.PendingExpires) {
+					waiting++
+				}
+			}
+			if waiting >= maxPendingPerUser {
+				denied = "too many devices are already waiting for approval; approve or let them expire first"
 				return nil
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE devices SET user_id = ?, status = ?, pending_expires = ? WHERE id = ?`, user.ID, wire.DevicePending, now.Add(pendingDeviceTT).Unix(), reg.ID); err != nil {

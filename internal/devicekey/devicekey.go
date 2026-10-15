@@ -133,7 +133,7 @@ func (k *Key) Words() string { return Words(k.EncPubHex(), k.SignPubHex()) }
 // Words returns the fingerprint words for a device's public keys, given as
 // hex. Both sides of an approval compute them independently.
 func Words(encPubHex, signPubHex string) string {
-	return fpwords.Words(fpwords.DomainDevice, []byte(strings.ToLower(encPubHex)), []byte(strings.ToLower(signPubHex)))
+	return fpwords.Words(fpwords.DeviceWords, fpwords.DomainDevice, []byte(strings.ToLower(encPubHex)), []byte(strings.ToLower(signPubHex)))
 }
 
 // Proof signs a device proof binding this key to user and device d.

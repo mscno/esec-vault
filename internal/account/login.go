@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/chain"
@@ -16,6 +18,7 @@ import (
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
+	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/sshagent"
 	"github.com/mscno/esec-vault/internal/ukey"
 	"github.com/mscno/esec-vault/internal/wire"
@@ -44,6 +47,10 @@ type LoginOptions struct {
 	Poll time.Duration
 	// Mnemonic and Passphrase are read through UI.Secret when empty.
 	Mnemonic, Passphrase string
+	// AccountKey is the expected account key words. A device that joins by
+	// approval must match them (or confirm them interactively) before it
+	// installs any key.
+	AccountKey string
 }
 
 // Login signs this machine in, enrolls or re-authenticates its device, makes
@@ -90,11 +97,20 @@ func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*
 	if err != nil {
 		return nil, err
 	}
+	if err := chain.ValidUser(tok.User.ID); err != nil || tok.User.ID != fmt.Sprintf("gh:%d", tok.User.GitHubID) {
+		return nil, errors.New("the server returned an invalid account id")
+	}
+	if err := chain.ValidDeviceID(tok.Device.ID); err != nil {
+		return nil, errors.New("the server returned an invalid device id")
+	}
+	if existing != nil && existing.User != tok.User.ID {
+		return nil, fmt.Errorf("this machine belongs to account %s, but the server signed it in as %s; run 'esec vault logout --forget-device' first if that is intended", existing.User, tok.User.ID)
+	}
 	if err := kr.Set(SessionTokenName, tok.SessionToken); err != nil {
 		return nil, fmt.Errorf("store session: %w", err)
 	}
-	st := &State{Server: c.Base, User: tok.User.ID, GitHubID: tok.User.GitHubID, Login: tok.User.Login, DeviceID: tok.Device.ID, DeviceName: tok.Device.Name}
-	if existing != nil && existing.User == tok.User.ID {
+	st := &State{Server: c.Base, User: tok.User.ID, GitHubID: tok.User.GitHubID, Login: safetext.Clean(tok.User.Login), DeviceID: tok.Device.ID, DeviceName: safetext.Clean(tok.Device.Name)}
+	if existing != nil {
 		st.Chain, st.Vault, st.Events, st.IdentityFromAccount, st.NoIndex = existing.Chain, existing.Vault, existing.Events, existing.IdentityFromAccount, existing.NoIndex
 	}
 	if opts.NoIndex {
@@ -105,17 +121,23 @@ func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*
 	}
 	c.DeviceID, c.Key, c.Token = tok.Device.ID, dev.Sign, tok.SessionToken
 	a := &Account{State: st, KR: kr, Device: dev, Client: c, KS: keystore.New(), UI: ui, Now: time.Now, ReplaceIdentity: opts.ReplaceIdentity}
-	ui.Printf("✓ Signed in as %s (GitHub %d)\n", tok.User.Login, tok.User.GitHubID)
+	ui.Printf("✓ Signed in as %s (GitHub %d)\n", safetext.Clean(tok.User.Login), tok.User.GitHubID)
 
 	switch tok.Device.Status {
 	case wire.DeviceActive:
-		ui.Printf("Device %q is already trusted.\n", tok.Device.Name)
+		ui.Printf("Device %q is already trusted.\n", safetext.Clean(tok.Device.Name))
 		chainState, err := a.VerifiedChain(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if _, ok := chainState.ActiveDevice(st.DeviceID); !ok {
-			return nil, errors.New("the server lists this device as active but the verified chain does not")
+		d, ok := chainState.ActiveDevice(st.DeviceID)
+		if !ok || d.EncPub != dev.EncPubHex() || d.SignPub != dev.SignPubHex() {
+			return nil, errors.New("the server lists this device as active but the verified chain does not include this machine's device key")
+		}
+		if a.State.Chain.Root == "" {
+			if err := a.confirmAccount(chainState, opts); err != nil {
+				return nil, err
+			}
 		}
 		if _, err := a.userKey(ctx, chainState); err != nil {
 			return nil, err
@@ -128,11 +150,40 @@ func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*
 	default:
 		return nil, fmt.Errorf("device status %q", tok.Device.Status)
 	}
-	if err := a.State.Save(); err != nil {
+	unlock, err := lockAccount()
+	if err != nil {
+		return nil, err
+	}
+	err = a.State.Save()
+	unlock()
+	if err != nil {
 		return nil, err
 	}
 	ui.Printf("Account key: %s\n", a.State.Chain.AccountWords)
 	return a, nil
+}
+
+var userCodePattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$`)
+
+// confirmAccount makes the user check the account key words before this
+// machine trusts an account it has never seen.
+func (a *Account) confirmAccount(st *chain.State, opts LoginOptions) error {
+	words := st.AccountWords()
+	if opts.AccountKey != "" {
+		if normalizeWords(opts.AccountKey) != words {
+			return fmt.Errorf("the account key is %s, not the expected %s; nothing was installed", words, normalizeWords(opts.AccountKey))
+		}
+		return nil
+	}
+	a.UI.Printf("Account key: %s\n", words)
+	if !a.UI.Confirm("Is this the account key your other devices show (esec vault status)?") {
+		return errors.New("account key not confirmed; nothing was installed. If the words differ, do not use this server")
+	}
+	return nil
+}
+
+func normalizeWords(s string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return r == '-' || r == ' ' || r == ',' }), "-")
 }
 
 // deviceGrant runs the device authorization grant and returns the session.
@@ -140,6 +191,11 @@ func deviceGrant(ctx context.Context, c *client.Client, ui UI, dev *devicekey.Ke
 	reg, err := c.RegisterDevice(ctx, wire.DeviceRegisterRequest{Name: name, Platform: runtime.GOOS + "/" + runtime.GOARCH, EncPub: dev.EncPubHex(), SignPub: dev.SignPubHex()})
 	if err != nil {
 		return nil, err
+	}
+	// Everything printed here comes from the server; only print it in the
+	// shape this client expects.
+	if !userCodePattern.MatchString(reg.UserCode) || reg.VerificationURI != c.Base+"/device" || reg.VerificationURIComplete != c.Base+"/device?code="+reg.UserCode {
+		return nil, errors.New("the server returned an unexpected sign-in code or link")
 	}
 	ui.Printf("Open %s\n(or go to %s and enter %s)\n", reg.VerificationURIComplete, reg.VerificationURI, reg.UserCode)
 	ui.Printf("Device %q  fingerprint: %s\n", name, dev.Words())
@@ -191,7 +247,10 @@ func (a *Account) enroll(ctx context.Context, info wire.DeviceInfo, opts LoginOp
 		return err
 	}
 	if st.Seq == 0 {
-		return a.createAccount(ctx, d, proof)
+		return a.createAccount(ctx, d, proof, opts)
+	}
+	if err := a.checkSameRecoveryKey(st, opts); err != nil {
+		return err
 	}
 	switch opts.Method {
 	case LoginRecover:
@@ -207,14 +266,14 @@ func (a *Account) enroll(ctx context.Context, info wire.DeviceInfo, opts LoginOp
 		}
 		return a.selfAdd(ctx, st, d, proof, id, chain.MethodSSHAgent, slot)
 	case LoginApproval:
-		return a.waitForApproval(ctx, d, opts.Poll)
+		return a.waitForApproval(ctx, d, opts)
 	}
 	return fmt.Errorf("unknown login method %q", opts.Method)
 }
 
 // createAccount starts the chain with this machine's identity as user key 1
 // and this device as the first device, and uploads the first vault.
-func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *envelope.Envelope) error {
+func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *envelope.Envelope, opts LoginOptions) error {
 	id, upgraded, err := identity.EnsureSigningKey(a.KR)
 	if errors.Is(err, identity.ErrNotFound) {
 		return errors.New("no vault account exists for this GitHub user yet, and this machine has no identity to create one; run 'esec vault identity init' (or 'identity recover'), then 'esec vault login' again")
@@ -233,9 +292,13 @@ func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *enve
 	if err != nil {
 		return err
 	}
+	ra, err := a.rootAuth(id, h, opts)
+	if err != nil {
+		return err
+	}
 	now := a.Now()
 	st0 := chain.New(a.State.User)
-	initLink, err := st0.NewLink(chain.TypeInit, chain.InitBody{EncPub: hex.EncodeToString(id.Public[:]), SignPub: hex.EncodeToString(id.SignPublic()), MasterPub: hex.EncodeToString(h.MasterPublic[:])}, now, id.Sign)
+	initLink, err := st0.NewLink(chain.TypeInit, chain.InitBody{EncPub: hex.EncodeToString(id.Public[:]), SignPub: hex.EncodeToString(id.SignPublic()), MasterPub: hex.EncodeToString(h.MasterPublic[:]), MasterSignPub: ra.MasterSignPub, RootSig: ra.Sig}, now, id.Sign)
 	if err != nil {
 		return err
 	}
@@ -271,6 +334,70 @@ func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *enve
 	a.State.Vault = VaultPin{Version: res.VaultVersion, Generation: gen, SHA256: sha(put.Blob), SyncedAt: now}
 	a.UI.Printf("✓ Created the vault account with this machine's identity as its user key.\n")
 	return nil
+}
+
+// checkSameRecoveryKey refuses to join an account created with a different
+// recovery phrase than this machine's identity. Someone who controlled the
+// GitHub account before its first login could have created the account with
+// their own keys; a machine that already has the user's identity notices.
+func (a *Account) checkSameRecoveryKey(st *chain.State, opts LoginOptions) error {
+	raw, err := identity.WrappedFile()
+	if err != nil {
+		return nil //nolint:nilerr // no local identity: nothing to compare
+	}
+	h, err := identity.ReadHeader(raw)
+	if err != nil {
+		return nil //nolint:nilerr // unreadable identity: nothing to compare
+	}
+	foreign := h.MasterPublic != st.MasterPub
+	if ra, err := identity.LoadRootAuth(); err == nil && ra != nil && ra.MasterSignPub != hex.EncodeToString(st.MasterSignPub) {
+		foreign = true
+	}
+	if foreign && !opts.ReplaceIdentity {
+		return errors.New("this account was created with a different recovery phrase than this machine's identity. If you did not create it, someone else may control your GitHub account: do not continue. If you replaced your identity on purpose, run 'esec vault login --replace-identity'")
+	}
+	return nil
+}
+
+// rootAuth returns the recovery phrase's authorization of id as an account
+// root: the one stored by identity init/recover/rotate, or a new one made
+// from the phrase, which is then asked for once.
+func (a *Account) rootAuth(id *identity.Identity, h *identity.Header, opts LoginOptions) (*identity.RootAuth, error) {
+	if ra, err := identity.LoadRootAuth(); err == nil && ra.Matches(id) {
+		return ra, nil
+	}
+	a.UI.Printf("Creating the account needs your recovery phrase once: it signs this identity as the account's root,\nso a device recovering with the phrase can tell your account from a forged one.\n")
+	keys, err := a.masterKeys(h, opts)
+	if err != nil {
+		return nil, err
+	}
+	if keys.Public != h.MasterPublic {
+		return nil, errors.New("that recovery phrase (and passphrase) does not belong to this machine's identity")
+	}
+	ra, err := identity.MakeRootAuth(keys, id)
+	if err != nil {
+		return nil, err
+	}
+	return ra, identity.SaveRootAuth(ra)
+}
+
+// masterKeys asks for the recovery phrase (and passphrase when the identity
+// has one) and derives the master keys.
+func (a *Account) masterKeys(h *identity.Header, opts LoginOptions) (*identity.MasterKeys, error) {
+	mnemonic := opts.Mnemonic
+	var err error
+	if mnemonic == "" {
+		if mnemonic, err = a.UI.Secret("Recovery phrase (24 words): "); err != nil {
+			return nil, err
+		}
+	}
+	pass := opts.Passphrase
+	if h.Passphrased && pass == "" {
+		if pass, err = a.UI.Secret("Recovery passphrase: "); err != nil {
+			return nil, err
+		}
+	}
+	return identity.DeriveMasterKeys(normalizeMnemonic(mnemonic), pass)
 }
 
 // selfAdd adds this device to the chain with a user key it obtained itself.
@@ -309,27 +436,17 @@ func (a *Account) fromPhrase(ctx context.Context, st *chain.State, opts LoginOpt
 	if err != nil {
 		return nil, err
 	}
-	mnemonic := opts.Mnemonic
-	if mnemonic == "" {
-		if mnemonic, err = a.UI.Secret("Recovery phrase (24 words): "); err != nil {
-			return nil, err
-		}
-	}
-	mnemonic = normalizeMnemonic(mnemonic)
-	pass := opts.Passphrase
-	if h.Passphrased && pass == "" {
-		if pass, err = a.UI.Secret("Recovery passphrase: "); err != nil {
-			return nil, err
-		}
-	}
-	masterPub, masterPriv, err := identity.DeriveMaster(mnemonic, pass)
+	keys, err := a.masterKeys(h, opts)
 	if err != nil {
 		return nil, err
 	}
-	if masterPub != st.MasterPub {
-		return nil, errors.New("that recovery phrase (and passphrase) does not belong to this account")
+	// Both master keys must match the chain root. The X25519 key is public
+	// and a server could build a chain around it; the signing key's
+	// authorization of the root can only come from the phrase.
+	if keys.Public != st.MasterPub || !keys.SignPublic().Equal(st.MasterSignPub) {
+		return nil, errors.New("that recovery phrase (and passphrase) does not belong to this account, or the server's account was not created with it")
 	}
-	id, err := identity.UnwrapBytes(blob.Blob, masterPub, masterPriv, h.Passphrased)
+	id, err := identity.UnwrapBytes(blob.Blob, keys.Public, keys.Private, h.Passphrased)
 	if err != nil {
 		return nil, err
 	}
@@ -395,7 +512,8 @@ func (a *Account) fromAgent(ctx context.Context, st *chain.State, socket string)
 
 // waitForApproval waits until a trusted device approves this one, then
 // installs the user key from this device's box.
-func (a *Account) waitForApproval(ctx context.Context, d chain.Device, poll time.Duration) error {
+func (a *Account) waitForApproval(ctx context.Context, d chain.Device, opts LoginOptions) error {
+	poll := opts.Poll
 	a.UI.Printf("Waiting for approval. On a trusted device run: esec vault devices approve\n")
 	a.UI.Printf("Check that it shows this fingerprint: %s\n", a.Device.Words())
 	a.UI.Printf("Other options: esec vault login --ssh-agent, esec vault login --recover\n")
@@ -421,8 +539,16 @@ func (a *Account) waitForApproval(ctx context.Context, d chain.Device, poll time
 		return err
 	}
 	ds, ok := st.ActiveDevice(d.ID)
-	if !ok {
+	if !ok || ds.EncPub != d.EncPub || ds.SignPub != d.SignPub {
 		return errors.New("the server approved this device, but the verified chain does not include it")
+	}
+	// Anyone can seal a box to this device's public key, so an approval
+	// alone does not prove the account is genuine. Unless this machine
+	// pinned the account before, the user confirms the account key first.
+	if a.State.Chain.Root == "" {
+		if err := a.confirmAccount(st, opts); err != nil {
+			return err
+		}
 	}
 	id, err := a.userKey(ctx, st)
 	if err != nil {

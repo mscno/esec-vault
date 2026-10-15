@@ -16,24 +16,39 @@ import (
 	"github.com/tyler-smith/go-bip39"
 )
 
-// Words returns the four-word fingerprint of the concatenated parts. Each
-// part is length-prefixed so different splits never collide.
-func Words(domain string, parts ...[]byte) string {
+// Words returns an n-word fingerprint (11 bits per word, up to 23 words) of
+// the concatenated parts. Each part is length-prefixed so different splits
+// never collide.
+func Words(n int, domain string, parts ...[]byte) string {
+	if n < 1 || n > 23 {
+		panic("fpwords: word count out of range")
+	}
 	h := sha256.New()
 	writePart(h, []byte(domain))
 	for _, p := range parts {
 		writePart(h, p)
 	}
 	sum := h.Sum(nil)
-	bits := binary.BigEndian.Uint64(sum[:8]) >> 20 // top 44 bits
 	list := bip39.GetWordList()
-	words := make([]string, 4)
-	for i := 3; i >= 0; i-- {
-		words[i] = list[bits&0x7ff]
-		bits >>= 11
+	words := make([]string, n)
+	for i := range n {
+		idx := 0
+		for b := range 11 {
+			bit := i*11 + b
+			idx = idx<<1 | int(sum[bit/8]>>(7-bit%8)&1)
+		}
+		words[i] = list[idx]
 	}
 	return strings.Join(words, "-")
 }
+
+// Word counts. A device fingerprint is compared within the minutes a device
+// waits for approval (66 bits); the account key never changes, so it must
+// resist offline search for a matching chain root (88 bits).
+const (
+	DeviceWords  = 6
+	AccountWords = 8
+)
 
 func writePart(h interface{ Write(p []byte) (int, error) }, p []byte) {
 	var l [4]byte

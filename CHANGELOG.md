@@ -29,6 +29,17 @@ Vault server and device sync. Requires esec v0.9.0 or later.
 - The daemon syncs with the server, refreshes an unlocked broker, and
   notifies about pending devices and devices added by phrase or SSH agent.
 - Add `deploy/` (Dockerfile, Litestream, Fly.io) and a server runbook.
+- The account root is signed by a key derived from the recovery phrase, so
+  recovering with the phrase cannot be fooled into a forged account. Identities
+  from older versions are asked for the phrase once, when the account is
+  created.
+- A device joining by approval confirms 8-word account key words before
+  installing anything (or checks `--account-key`). Machines that already have
+  an identity refuse an account created with another recovery phrase.
+- Server-supplied text is sanitized before printing. Device boxes are
+  write-once. Unlock slots disabled by a revocation are re-created only after
+  an explicit yes.
+- The recovery passphrase cannot change while signed in to a vault server.
 
 # v0.3.6
 

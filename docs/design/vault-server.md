@@ -79,9 +79,13 @@ signatures.
 
 ### Fingerprint words
 
-A fingerprint shown to people is `SHA-256(keys...)`, truncated to 44 bits and
-shown as 4 BIP39 English words (e.g. `tiger-lamp-orbit-maple`). BIP39 is
-already a dependency.
+A fingerprint shown to people is `SHA-256(keys...)` shown as BIP39 English
+words, 11 bits each. BIP39 is already a dependency.
+
+| Fingerprint | Words | Bits | Why that many |
+|---|---|---|---|
+| Device | 6 | 66 | Compared once, while a device waits up to 15 minutes. |
+| Account key | 8 | 88 | Never changes, so an attacker could search for a matching chain root offline for a long time. |
 
 ## 2. User chain
 
@@ -95,7 +99,7 @@ only authority for which U version is current and which devices are trusted.
 
 | Type | Signed by | Body |
 |---|---|---|
-| `init` | U(1) | `U.enc`, `U.sign` public keys, master public key |
+| `init` | U(1), and the master signing key over the root statement | `U.enc`, `U.sign` public keys, master public key, master signing public key, root signature |
 | `device_add` | current U; the body embeds a `device-proof` envelope signed by the new D (proves the device holds D and binds it to this user) | device, proof, method: `approval\|recovery\|ssh_agent\|first`, approving device id or slot id |
 | `device_revoke` | current U | device id, reason |
 | `device_rename` | current U | device id, new name |
@@ -218,11 +222,39 @@ The new device does the following:
 3. Countersign the link with `D.sign`, so the link carries both signatures, and
    start syncing.
 
-**Remaining risk:** a malicious server could send a brand-new VM a fake U,
-together with a fake chain. The fake U would be encrypted to the VM's real
-`D.enc`, which is public. Both terminals therefore print the **account key**
-words. They are the same for every device you own, so a mismatch stands out.
-The SSH-agent and recovery paths verify U without relying on this check.
+**A brand-new device must confirm the account key.** A malicious server
+could send it a fake U together with a fake chain, sealed to the device's
+public `D.enc`. So a device with no pinned chain shows the account key words
+and asks for confirmation **before** it installs any key or syncs anything.
+`login --account-key WORDS` checks them without a prompt.
+
+The other two paths authenticate the account without this check:
+- **SSH agent:** the slot box opens only under a key derived from the agent's
+  signature, which the server never sees.
+- **Recovery phrase:** the phrase derives the master signing key, which must
+  have signed the chain root (see below).
+
+**Recovery authenticates the root.** The master X25519 public key is not
+secret: the server sees it in the chain and in identity headers. So the phrase
+also derives an Ed25519 **master signing key**
+(`HKDF(stretched seed, "esec-master-sign-v1")`). It signs
+`"esec-vault root v1\n" + U.enc + "\n" + U.sign` for the account's first user
+key, and the `init` link carries that signature.
+
+A recovering device derives the signing key itself and requires both master
+keys to match the chain. A server cannot build a chain around the user's
+master public key with its own user key.
+
+`identity init`, `identity recover` and `identity rotate` already hold the
+phrase, so they store this authorization in `root-auth.json` (public data).
+An identity from an older version gets it at account creation, which then
+asks for the phrase once.
+
+**An account created by someone else is refused.** If the server's chain
+names a different master key than this machine's identity, login stops. That
+covers an account created by someone who took over the GitHub account before
+the user's first login. `--replace-identity` overrides the check for a
+deliberate identity change.
 Pending devices expire after 15 minutes.
 
 ### Recovery phrase
@@ -239,8 +271,10 @@ Pending devices expire after 15 minutes.
 On a machine that already has an identity, the first `esec vault login` does
 the following:
 
-1. Upgrade `identity.esec` to v3 by generating `U.sign`. This does **not** ask
-   for the recovery phrase. The reasons:
+1. Upgrade `identity.esec` to v3 by generating `U.sign`. The upgrade itself does
+   **not** ask for the recovery phrase. Creating the account needs the
+   phrase's root authorization (§4), which identities from `identity init`
+   already have. The reasons the upgrade does not need it:
 
    ```
    24 words ──► master key ──► opens identity.esec ──► U
@@ -595,7 +629,8 @@ secret store.
 | Attacker | Outcome |
 |---|---|
 | Full server and database compromise | Metadata (devices, times, IPs, and project/env names if the index is on); refuse service; delete data (local cache plus offline remotes are the fallback); hold back updates (heads pinned). **Cannot** decrypt, add devices, or plant keys: chain links, vault blobs and the index are signed by U. Cannot inject a fake U into existing devices. A brand-new device is protected by the account-key words (§4). |
-| GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. |
+| GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. At most 5 devices can wait for approval at once. Before the user's first login, the attacker could create the account with their own keys. A machine holding the user's identity refuses to join it (different master key), and a new device sees unknown account-key words. |
+| Phishing with a prefilled code link | The victim must click Continue and Confirm on a page warning that only self-started sign-ins should be confirmed. A confirmed attacker device is only pending: it can read the chain, the wrapped identity and slot data (all useless without the phrase or agent), and it can ask for approval. Approval shows its own fingerprint, which matches no terminal the victim has. |
 | Stolen session token | Useless without `D.sign`. |
 | Stolen VM disk | With macOS Keychain or a TPM-bound secret store, sealed keyrings are useless without C. With the 0600 file store, everything is exposed: revoke and rotate. |
 | Live compromise of an active device | Everything that device can decrypt. Response: revoke, rotate U, rotate env keys, rotate values. |
@@ -642,6 +677,10 @@ server (`httptest`) with a memory secret store.
 | `--secret-store keyctl` as default for VMs | TPM or 0600 file by default; keyctl opt-in | Signed-in VMs must survive restarts. |
 | No project browsing | Optional signed index and a `/projects` page | Requested during implementation. |
 | — | `device_rename` link | `devices rename` needs the chain to agree on names. |
+| Recovery checks the master X25519 key | Recovery also checks a phrase-derived signing key's authorization of the chain root | The X25519 key is public, so a server could build a forged account around it (found in security review). |
+| 4-word fingerprints, shown after login | 6-word device and 8-word account fingerprints; a new device confirms the account key before installing anything | Short words could be searched for offline; the late check let keys sync to a forged account (found in security review). |
+| Boxes and identity upserted | Write-once boxes; identity only with a new user key | A compromised device could otherwise silently break recovery and other devices (found in security review). |
+| Rate limits on all code entries | Limits on wrong codes, on both forms, per address (IPv6 /64) and per user; caps on open registrations, OAuth states and pending devices | Found in security review. |
 
 ## Later phases (sketch)
 

@@ -546,6 +546,9 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 		}
 		slotData[sl.SlotID] = sl
 	}
+	if state.Seq+uint64(len(req.Links)) > chain.MaxLinks {
+		return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "the device chain is full")
+	}
 	usedSlots := map[string]bool{}
 	var initOrRotate bool
 	for _, e := range req.Links {
@@ -560,6 +563,9 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "chain link rejected: %v", err)
 		}
 		l := next.Links[len(next.Links)-1]
+		if l.CTime.After(now.Add(10*time.Minute)) || l.CTime.Before(now.Add(-24*time.Hour)) {
+			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "link time %s is too far from the server's clock; check this machine's clock", l.CTime.Format(time.RFC3339))
+		}
 		switch l.Type {
 		case chain.TypeInit:
 			initOrRotate = true
@@ -630,20 +636,24 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 		if _, ok := state.ActiveDevice(b.DeviceID); !ok || b.UKeyVersion != state.UKeyVersion || len(b.Box) == 0 || len(b.Box) > maxBoxSize {
 			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "device box for %s is not for an active device at the current key version", b.DeviceID)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO device_boxes (device_id, ukey_version, box, created_at) VALUES (?, ?, ?, ?)
-			ON CONFLICT(device_id, ukey_version) DO UPDATE SET box = excluded.box, created_at = excluded.created_at`, b.DeviceID, b.UKeyVersion, b.Box, now.Unix()); err != nil {
+		// Boxes are write-once: a stored box is never replaced, so a device
+		// cannot silently break another device's access.
+		res, err := tx.ExecContext(ctx, `INSERT INTO device_boxes (device_id, ukey_version, box, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`, b.DeviceID, b.UKeyVersion, b.Box, now.Unix())
+		if err != nil {
 			return nil, err
 		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return nil, clientErr(http.StatusConflict, wire.ErrConflict, "device %s already has a box for key version %d", b.DeviceID, b.UKeyVersion)
+		}
 	}
-	if initOrRotate && len(req.Identity) == 0 {
-		return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "a new user key needs its master-wrapped identity")
+	if initOrRotate != (len(req.Identity) > 0) {
+		return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "the master-wrapped identity is stored only together with a new user key")
 	}
 	if len(req.Identity) > 0 {
 		if err := checkIdentityBlob(req.Identity, state); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO identity_blobs (user_id, ukey_version, blob, created_at) VALUES (?, ?, ?, ?)
-			ON CONFLICT(user_id, ukey_version) DO UPDATE SET blob = excluded.blob`, c.user.ID, state.UKeyVersion, req.Identity, now.Unix()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO identity_blobs (user_id, ukey_version, blob, created_at) VALUES (?, ?, ?, ?)`, c.user.ID, state.UKeyVersion, req.Identity, now.Unix()); err != nil {
 			return nil, err
 		}
 	}
@@ -677,6 +687,10 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 		if err := s.db.addEvent(ctx, tx, c.user.ID, wire.EventChain, strconv.FormatUint(state.Seq, 10), now); err != nil {
 			return nil, err
 		}
+	}
+	summary := fmt.Sprintf("links=%d boxes=%d identity=%t vault=%t slots=%d", len(req.Links), len(req.DeviceBoxes), len(req.Identity) > 0, req.Vault != nil, len(req.AgentSlots))
+	if err := s.db.audit(ctx, tx, c.user.ID, c.device.ID, c.ip, "commit", summary, now); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

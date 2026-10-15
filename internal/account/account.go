@@ -42,6 +42,8 @@ type Account struct {
 	// ReplaceIdentity allows replacing a local identity that did not come
 	// from this account without asking.
 	ReplaceIdentity bool
+	// KeyringLocked records that the caller already holds the keyring lock.
+	KeyringLocked bool
 }
 
 // Open loads the signed-in account of this machine.
@@ -69,6 +71,16 @@ func Open(kr keyring.Keyring, ui UI) (*Account, error) {
 // Locked runs fn while holding the account lock, after reloading the state
 // from disk, so the CLI and the daemon never overwrite each other's pins.
 func (a *Account) Locked(fn func() error) error {
+	// Lock order: keyrings, then the account. Sync merges into keyring files,
+	// so it must exclude every other keyring writer (env add/rotate, esec
+	// keygen --save, the daemon).
+	if !a.KeyringLocked {
+		unlockKeys, err := waitLock(paths.KeyringDir())
+		if err != nil {
+			return err
+		}
+		defer unlockKeys()
+	}
 	unlock, err := lockAccount()
 	if err != nil {
 		return err
@@ -82,7 +94,11 @@ func (a *Account) Locked(fn func() error) error {
 
 // lockAccount waits up to a minute for the cross-process account lock.
 func lockAccount() (func(), error) {
-	dir := filepath.Join(paths.Home(), "account.lock.d")
+	return waitLock(filepath.Join(paths.Home(), "account.lock.d"))
+}
+
+// waitLock waits up to a minute for a directory lock.
+func waitLock(dir string) (func(), error) {
 	deadline := time.Now().Add(time.Minute)
 	for {
 		unlock, err := storage.Lock(dir)
@@ -90,7 +106,7 @@ func lockAccount() (func(), error) {
 			return unlock, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("another esec-vault process is busy with the account: %w", err)
+			return nil, fmt.Errorf("another esec-vault process is busy: %w", err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

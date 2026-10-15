@@ -310,8 +310,20 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	_ = ip.cmd.Process.Kill()
 
 	// --- VM 1: approval from the laptop. ---
+	// A wrong account key aborts before anything is installed.
+	vm0 := newMachine(t, bin, "vm0")
+	p = login(t, h, vm0, "", "--account-key", "abandon-abandon-abandon-abandon-abandon-abandon-abandon-about")
+	p.waitFor(`(Check that it shows this fingerprint)`)
+	laptop.run("y\n", "devices", "approve")
+	if out := p.wait(false); !strings.Contains(out, "nothing was installed") {
+		t.Fatalf("wrong account key:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(vm0.home, "identity.esec")); err == nil {
+		t.Fatal("identity installed despite a wrong account key")
+	}
+
 	vm1 := newMachine(t, bin, "vm1")
-	p = login(t, h, vm1, "")
+	p = login(t, h, vm1, "", "--account-key", accountKey)
 	words := p.waitFor(`Check that it shows this fingerprint: (\S+)`)
 	approved := laptop.run("y\n", "devices", "approve")
 	if !strings.Contains(approved, words) || !strings.Contains(approved, accountKey) {
@@ -371,8 +383,8 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	vm1ID := regexp.MustCompile(`(d_[a-z0-9]+)\s+vm1\s`).FindStringSubmatch(out)[1]
 
 	// --- Revoke VM 1: user key rotates; VM 2 picks it up, VM 1 is locked out. ---
-	out = laptop.run("", "devices", "revoke", vm1ID, "--yes", "--reason", "test")
-	if !strings.Contains(out, "user key is now version 2") {
+	out = laptop.run("y\n", "devices", "revoke", vm1ID, "--yes", "--reason", "test")
+	if !strings.Contains(out, "user key is now version 2") || !strings.Contains(out, "Re-created SSH-agent unlock slot") {
 		t.Fatalf("revoke:\n%s", out)
 	}
 	out = vm2.run("", "sync", "--server")
@@ -380,9 +392,22 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 		t.Fatalf("vm2 did not install the rotated key:\n%s", out)
 	}
 	vm1.runFail("", "sync", "--server")
-	// The agent slot was invalidated by the rotation.
+	// The rotation disabled the old agent slot; the laptop re-created it with
+	// the new user key because its agent still held the SSH key.
 	vm4 := newMachine(t, bin, "vm4").with("SSH_AUTH_SOCK=" + sock)
-	login(t, h, vm4, "", "--ssh-agent").wait(false)
+	out = login(t, h, vm4, "", "--ssh-agent").wait(true)
+	if !strings.Contains(out, "Added this device using ssh_agent") {
+		t.Fatalf("vm4 login:\n%s", out)
+	}
+	// Disabling the slot stops further agent logins.
+	slots := laptop.run("", "agent-unlock", "list")
+	slotID := regexp.MustCompile(`(s_[a-z0-9]+)\s+\S+\s+expires \S+\s+enabled`).FindStringSubmatch(slots)
+	if slotID == nil {
+		t.Fatalf("no enabled slot:\n%s", slots)
+	}
+	laptop.run("", "agent-unlock", "disable", slotID[1])
+	vm5 := newMachine(t, bin, "vm5").with("SSH_AUTH_SOCK=" + sock)
+	login(t, h, vm5, "", "--ssh-agent").wait(false)
 
 	// --- Environment rotation re-encrypts the file; another device follows. ---
 	out = laptop.with().run("", "env", "rotate", "dev", "--project", "acme/store", "--dir", repo, "--yes")

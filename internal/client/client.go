@@ -19,6 +19,7 @@ import (
 
 	"github.com/mscno/esec-vault/internal/apisig"
 	"github.com/mscno/esec-vault/internal/envelope"
+	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
@@ -41,9 +42,9 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	if e.Description != "" {
-		return fmt.Sprintf("server: %s (%s)", e.Description, e.Code)
+		return fmt.Sprintf("server: %s (%s)", safetext.Clean(e.Description), safetext.Clean(e.Code))
 	}
-	return fmt.Sprintf("server: HTTP %d %s", e.Status, e.Code)
+	return fmt.Sprintf("server: HTTP %d %s", e.Status, safetext.Clean(e.Code))
 }
 
 // IsCode reports whether err is an APIError with the given code.

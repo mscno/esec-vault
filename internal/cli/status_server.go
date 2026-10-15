@@ -10,6 +10,7 @@ import (
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
+	"github.com/mscno/esec-vault/internal/safetext"
 )
 
 // serverStatus is the vault-server part of status output.
@@ -69,6 +70,14 @@ func inspectServer(ctx *cliCtx, problems *[]string) *serverStatus {
 	out.DeviceStatus, out.SessionExpires = me.Device.Status, me.SessionExpires
 	if me.Device.Status != "active" {
 		*problems = append(*problems, "this device is "+me.Device.Status+" on the vault server")
+		return out
+	}
+	if devices, err := a.Devices(bg); err == nil {
+		for _, d := range devices {
+			if d.ServerStatus == "suspended" && d.Status == "active" {
+				*problems = append(*problems, fmt.Sprintf("device %s (%s) is suspended on the server; finish revoking it: esec vault devices revoke %s", d.Name, d.ID, d.ID))
+			}
+		}
 	}
 	return out
 }
@@ -114,8 +123,8 @@ func printServerStatus(s *serverStatus, store *storeStatus) {
 		fmt.Println("Vault server: not signed in (esec vault login <server>)")
 		return
 	}
-	fmt.Printf("Vault server: %s as %s (%s)\n", s.Server, s.Login, s.User)
-	fmt.Printf("Device: %s %q, status %s, fingerprint %s\n", s.DeviceID, s.DeviceName, valueOr(s.DeviceStatus, "unknown"), s.DeviceWords)
+	fmt.Printf("Vault server: %s as %s (%s)\n", s.Server, safetext.Clean(s.Login), s.User)
+	fmt.Printf("Device: %s %q, status %s, fingerprint %s\n", s.DeviceID, safetext.Clean(s.DeviceName), safetext.Clean(valueOr(s.DeviceStatus, "unknown")), s.DeviceWords)
 	fmt.Printf("Account key: %s; chain %d links, user key version %d\n", s.AccountWords, s.ChainSeq, s.UKeyVersion)
 	last := "never"
 	if !s.LastSync.IsZero() {
