@@ -283,7 +283,7 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo // RFC 8628 state machine plus device matching
+func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo,maintidx // RFC 8628 state machine plus device matching, kept in order for review
 	now := s.now()
 	ctx := r.Context()
 	body, err := readBody(w, r, maxSmallBody)
@@ -296,6 +296,13 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
 		return
 	}
+	// Polls are cheap to send, so they are limited per address and network,
+	// and every check that needs no write runs before the signature check
+	// (which records a nonce) and the last-poll update.
+	if !s.allowAnon("poll", s.clientIP(r), 60, 600, time.Minute) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrSlowDown, "polling too fast")
+		return
+	}
 	var deviceID, status, confirmedUser string
 	var expires, lastPoll int64
 	err = s.db.sql.QueryRowContext(ctx, `SELECT device_id, status, user_id, expires_at, last_poll FROM device_codes WHERE device_code_hash = ?`, hashHex(req.DeviceCode)).
@@ -306,6 +313,14 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 	}
 	if err != nil {
 		s.internalError(w, r, err)
+		return
+	}
+	switch {
+	case now.Unix() >= expires || status == "consumed":
+		writeErr(w, http.StatusBadRequest, wire.ErrExpiredToken, "the code expired; run 'esec vault login' again")
+		return
+	case lastPoll != 0 && now.Sub(fromUnix(lastPoll)) < pollInterval-time.Second:
+		writeErr(w, http.StatusBadRequest, wire.ErrSlowDown, "polling too fast")
 		return
 	}
 	reg, err := s.db.device(ctx, s.db.sql, deviceID)
@@ -327,14 +342,8 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 		return
 	}
 	switch {
-	case now.Unix() >= expires || status == "consumed":
-		writeErr(w, http.StatusBadRequest, wire.ErrExpiredToken, "the code expired; run 'esec vault login' again")
-		return
 	case status == "denied":
 		writeErr(w, http.StatusBadRequest, wire.ErrAccessDenied, "sign-in was denied in the browser")
-		return
-	case lastPoll != 0 && now.Sub(fromUnix(lastPoll)) < pollInterval-time.Second:
-		writeErr(w, http.StatusBadRequest, wire.ErrSlowDown, "polling too fast")
 		return
 	case status == "pending":
 		writeErr(w, http.StatusBadRequest, wire.ErrAuthorizationPending, "waiting for the browser")

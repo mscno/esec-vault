@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -743,5 +744,49 @@ func TestTrailingDataInSignedBodies(t *testing.T) {
 	}
 	if _, err := owner.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{e}}); code(err) != wire.ErrInvalidRequest {
 		t.Fatalf("server accepted a body with trailing data: %v", err)
+	}
+}
+
+func TestPollingDoesNotWriteWhenRefused(t *testing.T) {
+	h := harness(t)
+	key, _ := devicekey.Generate()
+	c, reg := register(t, h, key, "vm")
+	ctx := context.Background()
+	if _, err := c.PollToken(ctx, reg.DeviceCode); code(err) != wire.ErrAuthorizationPending {
+		t.Fatal(err)
+	}
+	count := func() int {
+		var n int
+		if err := h.DB.SQL().QueryRow(`SELECT COUNT(*) FROM nonces`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := count()
+	limited := false
+	for range 100 {
+		_, err := c.PollToken(ctx, reg.DeviceCode)
+		if code(err) != wire.ErrSlowDown {
+			t.Fatalf("fast poll: %v", err)
+		}
+		var ae *client.APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusTooManyRequests {
+			limited = true
+		}
+	}
+	if count() != before {
+		t.Fatal("refused polls wrote nonces")
+	}
+	if !limited {
+		t.Fatal("polls from one address were not rate limited")
+	}
+	// An expired code is refused without any write either.
+	h.Advance(11 * time.Minute)
+	c.Now = h.Now
+	if _, err := c.PollToken(ctx, reg.DeviceCode); code(err) != wire.ErrExpiredToken && code(err) != wire.ErrSlowDown {
+		t.Fatalf("expired code: %v", err)
+	}
+	if count() != before {
+		t.Fatal("a poll on an expired code wrote a nonce")
 	}
 }
