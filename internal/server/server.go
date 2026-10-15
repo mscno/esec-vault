@@ -236,9 +236,11 @@ func prefixKey(ip string) string {
 }
 
 // allowAnon counts an unauthenticated request per address and per network.
+// The network is checked first, so requests from a blocked network create no
+// per-address counters.
 func (s *Server) allowAnon(kind, ip string, perAddr, perNet int, period time.Duration) bool {
 	now := s.now()
-	return s.anon.allow(kind+":"+rateKey(ip), perAddr, period, now) && s.anon.allow(kind+":net:"+prefixKey(ip), perNet, period, now)
+	return s.anon.allow(kind+":net:"+prefixKey(ip), perNet, period, now) && s.anon.allow(kind+":"+rateKey(ip), perAddr, period, now)
 }
 
 // ---- JSON helpers ----
@@ -301,7 +303,11 @@ func randomToken(prefix string) string {
 type window struct {
 	start time.Time
 	count int
+	limit int
 }
+
+// exhausted reports whether the window has used up its limit.
+func (w *window) exhausted() bool { return w.count >= w.limit }
 
 // limiter is a fixed-window counter per key. It is in memory: the server is
 // a single instance, and a restart resetting counters is acceptable.
@@ -310,13 +316,18 @@ type limiter struct {
 	m  map[string]*window
 }
 
-// maxLimiterKeys bounds the limiter's memory. When it is full of live
-// windows, new keys are refused rather than tracked.
-const maxLimiterKeys = 100000
+// maxLimiterKeys is the size at which the limiter evicts entries. Exhausted
+// windows are never evicted, so flooding the table cannot reset a limit that
+// was reached; hardLimiterKeys bounds memory if an attacker exhausts that
+// many keys, after which new keys are refused.
+const (
+	maxLimiterKeys  = 100000
+	hardLimiterKeys = 1000000
+)
 
 func newLimiter() *limiter { return &limiter{m: map[string]*window{}} }
 
-// allow counts one event for key and reports whether it is within max per
+// allow counts one event for key and reports whether it is within limit per
 // period.
 func (l *limiter) allow(key string, limit int, period time.Duration, now time.Time) bool {
 	l.mu.Lock()
@@ -324,9 +335,12 @@ func (l *limiter) allow(key string, limit int, period time.Duration, now time.Ti
 	w, ok := l.m[key]
 	if !ok && len(l.m) >= maxLimiterKeys {
 		l.evict(now)
+		if len(l.m) >= hardLimiterKeys {
+			return false
+		}
 	}
 	if !ok || now.Sub(w.start) >= period {
-		w = &window{start: now}
+		w = &window{start: now, limit: limit}
 		l.m[key] = w
 	}
 	w.count++
@@ -342,8 +356,8 @@ func (l *limiter) refund(key string) {
 	}
 }
 
-// evict drops expired windows, then the oldest tenth, so a full table never
-// refuses new keys (which would lock out everyone) or forgets to count.
+// evict drops expired windows, then up to a tenth of the table from windows
+// that have not reached their limit, lowest counts first.
 func (l *limiter) evict(now time.Time) {
 	for k, w := range l.m {
 		if now.Sub(w.start) > 2*time.Hour {
@@ -353,16 +367,24 @@ func (l *limiter) evict(now time.Time) {
 	if len(l.m) < maxLimiterKeys {
 		return
 	}
-	starts := make([]time.Time, 0, len(l.m))
-	for _, w := range l.m {
-		starts = append(starts, w.start)
+	type entry struct {
+		key string
+		w   *window
 	}
-	sort.Slice(starts, func(i, j int) bool { return starts[i].Before(starts[j]) })
-	cut := starts[len(starts)/10]
+	var candidates []entry
 	for k, w := range l.m {
-		if !w.start.After(cut) {
-			delete(l.m, k)
+		if !w.exhausted() {
+			candidates = append(candidates, entry{k, w})
 		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].w.count != candidates[j].w.count {
+			return candidates[i].w.count < candidates[j].w.count
+		}
+		return candidates[i].w.start.Before(candidates[j].w.start)
+	})
+	for _, c := range candidates[:min(len(candidates), maxLimiterKeys/10)] {
+		delete(l.m, c.key)
 	}
 }
 

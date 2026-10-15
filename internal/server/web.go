@@ -275,9 +275,14 @@ func (s *Server) webDevice(w http.ResponseWriter, r *http.Request) {
 // add up.
 func (s *Server) allowCode(r *http.Request, ws *webSession) bool {
 	now := s.now()
-	ipOK := s.limits.allow("code:ip:"+rateKey(s.clientIP(r)), 30, time.Hour, now)
-	userOK := s.limits.allow("code:user:"+ws.user.ID, 10, 10*time.Minute, now)
-	return ipOK && userOK
+	if !s.limits.allow("code:user:"+ws.user.ID, 10, 10*time.Minute, now) {
+		return false
+	}
+	if !s.limits.allow("code:ip:"+rateKey(s.clientIP(r)), 30, time.Hour, now) {
+		s.limits.refund("code:user:" + ws.user.ID)
+		return false
+	}
+	return true
 }
 
 // goodCode refunds the reservation of a valid code.

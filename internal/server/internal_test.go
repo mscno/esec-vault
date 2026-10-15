@@ -106,7 +106,7 @@ func TestLimiterNeverRefusesWhenFull(t *testing.T) {
 	l := newLimiter()
 	now := time.Now()
 	for i := range maxLimiterKeys {
-		l.allow(fmt.Sprintf("k%d", i), 1, time.Hour, now.Add(time.Duration(i)))
+		l.allow(fmt.Sprintf("k%d", i), 5, time.Hour, now.Add(time.Duration(i)))
 	}
 	if !l.allow("new", 1, time.Hour, now.Add(time.Hour/2)) {
 		t.Fatal("a full limiter refused a new key")
@@ -132,5 +132,20 @@ func TestPrefixKeys(t *testing.T) {
 	}
 	if rateKey("2001:db8:1:2:3::1") != "2001:db8:1:2::/64" || rateKey("203.0.113.7") != "203.0.113.7" {
 		t.Fatal(rateKey("2001:db8:1:2:3::1"))
+	}
+}
+
+func TestEvictionKeepsExhaustedCounters(t *testing.T) {
+	l := newLimiter()
+	now := time.Now()
+	// An attacker exhausts one key, then floods the table with fresh keys.
+	for range 3 {
+		l.allow("victim-net", 2, time.Hour, now)
+	}
+	for i := range maxLimiterKeys + 10 {
+		l.allow(fmt.Sprintf("flood%d", i), 5, time.Hour, now.Add(time.Second))
+	}
+	if l.allow("victim-net", 2, time.Hour, now.Add(time.Minute)) {
+		t.Fatal("flooding the table reset an exhausted counter")
 	}
 }
