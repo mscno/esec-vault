@@ -82,7 +82,7 @@ func TestServerLoopSyncsAndNotifies(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a, err := account.Login(ctx, kr, confirmUI{t: t, h: h}, account.LoginOptions{Server: h.URL, Name: "laptop", Poll: 20 * time.Millisecond})
+	a, err := account.Login(ctx, kr, confirmUI{t: t, h: h}, account.LoginOptions{Server: h.URL, Name: "laptop", Poll: 20 * time.Millisecond, BootstrapToken: servertest.BootstrapToken})
 	if err != nil {
 		t.Fatal(err)
 	}

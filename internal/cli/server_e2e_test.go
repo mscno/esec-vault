@@ -286,7 +286,9 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	}
 	laptop.tool(repo, "encrypt", "dev", "-f", "env")
 
-	p := login(t, h, laptop, "")
+	// Without the operator's bootstrap token no account can be created.
+	login(t, h, laptop, "", "--bootstrap-token", "wrong-token-wrong-token").wait(false)
+	p := login(t, h, laptop, "", "--bootstrap-token", servertest.BootstrapToken)
 	out = p.wait(true)
 	for _, want := range []string{"Signed in as mscno", "Created the vault account", "Account key:", "Sealed"} {
 		if !strings.Contains(out, want) {

@@ -61,6 +61,7 @@ Every setting can be overridden from the environment:
 | `ESEC_SERVER_DB_PATH` | `db_path` |
 | `ESEC_SERVER_GITHUB_CLIENT_ID` | `github.client_id` |
 | `ESEC_SERVER_GITHUB_CLIENT_SECRET` | The client secret (environment only) |
+| `ESEC_SERVER_BOOTSTRAP_TOKEN` | Account creation token, 16+ characters (environment only, required) |
 | `ESEC_SERVER_ALLOWED_GITHUB_IDS` | Comma-separated numeric ids |
 | `ESEC_SERVER_CLIENT_IP_HEADER` | `client_ip_header`; set only behind a proxy that sets it |
 | `ESEC_SERVER_VAULT_HISTORY` | `vault_history` (default 50) |
@@ -79,6 +80,7 @@ fly volumes create esec_vault_data --size 1 --config deploy/fly.toml
 fly secrets set --config deploy/fly.toml \
   ESEC_SERVER_GITHUB_CLIENT_ID=Iv23li... \
   ESEC_SERVER_GITHUB_CLIENT_SECRET=... \
+  ESEC_SERVER_BOOTSTRAP_TOKEN="$(openssl rand -base64 24)" \
   LITESTREAM_BUCKET=esec-vault-server \
   LITESTREAM_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
   LITESTREAM_REGION=auto \
@@ -102,8 +104,16 @@ and remove the `replace` before you deploy.
 On a machine that already has your identity and keyrings:
 
 ```sh
-esec vault login https://vault.example.com
+esec vault login https://vault.example.com --bootstrap-token <token>
 ```
+
+The bootstrap token is needed once per account, at its creation. A GitHub
+login alone cannot create an account. Without the token, someone who took
+over an allowlisted GitHub account before its owner's first login could
+create the vault account with their own keys. Give the token only to the
+people you allowlist, through another channel. Rotate it with
+`fly secrets set ESEC_SERVER_BOOTSTRAP_TOKEN=...` whenever you like; existing
+accounts are not affected.
 
 1. Open the printed link and sign in with GitHub.
 2. Check that the code matches, then confirm.

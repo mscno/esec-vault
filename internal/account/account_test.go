@@ -75,7 +75,7 @@ func setup(t *testing.T) (*servertest.Harness, *account.Account) {
 	ui := &testUI{t: t, h: h}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	a, err := account.Login(ctx, kr, ui, account.LoginOptions{Server: h.URL, Name: "laptop", Poll: 50 * time.Millisecond})
+	a, err := account.Login(ctx, kr, ui, account.LoginOptions{Server: h.URL, Name: "laptop", Poll: 50 * time.Millisecond, BootstrapToken: servertest.BootstrapToken})
 	if err != nil {
 		t.Fatalf("login: %v\n%s", err, ui.out.String())
 	}

@@ -25,6 +25,12 @@ type Config struct {
 	// the TCP peer address.
 	ClientIPHeader string `toml:"client_ip_header"`
 
+	// BootstrapToken must accompany the creation of every account. It comes
+	// from ESEC_SERVER_BOOTSTRAP_TOKEN only. Without it, whoever controls an
+	// allowlisted GitHub account before its owner's first login could create
+	// the vault account with their own keys.
+	BootstrapToken string `toml:"-"`
+
 	GitHub   GitHubConfig   `toml:"github"`
 	Access   AccessConfig   `toml:"access"`
 	Sessions SessionsConfig `toml:"sessions"`
@@ -134,6 +140,9 @@ func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent
 	if c.GitHub.ClientSecret == "" {
 		errs = append(errs, errors.New("ESEC_SERVER_GITHUB_CLIENT_SECRET is required"))
 	}
+	if len(c.BootstrapToken) < 16 {
+		errs = append(errs, errors.New("ESEC_SERVER_BOOTSTRAP_TOKEN is required (at least 16 characters, e.g. openssl rand -base64 24): it authorizes creating accounts"))
+	}
 	if len(c.Access.AllowedGitHubIDs) == 0 {
 		errs = append(errs, errors.New("access.allowed_github_ids must list at least one numeric GitHub user id"))
 	}
@@ -187,6 +196,7 @@ func (c *Config) applyEnv() error {
 	set("ESEC_SERVER_GITHUB_WEB_URL", &c.GitHub.WebURL)
 	set("ESEC_SERVER_GITHUB_API_URL", &c.GitHub.APIURL)
 	c.GitHub.ClientSecret = os.Getenv("ESEC_SERVER_GITHUB_CLIENT_SECRET")
+	c.BootstrapToken = os.Getenv("ESEC_SERVER_BOOTSTRAP_TOKEN")
 	if v := os.Getenv("ESEC_SERVER_ALLOWED_GITHUB_IDS"); v != "" {
 		ids, err := parseIDs(v)
 		if err != nil {

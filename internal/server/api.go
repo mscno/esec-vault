@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -533,6 +534,9 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 	if err != nil {
 		return nil, fmt.Errorf("stored chain for %s does not verify: %w", c.user.ID, err)
 	}
+	if hasInit(req) && subtle.ConstantTimeCompare([]byte(hashHex(req.BootstrapToken)), []byte(hashHex(s.cfg.BootstrapToken))) != 1 {
+		return nil, clientErr(http.StatusForbidden, wire.ErrBootstrapRequired, "creating an account needs the server's bootstrap token (ask the server operator; pass --bootstrap-token)")
+	}
 	pending := c.device.Status == wire.DevicePending
 	if pending {
 		if err := checkPendingCommit(state, c, req); err != nil {
@@ -693,6 +697,18 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 		return nil, err
 	}
 	return result, nil
+}
+
+func hasInit(req *wire.Commit) bool {
+	for _, e := range req.Links {
+		if e == nil {
+			continue
+		}
+		if l, err := peekLink(e); err == nil && l.Type == chain.TypeInit {
+			return true
+		}
+	}
+	return false
 }
 
 func rotated(req *wire.Commit, _ *chain.State) bool {

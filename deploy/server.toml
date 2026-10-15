@@ -1,6 +1,7 @@
 # esec vault server configuration. Every setting can be overridden with an
-# ESEC_SERVER_* environment variable. The GitHub client secret is read only
-# from ESEC_SERVER_GITHUB_CLIENT_SECRET.
+# ESEC_SERVER_* environment variable. Secrets come only from the environment:
+# ESEC_SERVER_GITHUB_CLIENT_SECRET and ESEC_SERVER_BOOTSTRAP_TOKEN (required;
+# it authorizes creating accounts).
 base_url = "https://vault.example.com"
 listen = ":8080"
 db_path = "/data/esec-vault.db"

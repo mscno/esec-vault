@@ -27,6 +27,7 @@ const (
 	ErrRateLimited          = "rate_limited"
 	ErrDeviceRevoked        = "device_revoked"
 	ErrPendingExpired       = "pending_expired"
+	ErrBootstrapRequired    = "bootstrap_required"
 	ErrInternal             = "internal"
 )
 
@@ -219,6 +220,9 @@ type Commit struct {
 	Identity    []byte               `json:"identity,omitempty"`
 	Vault       *VaultPut            `json:"vault,omitempty"`
 	AgentSlots  []AgentSlot          `json:"agent_slots,omitempty"`
+	// BootstrapToken authorizes creating an account (an init link). The
+	// server operator hands it out; a GitHub login alone cannot create one.
+	BootstrapToken string `json:"bootstrap_token,omitempty"`
 }
 
 // CommitResult reports the state after a commit.

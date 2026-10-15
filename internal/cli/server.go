@@ -61,6 +61,7 @@ type LoginCmd struct {
 	NoBrowser       bool   `help:"Do not try to open a browser"`
 	NoSeal          bool   `help:"Do not seal keyrings on this machine"`
 	NoIndex         bool   `help:"Do not publish project and environment names for the web UI"`
+	BootstrapToken  string `env:"ESEC_VAULT_BOOTSTRAP_TOKEN" help:"Account creation token from the server operator (only for the first login of an account)"`
 	AccountKey      string `help:"Expected account key words (as shown by 'esec vault status' on another device); skips the interactive check"`
 }
 
@@ -79,7 +80,7 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	if _, err := secretstore.EnsureSelected(); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
-	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex, AccountKey: c.AccountKey}
+	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex, AccountKey: c.AccountKey, BootstrapToken: c.BootstrapToken}
 	if !c.NoBrowser {
 		opts.OpenBrowser = openBrowser
 	}

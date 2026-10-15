@@ -57,6 +57,7 @@ func TestSafeNext(t *testing.T) {
 
 func TestConfigValidation(t *testing.T) {
 	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "s")
+	t.Setenv("ESEC_SERVER_BOOTSTRAP_TOKEN", "0123456789abcdef")
 	t.Setenv("ESEC_SERVER_BASE_URL", "https://vault.example.com")
 	t.Setenv("ESEC_SERVER_DB_PATH", "/data/db")
 	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_ID", "id")
@@ -90,6 +91,7 @@ func TestConfigValidation(t *testing.T) {
 // TestDeployConfigLoads keeps the shipped example configuration valid.
 func TestDeployConfigLoads(t *testing.T) {
 	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "s")
+	t.Setenv("ESEC_SERVER_BOOTSTRAP_TOKEN", "0123456789abcdef")
 	c, err := LoadConfig("../../deploy/server.toml")
 	if err != nil {
 		t.Fatal(err)

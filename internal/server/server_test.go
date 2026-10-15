@@ -179,7 +179,7 @@ func create(t *testing.T, d *dev) *account {
 	initLink, st1 := a.link(t, chain.TypeInit, chain.NewInitBody(u.Public, u.SignPublic(), *mpub, msign))
 	a.st = st1
 	addLink, st2 := a.link(t, chain.TypeDeviceAdd, a.addBody(t, d, chain.MethodFirst, ""))
-	if _, err := d.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{initLink, addLink}, DeviceBoxes: []wire.DeviceBox{a.box(t, st2, d)}, Identity: a.wrapped(t), Vault: a.vault(t, 0, map[string]map[string]string{"acme/store": {"ESEC_PRIVATE_KEY_DEV": strings.Repeat("ab", 32)}})}); err != nil {
+	if _, err := d.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{initLink, addLink}, DeviceBoxes: []wire.DeviceBox{a.box(t, st2, d)}, Identity: a.wrapped(t), Vault: a.vault(t, 0, map[string]map[string]string{"acme/store": {"ESEC_PRIVATE_KEY_DEV": strings.Repeat("ab", 32)}}), BootstrapToken: servertest.BootstrapToken}); err != nil {
 		t.Fatal(err)
 	}
 	a.st = st2
@@ -450,7 +450,7 @@ func TestCommitAndVaultRules(t *testing.T) { //nolint:gocyclo // one sequential 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.c.Commit(ctx, &wire.Commit{Links: []*envelope.Envelope{initAgain}}); code(err) != wire.ErrInvalidRequest {
+	if _, err := owner.c.Commit(ctx, &wire.Commit{Links: []*envelope.Envelope{initAgain}, BootstrapToken: servertest.BootstrapToken}); code(err) != wire.ErrInvalidRequest {
 		t.Fatalf("second init: %v", err)
 	}
 	// Adding a device the server never registered.
@@ -701,5 +701,23 @@ func TestDeletedDeviceIsUnauthorized(t *testing.T) {
 	}
 	if _, err := d.c.Me(context.Background()); code(err) != wire.ErrUnauthorized {
 		t.Fatalf("deleted device: %v", err)
+	}
+}
+
+func TestAccountCreationNeedsBootstrapToken(t *testing.T) {
+	h := harness(t)
+	d := signIn(t, h, nil, "laptop")
+	u, _ := identity.NewRandom()
+	mpub, _, _ := box.GenerateKey(rand.Reader)
+	_, msign, _ := ed25519.GenerateKey(rand.Reader)
+	a := &account{u: u, master: *mpub, masterSign: msign, st: chain.New(user)}
+	initLink, st1 := a.link(t, chain.TypeInit, chain.NewInitBody(u.Public, u.SignPublic(), *mpub, msign))
+	a.st = st1
+	addLink, st2 := a.link(t, chain.TypeDeviceAdd, a.addBody(t, d, chain.MethodFirst, ""))
+	for _, token := range []string{"", "not-the-token-at-all"} {
+		_, err := d.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{initLink, addLink}, DeviceBoxes: []wire.DeviceBox{a.box(t, st2, d)}, Identity: a.wrapped(t), BootstrapToken: token})
+		if code(err) != wire.ErrBootstrapRequired {
+			t.Fatalf("account created with token %q: %v", token, err)
+		}
 	}
 }

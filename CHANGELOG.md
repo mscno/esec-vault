@@ -40,6 +40,9 @@ Vault server and device sync. Requires esec v0.9.0 or later.
   write-once. Unlock slots disabled by a revocation are re-created only after
   an explicit yes.
 - The recovery passphrase cannot change while signed in to a vault server.
+- Creating an account needs the server's bootstrap token
+  (`ESEC_SERVER_BOOTSTRAP_TOKEN`, `login --bootstrap-token`), so a taken-over
+  GitHub account cannot create the vault account first.
 
 # v0.3.6
 

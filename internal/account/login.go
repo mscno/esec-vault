@@ -47,6 +47,9 @@ type LoginOptions struct {
 	Poll time.Duration
 	// Mnemonic and Passphrase are read through UI.Secret when empty.
 	Mnemonic, Passphrase string
+	// BootstrapToken authorizes creating the account on the server; read
+	// through UI.Secret when needed and empty.
+	BootstrapToken string
 	// AccountKey is the expected account key words. A device that joins by
 	// approval must match them (or confirm them interactively) before it
 	// installs any key.
@@ -338,7 +341,13 @@ func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *enve
 	if err != nil {
 		return err
 	}
-	res, err := a.Client.Commit(ctx, &wire.Commit{Links: []*envelope.Envelope{initLink, addLink}, DeviceBoxes: []wire.DeviceBox{box}, Identity: wrapped, Vault: put})
+	token := opts.BootstrapToken
+	if token == "" {
+		if token, err = a.UI.Secret("Account creation token (from the server operator): "); err != nil {
+			return err
+		}
+	}
+	res, err := a.Client.Commit(ctx, &wire.Commit{Links: []*envelope.Envelope{initLink, addLink}, DeviceBoxes: []wire.DeviceBox{box}, Identity: wrapped, Vault: put, BootstrapToken: strings.TrimSpace(token)})
 	if err != nil {
 		return fmt.Errorf("create account: %w", err)
 	}
