@@ -534,7 +534,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 	if err != nil {
 		return nil, fmt.Errorf("stored chain for %s does not verify: %w", c.user.ID, err)
 	}
-	if hasInit(req) && subtle.ConstantTimeCompare([]byte(hashHex(req.BootstrapToken)), []byte(hashHex(s.cfg.BootstrapToken))) != 1 {
+	if hasInit(req) && subtle.ConstantTimeCompare([]byte(hashHex(req.BootstrapToken)), []byte(hashHex(UserBootstrapToken(s.cfg.BootstrapToken, c.user.GitHubID)))) != 1 {
 		return nil, clientErr(http.StatusForbidden, wire.ErrBootstrapRequired, "creating an account needs the server's bootstrap token (ask the server operator; pass --bootstrap-token)")
 	}
 	pending := c.device.Status == wire.DevicePending
@@ -720,9 +720,12 @@ func rotated(req *wire.Commit, _ *chain.State) bool {
 	return false
 }
 
+// peekLink decodes a link exactly as chain verification does, so the server's
+// checks (account creation, rotation, pending devices) and the chain always
+// agree on a link's type.
 func peekLink(e *envelope.Envelope) (*chain.Link, error) {
 	var l chain.Link
-	if err := json.Unmarshal(e.Body, &l); err != nil {
+	if err := e.Decode(&l); err != nil {
 		return nil, err
 	}
 	return &l, nil

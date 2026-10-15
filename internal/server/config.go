@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -163,6 +166,16 @@ func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// UserBootstrapToken derives the account creation token of one GitHub user
+// from the server's bootstrap secret. Each person gets their own token, so a
+// token can only create its own account, and only once (an account is
+// created once).
+func UserBootstrapToken(secret string, githubID int64) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	fmt.Fprintf(mac, "esec-vault bootstrap v1\n%d", githubID)
+	return "esb_" + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // Secure reports whether the server is served over https.

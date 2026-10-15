@@ -20,9 +20,19 @@ var version string
 func main() {
 	configPath := flag.String("config", os.Getenv("ESEC_SERVER_CONFIG"), "path to the server TOML config")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	tokenFor := flag.Int64("bootstrap-token-for", 0, "print the account creation token for this numeric GitHub user id and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(buildVersion())
+		return
+	}
+	if *tokenFor > 0 {
+		secret := os.Getenv("ESEC_SERVER_BOOTSTRAP_TOKEN")
+		if len(secret) < 16 {
+			fmt.Fprintln(os.Stderr, "ESEC_SERVER_BOOTSTRAP_TOKEN must be set (16+ characters)")
+			os.Exit(1)
+		}
+		fmt.Println(server.UserBootstrapToken(secret, *tokenFor))
 		return
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))

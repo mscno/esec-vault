@@ -4,14 +4,12 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"html/template"
 	"io"
 	"io/fs"
@@ -23,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
@@ -258,17 +257,7 @@ func readBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, erro
 	return b, nil
 }
 
-func decodeStrict(b []byte, v any) error {
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if err := d.Decode(v); err != nil {
-		return err
-	}
-	if d.More() {
-		return errors.New("trailing data")
-	}
-	return nil
-}
+func decodeStrict(b []byte, v any) error { return envelope.DecodeStrict(b, v) }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -314,6 +303,9 @@ func (w *window) exhausted() bool { return w.count >= w.limit }
 type limiter struct {
 	mu sync.Mutex
 	m  map[string]*window
+	// quietUntil skips eviction scans after one that freed nothing, so a
+	// table full of exhausted windows does not cost a full scan per request.
+	quietUntil time.Time
 }
 
 // maxLimiterKeys is the size at which the limiter evicts entries. Exhausted
@@ -359,6 +351,14 @@ func (l *limiter) refund(key string) {
 // evict drops expired windows, then up to a tenth of the table from windows
 // that have not reached their limit, lowest counts first.
 func (l *limiter) evict(now time.Time) {
+	if now.Before(l.quietUntil) {
+		return
+	}
+	defer func() {
+		if len(l.m) >= maxLimiterKeys {
+			l.quietUntil = now.Add(time.Minute)
+		}
+	}()
 	for k, w := range l.m {
 		if now.Sub(w.start) > 2*time.Hour {
 			delete(l.m, k)

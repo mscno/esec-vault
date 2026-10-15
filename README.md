@@ -85,11 +85,11 @@ The [design document](docs/design/vault-server.md) explains the security model.
 ### Connect your first machine
 
 Use the machine that already has your identity and keyrings. The first
-login creates your account and needs the server's account creation token
-from its operator:
+login creates your account and asks for your account creation token, which
+the server operator gives you:
 
 ```sh
-esec vault login https://vault.example.com --bootstrap-token <token>
+esec vault login https://vault.example.com
 ```
 
 1. Open the printed link, or go to the printed address and enter the code.

@@ -147,13 +147,24 @@ func (e *Envelope) Require(kind string, keys ...ed25519.PublicKey) error {
 
 // Decode unmarshals the body into v, rejecting unknown fields.
 func (e *Envelope) Decode(v any) error {
-	d := json.NewDecoder(bytes.NewReader(e.Body))
-	d.DisallowUnknownFields()
-	if err := d.Decode(v); err != nil {
+	if err := DecodeStrict(e.Body, v); err != nil {
 		return fmt.Errorf("invalid %s body: %w", e.Kind, err)
 	}
-	if d.More() {
-		return fmt.Errorf("invalid %s body: trailing data", e.Kind)
+	return nil
+}
+
+// DecodeStrict unmarshals exactly one JSON value from data into v. Unknown
+// fields and anything but whitespace after the value are errors, so every
+// reader of signed bytes sees the same content. (json.Decoder.More alone
+// lets a trailing ']' or '}' through.)
+func DecodeStrict(data []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(data[d.InputOffset():])) != 0 {
+		return errors.New("trailing data")
 	}
 	return nil
 }

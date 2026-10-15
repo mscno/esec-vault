@@ -22,6 +22,7 @@ import (
 	"github.com/mscno/esec-vault/internal/devicekey"
 	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/identity"
+	"github.com/mscno/esec-vault/internal/server"
 	"github.com/mscno/esec-vault/internal/servertest"
 	"github.com/mscno/esec-vault/internal/ukey"
 	"github.com/mscno/esec-vault/internal/vaultfile"
@@ -714,10 +715,33 @@ func TestAccountCreationNeedsBootstrapToken(t *testing.T) {
 	initLink, st1 := a.link(t, chain.TypeInit, chain.NewInitBody(u.Public, u.SignPublic(), *mpub, msign))
 	a.st = st1
 	addLink, st2 := a.link(t, chain.TypeDeviceAdd, a.addBody(t, d, chain.MethodFirst, ""))
-	for _, token := range []string{"", "not-the-token-at-all"} {
+	for _, token := range []string{"", "not-the-token-at-all", servertest.BootstrapSecret, server.UserBootstrapToken(servertest.BootstrapSecret, 7)} {
 		_, err := d.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{initLink, addLink}, DeviceBoxes: []wire.DeviceBox{a.box(t, st2, d)}, Identity: a.wrapped(t), BootstrapToken: token})
 		if code(err) != wire.ErrBootstrapRequired {
 			t.Fatalf("account created with token %q: %v", token, err)
 		}
+	}
+}
+
+func TestTrailingDataInSignedBodies(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	a := create(t, owner)
+	// A link body with a trailing ']' must be rejected by every reader, so
+	// the server's link-type checks and the chain can never disagree.
+	l := chain.Link{Seq: a.st.Seq + 1, Prev: a.st.Head(), CTime: time.Now().UTC().Truncate(time.Second), Type: chain.TypeDeviceRename, User: user, UKeyVersion: a.st.UKeyVersion, Body: []byte(`{"device_id":"` + owner.info.ID + `","name":"x"}`)}
+	raw, err := json.Marshal(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := envelope.NewRaw(chain.KindLink, append(raw, ']'), a.u.Sign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.st.Next(e); err == nil {
+		t.Fatal("chain accepted a body with trailing data")
+	}
+	if _, err := owner.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{e}}); code(err) != wire.ErrInvalidRequest {
+		t.Fatalf("server accepted a body with trailing data: %v", err)
 	}
 }

@@ -22,8 +22,12 @@ import (
 	"github.com/mscno/esec-vault/internal/server"
 )
 
-// BootstrapToken is the account creation token of test servers.
-const BootstrapToken = "test-bootstrap-token"
+// BootstrapSecret is the bootstrap secret of test servers.
+const BootstrapSecret = "test-bootstrap-secret"
+
+// BootstrapToken is the account creation token of the test owner (GitHub id
+// 53101343).
+var BootstrapToken = server.UserBootstrapToken(BootstrapSecret, 53101343)
 
 // Harness is a running test server.
 type Harness struct {
@@ -157,7 +161,7 @@ func Start(t *testing.T, allowed ...int64) *Harness {
 		GitHub:       server.GitHubConfig{ClientID: "test-client", ClientSecret: "test-secret", WebURL: gh.URL, APIURL: gh.URL},
 		Access:       server.AccessConfig{AllowedGitHubIDs: allowed},
 	}
-	cfg.BootstrapToken = BootstrapToken
+	cfg.BootstrapToken = BootstrapSecret
 	cfg.Sessions.Idle.Duration = 30 * 24 * time.Hour
 	cfg.Sessions.Absolute.Duration = 90 * 24 * time.Hour
 	if err := cfg.Validate(); err != nil {

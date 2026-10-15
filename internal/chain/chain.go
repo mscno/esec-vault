@@ -729,13 +729,8 @@ func sameDevice(a, b Device) bool {
 }
 
 func decodeBody(l Link, v any) error {
-	d := json.NewDecoder(bytes.NewReader(l.Body))
-	d.DisallowUnknownFields()
-	if err := d.Decode(v); err != nil {
+	if err := envelope.DecodeStrict(l.Body, v); err != nil {
 		return fmt.Errorf("invalid %s body: %w", l.Type, err)
-	}
-	if d.More() {
-		return fmt.Errorf("invalid %s body: trailing data", l.Type)
 	}
 	return nil
 }

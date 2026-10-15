@@ -61,7 +61,7 @@ Every setting can be overridden from the environment:
 | `ESEC_SERVER_DB_PATH` | `db_path` |
 | `ESEC_SERVER_GITHUB_CLIENT_ID` | `github.client_id` |
 | `ESEC_SERVER_GITHUB_CLIENT_SECRET` | The client secret (environment only) |
-| `ESEC_SERVER_BOOTSTRAP_TOKEN` | Account creation token, 16+ characters (environment only, required) |
+| `ESEC_SERVER_BOOTSTRAP_TOKEN` | Bootstrap secret, 16+ characters, from which each person's account creation token is derived (environment only, required) |
 | `ESEC_SERVER_ALLOWED_GITHUB_IDS` | Comma-separated numeric ids |
 | `ESEC_SERVER_CLIENT_IP_HEADER` | `client_ip_header`; set only behind a proxy that sets it |
 | `ESEC_SERVER_VAULT_HISTORY` | `vault_history` (default 50) |
@@ -103,16 +103,28 @@ and remove the `replace` before you deploy.
 
 On a machine that already has your identity and keyrings:
 
+First print your account creation token. Each GitHub user id has its own
+token, derived from the bootstrap secret:
+
 ```sh
-esec vault login https://vault.example.com --bootstrap-token <token>
+fly ssh console --config deploy/fly.toml -C "esec-vault-server -bootstrap-token-for 53101343"
 ```
 
-The bootstrap token is needed once per account, at its creation. A GitHub
-login alone cannot create an account. Without the token, someone who took
-over an allowlisted GitHub account before its owner's first login could
-create the vault account with their own keys. Give the token only to the
-people you allowlist, through another channel. Rotate it with
-`fly secrets set ESEC_SERVER_BOOTSTRAP_TOKEN=...` whenever you like; existing
+Then sign in, and paste the token when asked:
+
+```sh
+esec vault login https://vault.example.com
+```
+
+The token is needed once per account, at its creation. A GitHub login alone
+cannot create an account. Without the token, someone who took over an
+allowlisted GitHub account before its owner's first login could create the
+vault account with their own keys.
+
+A token works only for its own GitHub id. Give each person theirs through
+another channel. Avoid `--bootstrap-token` on the command line, which ends
+up in shell history; use the prompt or `ESEC_VAULT_BOOTSTRAP_TOKEN`.
+Changing the bootstrap secret invalidates tokens not yet used; existing
 accounts are not affected.
 
 1. Open the printed link and sign in with GitHub.
@@ -182,7 +194,7 @@ everyone who checks them.
 
 | Task | How |
 |---|---|
-| Add a person | Add their numeric id to `allowed_github_ids` and redeploy. They sign in and create their own account. |
+| Add a person | Add their numeric id to `allowed_github_ids` and redeploy. Print their token with `esec-vault-server -bootstrap-token-for <id>` and send it to them. They sign in and create their own account. |
 | Remove a person | Remove the id and redeploy. Their sessions fail on the next request. Their data stays until you delete it. |
 | Rotate the GitHub client secret | Generate a new secret in the OAuth app, run `fly secrets set ESEC_SERVER_GITHUB_CLIENT_SECRET=...`, then delete the old secret. |
 

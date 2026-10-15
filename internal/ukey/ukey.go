@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/mscno/esec-vault/internal/chain"
+	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/identity"
 )
 
@@ -87,9 +88,7 @@ func OpenDeviceBox(box []byte, pub, priv *[32]byte) (*Material, error) {
 
 func decode(plain []byte) (*Material, error) {
 	var m Material
-	d := json.NewDecoder(bytes.NewReader(plain))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&m); err != nil {
+	if err := envelope.DecodeStrict(plain, &m); err != nil {
 		return nil, fmt.Errorf("invalid user key payload: %w", err)
 	}
 	if len(m.EncPriv) != 32 || len(m.SignSeed) != ed25519.SeedSize {
