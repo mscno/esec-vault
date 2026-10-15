@@ -56,12 +56,15 @@ type DeviceRegisterRequest struct {
 	EncPub    string `json:"enc_pub"`
 	SignPub   string `json:"sign_pub"`
 	Timestamp int64  `json:"timestamp"`
-	Sig       []byte `json:"sig"`
+	// Nonce makes each registration unique, so a replay can be detected
+	// (Ed25519 signatures are deterministic).
+	Nonce string `json:"nonce"`
+	Sig   []byte `json:"sig"`
 }
 
 // RegistrationMessage returns the bytes a registration signature covers.
 func RegistrationMessage(r *DeviceRegisterRequest) []byte {
-	return []byte(fmt.Sprintf("esec-vault register v1\n%s\n%s\n%s\n%s\n%d", r.Name, r.Platform, r.EncPub, r.SignPub, r.Timestamp))
+	return []byte(fmt.Sprintf("esec-vault register v1\n%s\n%s\n%s\n%s\n%d\n%s", r.Name, r.Platform, r.EncPub, r.SignPub, r.Timestamp, r.Nonce))
 }
 
 // DeviceRegisterResponse carries the codes for the device authorization grant.

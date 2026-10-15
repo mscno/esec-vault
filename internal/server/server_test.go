@@ -880,6 +880,13 @@ func TestRegistrationNeedsTheDeviceKey(t *testing.T) {
 	if _, err := c.RegisterDevice(ctx, req); code(err) != wire.ErrInvalidRequest {
 		t.Fatalf("registration with copied keys: %v", err)
 	}
+	fresh := owner.key.Registration("laptop", "linux/amd64", h.Now())
+	if _, err := c.RegisterDevice(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RegisterDevice(ctx, fresh); code(err) != wire.ErrInvalidRequest {
+		t.Fatalf("replayed registration: %v", err)
+	}
 	stale := owner.key.Registration("laptop", "linux/amd64", h.Now().Add(-5*time.Minute))
 	if _, err := c.RegisterDevice(ctx, stale); code(err) != wire.ErrInvalidRequest {
 		t.Fatalf("replayed old registration: %v", err)

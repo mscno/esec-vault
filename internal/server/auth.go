@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,6 +29,33 @@ const (
 	// maxPendingPerUser caps devices waiting for approval per account.
 	maxPendingPerUser = 5
 )
+
+// checkRegistration verifies that the registrant holds the private key it
+// registers (so nobody can register, or use the known-device path with,
+// someone else's keys), that the request is recent, and that it was not
+// seen before.
+func (s *Server) checkRegistration(ctx context.Context, req *wire.DeviceRegisterRequest, now time.Time) error {
+	signPub, err := chain.ParseSignKey(strings.ToLower(req.SignPub))
+	if err != nil || !ed25519.Verify(signPub, wire.RegistrationMessage(req), req.Sig) {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "registration is not signed by the device key")
+	}
+	if d := now.Sub(time.Unix(req.Timestamp, 0)); d > apisig.MaxSkew || d < -apisig.MaxSkew {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "registration time is too far from the server's clock; check this machine's clock")
+	}
+	if !registrationNonce.MatchString(req.Nonce) {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid registration nonce")
+	}
+	res, err := s.db.sql.ExecContext(ctx, `INSERT INTO nonces (device_id, nonce, seen_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, "register:"+strings.ToLower(req.SignPub), req.Nonce, now.Unix())
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "registration replayed")
+	}
+	return nil
+}
+
+var registrationNonce = regexp.MustCompile(`^[A-Za-z0-9_-]{22,64}$`)
 
 // errReplay marks a request whose nonce was already used.
 var errReplay = errors.New("request replayed")
@@ -234,15 +262,8 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
 		return
 	}
-	// The registrant must hold the private key it registers, so nobody can
-	// register (or use the known-device path with) someone else's keys.
-	signPub, err := chain.ParseSignKey(strings.ToLower(req.SignPub))
-	if err != nil || !ed25519.Verify(signPub, wire.RegistrationMessage(&req), req.Sig) {
-		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "registration is not signed by the device key")
-		return
-	}
-	if d := now.Sub(time.Unix(req.Timestamp, 0)); d > apisig.MaxSkew || d < -apisig.MaxSkew {
-		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "registration time is too far from the server's clock; check this machine's clock")
+	if err := s.checkRegistration(r.Context(), &req, now); err != nil {
+		s.fail(w, r, err)
 		return
 	}
 	// The server-wide cap protects the database from floods of new

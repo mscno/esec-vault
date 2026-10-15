@@ -7,6 +7,7 @@ package devicekey
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -140,7 +141,9 @@ func Words(encPubHex, signPubHex string) string {
 
 // Registration builds a signed registration request for this device.
 func (k *Key) Registration(name, platform string, now time.Time) wire.DeviceRegisterRequest {
-	r := wire.DeviceRegisterRequest{Name: name, Platform: platform, EncPub: k.EncPubHex(), SignPub: k.SignPubHex(), Timestamp: now.Unix()}
+	var n [18]byte
+	_, _ = rand.Read(n[:])
+	r := wire.DeviceRegisterRequest{Name: name, Platform: platform, EncPub: k.EncPubHex(), SignPub: k.SignPubHex(), Timestamp: now.Unix(), Nonce: base64.RawURLEncoding.EncodeToString(n[:])}
 	r.Sig = ed25519.Sign(k.Sign, wire.RegistrationMessage(&r))
 	return r
 }
