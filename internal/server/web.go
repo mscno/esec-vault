@@ -16,9 +16,29 @@ import (
 )
 
 const (
-	webSessionTTL = 12 * time.Hour
-	oauthStateTTL = 10 * time.Minute
+	webSessionTTL   = 12 * time.Hour
+	oauthStateTTL   = 10 * time.Minute
+	knownBrowserTTL = 180 * 24 * time.Hour
 )
+
+// knownBrowser reports whether the request carries the cookie of a browser
+// that signed in before, for an account that is still allowed.
+func (s *Server) knownBrowser(r *http.Request) bool {
+	c, err := r.Cookie(s.cookieName("esec_known"))
+	if err != nil || c.Value == "" {
+		return false
+	}
+	var userID string
+	var expires int64
+	if err := s.db.sql.QueryRowContext(r.Context(), `SELECT user_id, expires_at FROM known_browsers WHERE token_hash = ?`, hashHex(c.Value)).Scan(&userID, &expires); err != nil {
+		return false
+	}
+	if s.now().Unix() >= expires {
+		return false
+	}
+	u, err := s.db.user(r.Context(), userID)
+	return err == nil && s.cfg.Allowed(u.GitHubID)
+}
 
 type webSession struct {
 	user *userRow
@@ -164,7 +184,7 @@ func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	if open >= 200000 {
+	if open >= s.maxOAuthStates && !s.knownBrowser(r) {
 		s.webError(w, http.StatusServiceUnavailable, "Too many sign-ins in progress. Try again in a few minutes.")
 		return
 	}
@@ -234,6 +254,14 @@ func (s *Server) webGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setCookie(w, "esec_session", sid, "/", webSessionTTL)
+	// Remember this browser: during a flood of sign-in attempts, browsers
+	// that signed in before skip the server-wide cap.
+	known := randomToken("")
+	if _, err := s.db.sql.ExecContext(ctx, `INSERT INTO known_browsers (token_hash, user_id, expires_at) VALUES (?, ?, ?)`, hashHex(known), u.ID, now.Add(knownBrowserTTL).Unix()); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.setCookie(w, "esec_known", known, "/", knownBrowserTTL)
 	http.Redirect(w, r, safeNext(next), http.StatusSeeOther)
 }
 

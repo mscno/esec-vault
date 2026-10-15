@@ -330,10 +330,22 @@ func (c *DevicesApproveCmd) Run(ctx *cliCtx) error {
 			continue
 		}
 		fmt.Printf("Pending: %s  %s  from %s  %s ago\n", p.Proof.Device.Name, p.Proof.Device.Platform, safetext.IP(p.Info.LastIP), time.Since(p.Proof.Device.Created).Round(time.Second))
-		fmt.Printf("Fingerprint: %s      ← computed here from the device's own keys\n", p.Words)
 		fmt.Printf("Account key: %s\n", a.State.Chain.AccountWords)
-		if !confirm("Does the fingerprint match the new device's terminal? Approve") {
+		// The fingerprint is not shown here: typing it from the new device's
+		// own terminal proves the person approving can see that machine. A
+		// device someone else signed in (for example with a phished code)
+		// cannot be approved by just answering yes.
+		typed, err := promptLine("Type the fingerprint words shown on the new device to approve it (Enter skips): ")
+		if err != nil && typed == "" {
 			fmt.Println("Skipped.")
+			continue
+		}
+		if normalizeFingerprint(typed) != p.Words {
+			if typed != "" {
+				fmt.Println("That fingerprint does not match this device; not approved.")
+			} else {
+				fmt.Println("Skipped.")
+			}
 			continue
 		}
 		if err := a.Approve(bg, p); err != nil {
@@ -571,6 +583,12 @@ func rewrapSlots(ctx context.Context, a *account.Account, slots []chain.SlotStat
 		}
 		fmt.Printf("✓ Re-created SSH-agent unlock slot %s for %s.\n", id, s.SSHKeyFP)
 	}
+}
+
+// normalizeFingerprint accepts fingerprint words separated by spaces,
+// dashes or commas, in any case.
+func normalizeFingerprint(s string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return r == '-' || r == ' ' || r == ',' }), "-")
 }
 
 // parseTTL accepts Go durations plus a "d" (days) suffix.

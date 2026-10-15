@@ -42,6 +42,9 @@ type Server struct {
 	limits *limiter
 	notify *notifier
 	mux    *http.ServeMux
+	// Server-wide caps on open sign-ins; see WithSignInCaps.
+	maxRegistrations int
+	maxOAuthStates   int
 }
 
 // Option customizes a Server, mainly for tests.
@@ -49,6 +52,12 @@ type Option func(*Server)
 
 // WithClock overrides the clock.
 func WithClock(now func() time.Time) Option { return func(s *Server) { s.now = now } }
+
+// WithSignInCaps overrides the server-wide caps on open registrations (per
+// hour) and open GitHub sign-ins (per 10 minutes). Tests use small values.
+func WithSignInCaps(registrations, oauthStates int) Option {
+	return func(s *Server) { s.maxRegistrations, s.maxOAuthStates = registrations, oauthStates }
+}
 
 // WithGitHub overrides the GitHub client.
 func WithGitHub(g GitHub) Option { return func(s *Server) { s.github = g } }
@@ -72,7 +81,7 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, db: db, log: log, tmpl: tmpl, now: time.Now, anon: newLimiter(), limits: newLimiter(), notify: newNotifier()}
+	s := &Server{cfg: cfg, db: db, log: log, tmpl: tmpl, now: time.Now, anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates}
 	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
 	for _, o := range opts {
 		o(s)

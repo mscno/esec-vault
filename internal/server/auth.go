@@ -22,6 +22,8 @@ const (
 	pendingDeviceTT = 15 * time.Minute
 	// maxOpenRegistrations caps unconfirmed registrations server-wide.
 	maxOpenRegistrations = 200000
+	// maxOpenOAuthStates caps GitHub sign-ins started per 10 minutes.
+	maxOpenOAuthStates = 200000
 	// maxPendingPerUser caps devices waiting for approval per account.
 	maxPendingPerUser = 5
 )
@@ -221,15 +223,6 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many device registrations from this address")
 		return
 	}
-	var open int
-	if err := s.db.sql.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM devices WHERE status = ? AND created_at > ?`, wire.DeviceRegistering, now.Add(-time.Hour).Unix()).Scan(&open); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if open >= maxOpenRegistrations {
-		writeErr(w, http.StatusServiceUnavailable, wire.ErrRateLimited, "too many sign-ins in progress; try again later")
-		return
-	}
 	body, err := readBody(w, r, maxSmallBody)
 	if err != nil {
 		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large")
@@ -239,6 +232,25 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	if err := decodeStrict(body, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
 		return
+	}
+	// The server-wide cap protects the database from floods of new
+	// registrations. A device the server already trusts (signing in again)
+	// is never held back by it: a flood can delay new devices only.
+	var open int
+	if err := s.db.sql.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM devices WHERE status = ? AND created_at > ?`, wire.DeviceRegistering, now.Add(-time.Hour).Unix()).Scan(&open); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if open >= s.maxRegistrations {
+		var known int
+		if err := s.db.sql.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM devices WHERE sign_pub = ? AND enc_pub = ? AND status = ?`, strings.ToLower(req.SignPub), strings.ToLower(req.EncPub), wire.DeviceActive).Scan(&known); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if known == 0 {
+			writeErr(w, http.StatusServiceUnavailable, wire.ErrRateLimited, "too many sign-ins in progress; try again later")
+			return
+		}
 	}
 	created := now.UTC().Truncate(time.Second)
 	dev := chain.Device{ID: randomID("d_"), Name: req.Name, Platform: req.Platform, EncPub: strings.ToLower(req.EncPub), SignPub: strings.ToLower(req.SignPub), Created: created}
@@ -337,8 +349,14 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 		s.signatureFailure(w, r, err)
 		return
 	}
-	if _, err := s.db.sql.ExecContext(ctx, `UPDATE device_codes SET last_poll = ? WHERE device_code_hash = ?`, now.Unix(), hashHex(req.DeviceCode)); err != nil {
+	// Compare-and-swap on last_poll: of concurrent polls, only one passes.
+	res, err := s.db.sql.ExecContext(ctx, `UPDATE device_codes SET last_poll = ? WHERE device_code_hash = ? AND last_poll = ?`, now.Unix(), hashHex(req.DeviceCode), lastPoll)
+	if err != nil {
 		s.internalError(w, r, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		writeErr(w, http.StatusBadRequest, wire.ErrSlowDown, "polling too fast")
 		return
 	}
 	switch {

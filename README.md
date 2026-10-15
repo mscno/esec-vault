@@ -123,8 +123,9 @@ prints its fingerprint words. On a trusted machine, run:
 esec vault devices approve
 ```
 
-Approve only if both terminals show the same fingerprint. The new machine
-then shows the account key and asks you to confirm it matches your other
+`approve` asks you to type the fingerprint words that the new machine shows.
+It does not print them itself, so typing them proves you can see the new
+machine's terminal. The new machine then shows the account key and asks you to confirm it matches your other
 devices (`esec vault status` shows it). Nothing is installed until you
 confirm. In scripts, pass the words instead: `--account-key word-word-…`.
 

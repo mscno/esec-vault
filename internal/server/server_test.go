@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -788,5 +789,77 @@ func TestPollingDoesNotWriteWhenRefused(t *testing.T) {
 	}
 	if count() != before {
 		t.Fatal("a poll on an expired code wrote a nonce")
+	}
+}
+
+func TestConcurrentPollsPassOneAtATime(t *testing.T) {
+	h := harness(t)
+	key, _ := devicekey.Generate()
+	c, reg := register(t, h, key, "vm")
+	ctx := context.Background()
+	results := make(chan error, 20)
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			_, err := c.PollToken(ctx, reg.DeviceCode)
+			results <- err
+		})
+	}
+	wg.Wait()
+	close(results)
+	pending := 0
+	for err := range results {
+		if code(err) == wire.ErrAuthorizationPending {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatalf("%d concurrent polls passed the interval check, want 1", pending)
+	}
+}
+
+func TestKnownDevicesAndBrowsersBypassGlobalCaps(t *testing.T) {
+	h := servertest.StartWith(t, []server.Option{server.WithSignInCaps(50, 50)}, ownerID)
+	h.GitHub.AddUser(ownerID, "mscno")
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	b := h.Browser("mscno")
+	if _, _, err := b.Get("/account"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a flood that filled both server-wide caps.
+	now := h.Now().Unix()
+	if _, err := h.DB.SQL().Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 50)
+		INSERT INTO devices (id, name, platform, enc_pub, sign_pub, status, created_at) SELECT 'd_flood' || i, 'x', 'linux/amd64', 'e' || i, 's' || i, 'registering', ? FROM n`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.DB.SQL().Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 50)
+		INSERT INTO oauth_states (state_hash, verifier, next, created_at) SELECT 'st' || i, 'v', '/account', ? FROM n`, now); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	newKey, _ := devicekey.Generate()
+	fresh, err := client.New(h.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.RegisterDevice(ctx, wire.DeviceRegisterRequest{Name: "new", Platform: "linux/amd64", EncPub: newKey.EncPubHex(), SignPub: newKey.SignPubHex()}); code(err) != wire.ErrRateLimited {
+		t.Fatalf("new device during a flood: %v", err)
+	}
+	// The trusted laptop can still sign in again, in a browser that signed
+	// in before (its web session is dropped first, so OAuth runs again).
+	if _, err := h.DB.SQL().Exec(`DELETE FROM web_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	c, reg := register(t, h, owner.key, "laptop")
+	if err := b.Confirm(reg.UserCode, true); err != nil {
+		t.Fatalf("known browser during a flood: %v", err)
+	}
+	tok, err := c.PollToken(ctx, reg.DeviceCode)
+	if err != nil || tok.Device.ID != owner.info.ID {
+		t.Fatalf("known device could not sign in during a flood: %v", err)
+	}
+	if status, _, _ := h.Browser("mscno").Get("/auth/github?next=/account"); status != http.StatusServiceUnavailable {
+		t.Fatalf("a new browser during a flood got %d", status)
 	}
 }

@@ -42,6 +42,11 @@ var schema = []string{
 		register_ip TEXT NOT NULL DEFAULT '')`,
 	`CREATE INDEX IF NOT EXISTS devices_user ON devices(user_id)`,
 	`CREATE INDEX IF NOT EXISTS devices_status_created ON devices(status, created_at)`,
+	`CREATE INDEX IF NOT EXISTS devices_sign_pub ON devices(sign_pub)`,
+	`CREATE TABLE IF NOT EXISTS known_browsers (
+		token_hash TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		expires_at INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS device_codes (
 		device_code_hash TEXT PRIMARY KEY,
 		user_code_hash TEXT UNIQUE NOT NULL,
@@ -412,6 +417,7 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM device_codes WHERE expires_at < ?`, []any{unix(now.Add(-time.Hour))}},
 		{`DELETE FROM oauth_states WHERE created_at < ?`, []any{unix(now.Add(-time.Hour))}},
 		{`DELETE FROM web_sessions WHERE expires_at < ?`, []any{unix(now)}},
+		{`DELETE FROM known_browsers WHERE expires_at < ?`, []any{unix(now)}},
 		{`DELETE FROM sessions WHERE expires_at < ? OR (revoked_at > 0 AND revoked_at < ?)`, []any{unix(now), unix(now.Add(-24 * time.Hour))}},
 		// Unconfirmed registrations are useless once their code expired.
 		{`DELETE FROM devices WHERE status = 'registering' AND created_at < ?`, []any{unix(now.Add(-time.Hour - 10*time.Minute))}},

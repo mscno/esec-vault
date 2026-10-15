@@ -142,6 +142,12 @@ func newFakeGitHub(t *testing.T) *FakeGitHub {
 // Start runs a server that allows the given GitHub ids.
 func Start(t *testing.T, allowed ...int64) *Harness {
 	t.Helper()
+	return StartWith(t, nil, allowed...)
+}
+
+// StartWith is Start with extra server options.
+func StartWith(t *testing.T, opts []server.Option, allowed ...int64) *Harness {
+	t.Helper()
 	gh := newFakeGitHub(t)
 	clock := &Clock{}
 	db, err := server.OpenDB(filepath.Join(t.TempDir(), "vault.db"))
@@ -168,7 +174,7 @@ func Start(t *testing.T, allowed ...int64) *Harness {
 		t.Fatal(err)
 	}
 	h.Config = cfg
-	srv, err := server.New(cfg, db, slog.New(slog.DiscardHandler), server.WithClock(clock.Now))
+	srv, err := server.New(cfg, db, slog.New(slog.DiscardHandler), append([]server.Option{server.WithClock(clock.Now)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

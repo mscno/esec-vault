@@ -315,8 +315,12 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	// A wrong account key aborts before anything is installed.
 	vm0 := newMachine(t, bin, "vm0")
 	p = login(t, h, vm0, "", "--account-key", "abandon-abandon-abandon-abandon-abandon-abandon-abandon-about")
-	p.waitFor(`(Check that it shows this fingerprint)`)
-	laptop.run("y\n", "devices", "approve")
+	vm0Words := p.waitFor(`Check that it shows this fingerprint: (\S+)`)
+	// A plain "yes" no longer approves anything: the words must be typed.
+	if out := laptop.run("y\n", "devices", "approve"); !strings.Contains(out, "does not match") {
+		t.Fatalf("approval without the fingerprint:\n%s", out)
+	}
+	laptop.run(strings.ReplaceAll(vm0Words, "-", " ")+"\n", "devices", "approve")
 	if out := p.wait(false); !strings.Contains(out, "nothing was installed") {
 		t.Fatalf("wrong account key:\n%s", out)
 	}
@@ -331,9 +335,9 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	vm1 := newMachine(t, bin, "vm1")
 	p = login(t, h, vm1, "", "--account-key", accountKey)
 	words := p.waitFor(`Check that it shows this fingerprint: (\S+)`)
-	approved := laptop.run("y\n", "devices", "approve")
-	if !strings.Contains(approved, words) || !strings.Contains(approved, accountKey) {
-		t.Fatalf("approval did not show the device fingerprint %s and account key %s:\n%s", words, accountKey, approved)
+	approved := laptop.run(words+"\n", "devices", "approve")
+	if !strings.Contains(approved, "Approved vm1") || !strings.Contains(approved, accountKey) {
+		t.Fatalf("approval with the typed fingerprint %s failed:\n%s", words, approved)
 	}
 	out = p.wait(true)
 	if !strings.Contains(out, "Approved by laptop") || !strings.Contains(out, "Account key: "+accountKey) {

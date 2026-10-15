@@ -605,10 +605,11 @@ CSP, and no third-party scripts.
 | GitHub sign-in starts | 30 per address and 300 per network per hour; 200,000 open sign-ins server-wide |
 | `auth/device` | 10 per address and 100 per network per hour; 200,000 open registrations server-wide |
 
-The server-wide caps protect the database. Reaching them still blocks new
-sign-ins for everyone until the window passes, and takes about 2,000 networks.
-A deployment that must resist that needs upstream protection (a proxy or
-WAF). A sweep of the counter table keeps every counter at half its limit or
+The server-wide caps protect the database. Devices the server already
+trusts, and browsers that signed in before (a 180-day cookie), bypass them,
+so a flood can only delay brand-new devices and browsers. Token polls are
+limited per address and network, refused without any write when early or
+expired, and serialized per code by a compare-and-swap. A sweep of the counter table keeps every counter at half its limit or
 more.
 | Agent-slot reads | 10 per user per hour |
 
@@ -644,7 +645,7 @@ secret store.
 | Takeover before the first login | Creating an account needs the server's bootstrap token, which the operator hands out separately; a GitHub session alone cannot create one. If the token also leaked: a machine with the user's identity refuses the foreign account, and a new device warns that the account already exists and asks for the account key, which a user who never set up esec vault must reject. |
 | Filling the 5 pending-device slots | Someone with the GitHub session can keep approval slots full. The owner suspends those devices on the web page and secures the GitHub account. |
 | Chain at `MaxLinks` (10,000 links) | The account freezes: no more revocations or rotations. That is far beyond normal use; start a new account if it ever happens. |
-| Phishing with a prefilled code link | The victim must click Continue and Confirm on a page warning that only self-started sign-ins should be confirmed. A confirmed attacker device is only pending: it can read the chain, the wrapped identity and slot data (all useless without the phrase or agent), and it can ask for approval. Approval shows its own fingerprint, which matches no terminal the victim has. |
+| Phishing with a prefilled code link | The victim must click Continue and Confirm on a page warning that only self-started sign-ins should be confirmed. A confirmed attacker device is only pending: it can read the chain, the wrapped identity and slot data (all useless without the phrase or agent). It cannot be approved by answering yes: `devices approve` requires typing the fingerprint words from the new device's own terminal, which only the attacker sees. |
 | Stolen session token | Useless without `D.sign`. |
 | Stolen VM disk | With macOS Keychain or a TPM-bound secret store, sealed keyrings are useless without C. With the 0600 file store, everything is exposed: revoke and rotate. |
 | Live compromise of an active device | Everything that device can decrypt. Response: revoke, rotate U, rotate env keys, rotate values. |
@@ -698,6 +699,7 @@ server (`httptest`) with a memory secret store.
 | Server and chain parsed link bodies differently | One strict decoder (`envelope.DecodeStrict`) everywhere, rejecting trailing data | A crafted body could otherwise be seen as different link types by the server's checks and the chain (found in security review). |
 | Login state saved before confirmation | Commands refuse an account this machine never pinned; a declined account key deletes the half-finished login | A declined account could otherwise be installed by the next background sync (found in security review). |
 | Root signature over the user key only | Also covers the master X25519 key; passphrase changes refresh it, and are blocked while signed in | A stale authorization could make recovery impossible (found in security review). |
+| Approve with y/N after comparing words | Type the new device's fingerprint words | A yes-click could approve a phished device (found in review). |
 | Rate limits on all code entries | Limits on wrong codes, on both forms, per address (IPv6 /64) and per user; caps on open registrations, OAuth states and pending devices | Found in security review. |
 
 ## Later phases (sketch)
