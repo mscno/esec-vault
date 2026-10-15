@@ -1,4 +1,4 @@
-# Unreleased
+# v0.4.0
 
 Vault server and device sync. Requires esec v0.9.0 or later.
 
@@ -45,7 +45,13 @@ Vault server and device sync. Requires esec v0.9.0 or later.
   `esec-vault-server -bootstrap-token-for <id>`; the CLI asks for it or reads
   `ESEC_VAULT_BOOTSTRAP_TOKEN`), so a taken-over GitHub account cannot create
   the vault account first.
-- `devices approve` requires typing the new device's fingerprint words.
+- `devices approve` requires typing the new device's fingerprint words, which
+  are shown only on the new device.
+- Devices waiting for approval see nothing of the account until approved or
+  until they prove the recovery phrase or an SSH key.
+- Device codes are always typed; links never carry them.
+- `new_devices = "closed"` (`ESEC_SERVER_NEW_DEVICES`) is an emergency switch
+  that refuses brand-new devices and browsers during an attack.
 - Trusted devices and browsers that signed in before bypass the server-wide
   sign-in caps, so a flood only delays new ones.
 

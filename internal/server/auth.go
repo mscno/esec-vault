@@ -305,10 +305,14 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	if open >= s.maxRegistrations {
+	if closed := s.cfg.newDevicesClosed(); closed || open >= s.maxRegistrations {
 		var known int
 		if err := s.db.sql.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM devices WHERE sign_pub = ? AND enc_pub = ? AND status = ?`, strings.ToLower(req.SignPub), strings.ToLower(req.EncPub), wire.DeviceActive).Scan(&known); err != nil {
 			s.internalError(w, r, err)
+			return
+		}
+		if known == 0 && closed {
+			writeErr(w, http.StatusServiceUnavailable, wire.ErrRateLimited, "this server is not accepting new devices right now; devices that are already trusted can still sign in")
 			return
 		}
 		if known == 0 {

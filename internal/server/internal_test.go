@@ -82,6 +82,15 @@ func TestConfigValidation(t *testing.T) {
 	if _, err := LoadConfig(""); err != nil {
 		t.Fatalf("localhost http refused: %v", err)
 	}
+	t.Setenv("ESEC_SERVER_NEW_DEVICES", "maybe")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("invalid new_devices accepted")
+	}
+	t.Setenv("ESEC_SERVER_NEW_DEVICES", "closed")
+	if c, err := LoadConfig(""); err != nil || !c.newDevicesClosed() {
+		t.Fatalf("closed switch: %v", err)
+	}
+	t.Setenv("ESEC_SERVER_NEW_DEVICES", "")
 	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "")
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("missing client secret accepted")

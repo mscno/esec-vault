@@ -27,6 +27,10 @@ type Config struct {
 	// carries the client address (for example Fly-Client-IP). Empty means
 	// the TCP peer address.
 	ClientIPHeader string `toml:"client_ip_header"`
+	// NewDevices is "open" (default) or "closed". Closed is an emergency
+	// switch for an attack: only devices the server already trusts, and
+	// browsers that signed in before, can sign in; new ones are refused.
+	NewDevices string `toml:"new_devices"`
 
 	// BootstrapToken must accompany the creation of every account. It comes
 	// from ESEC_SERVER_BOOTSTRAP_TOKEN only. Without it, whoever controls an
@@ -154,6 +158,9 @@ func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent
 			errs = append(errs, fmt.Errorf("invalid GitHub user id %d", id))
 		}
 	}
+	if c.NewDevices != "" && c.NewDevices != NewDevicesOpen && c.NewDevices != NewDevicesClosed {
+		errs = append(errs, fmt.Errorf("new_devices must be %q or %q", NewDevicesOpen, NewDevicesClosed))
+	}
 	if c.VaultHistory < 1 || c.VaultHistory > 1000 {
 		errs = append(errs, errors.New("vault_history must be between 1 and 1000"))
 	}
@@ -177,6 +184,12 @@ func UserBootstrapToken(secret string, githubID int64) string {
 	fmt.Fprintf(mac, "esec-vault bootstrap v1\n%d", githubID)
 	return "esb_" + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
+
+// Values of Config.NewDevices.
+const (
+	NewDevicesOpen   = "open"
+	NewDevicesClosed = "closed"
+)
 
 // Secure reports whether the server is served over https.
 func (c *Config) Secure() bool { return strings.HasPrefix(c.BaseURL, "https://") }
@@ -205,6 +218,7 @@ func (c *Config) applyEnv() error {
 	set("ESEC_SERVER_LISTEN", &c.Listen)
 	set("ESEC_SERVER_DB_PATH", &c.DBPath)
 	set("ESEC_SERVER_CLIENT_IP_HEADER", &c.ClientIPHeader)
+	set("ESEC_SERVER_NEW_DEVICES", &c.NewDevices)
 	set("ESEC_SERVER_GITHUB_CLIENT_ID", &c.GitHub.ClientID)
 	set("ESEC_SERVER_GITHUB_WEB_URL", &c.GitHub.WebURL)
 	set("ESEC_SERVER_GITHUB_API_URL", &c.GitHub.APIURL)
@@ -231,6 +245,9 @@ func (c *Config) defaults() {
 	if c.Listen == "" {
 		c.Listen = defaultListen
 	}
+	if c.NewDevices == "" {
+		c.NewDevices = NewDevicesOpen
+	}
 	if c.VaultHistory == 0 {
 		c.VaultHistory = defaultVaultHistory
 	}
@@ -248,3 +265,6 @@ func (c *Config) defaults() {
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 }
+
+// newDevicesClosed reports whether the emergency switch is on.
+func (c *Config) newDevicesClosed() bool { return c.NewDevices == NewDevicesClosed }

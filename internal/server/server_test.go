@@ -1104,3 +1104,37 @@ func TestAuditLogIsBounded(t *testing.T) {
 		t.Fatalf("audit entries after cleanup: %d", n)
 	}
 }
+
+func TestEmergencySwitchRefusesOnlyNewDevicesAndBrowsers(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	b := h.Browser("mscno")
+	if _, _, err := b.Get("/account"); err != nil {
+		t.Fatal(err)
+	}
+	h.Config.NewDevices = server.NewDevicesClosed
+	ctx := context.Background()
+	fresh, _ := devicekey.Generate()
+	c, err := client.New(h.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RegisterDevice(ctx, fresh.Registration("new", "linux/amd64", h.Now())); code(err) != wire.ErrRateLimited {
+		t.Fatalf("a new device registered while closed: %v", err)
+	}
+	if status, _, _ := h.Browser("mscno").Get("/auth/github?next=/account"); status != http.StatusServiceUnavailable {
+		t.Fatalf("a new browser started sign-in while closed: %d", status)
+	}
+	// The trusted laptop signs in again from the browser it used before.
+	if _, err := h.DB.SQL().Exec(`DELETE FROM web_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	c2, reg := register(t, h, owner.key, "laptop")
+	if err := b.Confirm(reg.UserCode, true); err != nil {
+		t.Fatalf("known browser while closed: %v", err)
+	}
+	if tok, err := c2.PollToken(ctx, reg.DeviceCode); err != nil || tok.Device.ID != owner.info.ID {
+		t.Fatalf("trusted device while closed: %v", err)
+	}
+}

@@ -65,6 +65,7 @@ Every setting can be overridden from the environment:
 | `ESEC_SERVER_ALLOWED_GITHUB_IDS` | Comma-separated numeric ids |
 | `ESEC_SERVER_CLIENT_IP_HEADER` | `client_ip_header`; set only behind a proxy that sets it |
 | `ESEC_SERVER_VAULT_HISTORY` | `vault_history` (default 50) |
+| `ESEC_SERVER_NEW_DEVICES` | `new_devices`: `open` (default) or `closed`, the emergency switch below |
 
 `base_url` must use https. Plain http is accepted only for `localhost`.
 
@@ -210,6 +211,19 @@ everyone who checks them.
 | Unknown device added via SSH agent | Revoke it. Disable the slot (`esec vault agent-unlock disable`). Treat the SSH key as exposed. |
 | Server compromised | The attacker gets metadata and can deny service. They cannot decrypt anything or add devices: clients verify the chain and refuse rollbacks. Redeploy from a clean image, rotate the GitHub client secret and Litestream credentials, and review the audit log. |
 | GitHub account taken over | The attacker can create pending devices but cannot decrypt anything without approval, the recovery phrase, or an SSH-agent slot. Secure the GitHub account, then suspend any unknown devices. |
+
+## Close the server to new devices during an attack
+
+If a flood of sign-ins is slowing the server, or you suspect someone controls
+an allowlisted GitHub account, close it to new devices:
+
+```sh
+fly secrets set --config deploy/fly.toml ESEC_SERVER_NEW_DEVICES=closed
+```
+
+While closed, devices that are already trusted can still sign in, and so can
+browsers that signed in before. New devices and new browsers are refused.
+Set it back to `open` when the attack is over; nothing else changes.
 
 ## Monitor
 

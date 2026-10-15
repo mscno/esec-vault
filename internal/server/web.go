@@ -181,7 +181,7 @@ func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	if open >= s.maxOAuthStates && !s.knownBrowser(r) {
+	if (s.cfg.newDevicesClosed() || open >= s.maxOAuthStates) && !s.knownBrowser(r) {
 		s.webError(w, http.StatusServiceUnavailable, "Too many sign-ins in progress. Try again in a few minutes.")
 		return
 	}

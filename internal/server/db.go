@@ -186,12 +186,12 @@ func OpenDB(path string) (*DB, error) {
 // Close closes the database.
 func (d *DB) Close() error { return d.sql.Close() }
 
-// Cleanup runs the periodic cleanup once (operations tooling and tests).
-func (d *DB) Cleanup(ctx context.Context, now time.Time) error { return d.cleanup(ctx, now) }
-
 // SQL exposes the underlying database for operations tooling and tests that
 // simulate a misbehaving server.
 func (d *DB) SQL() *sql.DB { return d.sql }
+
+// Cleanup runs the periodic cleanup once (operations tooling and tests).
+func (d *DB) Cleanup(ctx context.Context, now time.Time) error { return d.cleanup(ctx, now) }
 
 // tx runs fn in a transaction.
 func (d *DB) tx(ctx context.Context, fn func(*sql.Tx) error) error {

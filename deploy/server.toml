@@ -8,6 +8,9 @@ db_path = "/data/esec-vault.db"
 vault_history = 50
 # Set when a trusted proxy supplies the client address (Fly.io does).
 client_ip_header = "Fly-Client-IP"
+# Emergency switch: "closed" refuses brand-new devices and browsers; trusted
+# devices and browsers that signed in before keep working.
+new_devices = "open"
 
 [github]
 client_id = "REPLACE_WITH_OAUTH_APP_CLIENT_ID"
