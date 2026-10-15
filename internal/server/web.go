@@ -164,7 +164,7 @@ func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	if open >= 20000 {
+	if open >= 200000 {
 		s.webError(w, http.StatusServiceUnavailable, "Too many sign-ins in progress. Try again in a few minutes.")
 		return
 	}

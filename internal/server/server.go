@@ -377,10 +377,14 @@ func (l *limiter) evict(now time.Time) {
 		}
 	}
 	if len(l.m)-len(candidates) > target {
-		// Exhausted windows alone exceed the target: free everything else
-		// and pause, rather than rescanning for one or two slots per key.
+		// Exhausted windows alone exceed the target: free the windows that
+		// are less than half used and pause, rather than rescanning for one
+		// or two slots per key. Windows near their limit are kept, so a sweep
+		// cannot be used to reset them.
 		for _, c := range candidates {
-			delete(l.m, c.key)
+			if 2*c.w.count < c.w.limit {
+				delete(l.m, c.key)
+			}
 		}
 		l.quietUntil = now.Add(time.Minute)
 		return

@@ -21,7 +21,7 @@ const (
 	pollInterval    = 5 * time.Second
 	pendingDeviceTT = 15 * time.Minute
 	// maxOpenRegistrations caps unconfirmed registrations server-wide.
-	maxOpenRegistrations = 20000
+	maxOpenRegistrations = 200000
 	// maxPendingPerUser caps devices waiting for approval per account.
 	maxPendingPerUser = 5
 )

@@ -178,11 +178,20 @@ func TestEvictionScansAreRareWhenMostlyExhausted(t *testing.T) {
 		l.allow(fmt.Sprintf("x%d", i), 1, time.Hour, now)
 	}
 	l.allow("fresh", 5, time.Hour, now)
+	for range 4 {
+		l.allow("near-limit", 5, time.Hour, now)
+	}
 	l.allow("trigger", 5, time.Hour, now.Add(time.Second))
 	if l.quietUntil.IsZero() {
 		t.Fatal("a table of exhausted windows did not pause eviction scans")
 	}
+	if w, ok := l.m["near-limit"]; !ok || w.count != 4 {
+		t.Fatal("a sweep reset a counter near its limit")
+	}
 	if !l.allow("newcomer", 5, time.Hour, now.Add(2*time.Second)) {
 		t.Fatal("a new address was refused")
+	}
+	if w, ok := l.m["near-limit"]; !ok || w.count != 4 {
+		t.Fatal("a sweep reset a counter near its limit")
 	}
 }

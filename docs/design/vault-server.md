@@ -602,8 +602,14 @@ CSP, and no third-party scripts.
 | Action | Limit |
 |---|---|
 | Wrong codes (entry or confirm form) | 30 per address per hour, 10 per signed-in user per 10 minutes, reserved before the lookup |
-| GitHub sign-in starts | 30 per address and 300 per network per hour; 20,000 open sign-ins server-wide |
-| `auth/device` | 10 per address and 100 per network per hour; 20,000 open registrations server-wide |
+| GitHub sign-in starts | 30 per address and 300 per network per hour; 200,000 open sign-ins server-wide |
+| `auth/device` | 10 per address and 100 per network per hour; 200,000 open registrations server-wide |
+
+The server-wide caps protect the database. Reaching them still blocks new
+sign-ins for everyone until the window passes, and takes about 2,000 networks.
+A deployment that must resist that needs upstream protection (a proxy or
+WAF). A sweep of the counter table keeps every counter at half its limit or
+more.
 | Agent-slot reads | 10 per user per hour |
 
 An address is an IPv4 address or an IPv6 /64; a network is an IPv4 /24 or an
