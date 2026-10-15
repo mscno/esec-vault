@@ -53,7 +53,7 @@ func Dial() (*Agent, error) {
 
 // DialPath connects to the agent socket at path.
 func DialPath(path string) (*Agent, error) {
-	conn, err := net.DialTimeout("unix", path, 3*time.Second)
+	conn, err := net.DialTimeout("unix", path, 3*time.Second) //nolint:gosec // the user's own SSH_AUTH_SOCK
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNoAgent, err)
 	}
@@ -169,7 +169,7 @@ func (a *Agent) CheckDeterministic(key *Key, namespace string, message []byte) (
 // ParseAuthorizedKey reads a public key from authorized_keys/.pub text and
 // returns its SHA256 fingerprint.
 func ParseAuthorizedKey(text []byte) (ssh.PublicKey, string, error) {
-	pub, _, _, _, err := ssh.ParseAuthorizedKey(text)
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(text) //nolint:dogsled // only the key is needed
 	if err != nil {
 		return nil, "", fmt.Errorf("not an SSH public key: %w", err)
 	}

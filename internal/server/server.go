@@ -12,7 +12,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
@@ -54,6 +53,12 @@ func WithGitHub(g GitHub) Option { return func(s *Server) { s.github = g } }
 // New builds a server around an open database.
 func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error) {
 	tmpl, err := template.New("").Funcs(template.FuncMap{
+		"short": func(s string) string {
+			if len(s) > 16 {
+				return s[:16] + "…"
+			}
+			return s
+		},
 		"ts": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"
@@ -93,7 +98,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("esec vault server listening", "addr", s.cfg.Listen, "base_url", s.cfg.BaseURL)
 	select {
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdown)
 	case err := <-errc:
@@ -132,6 +137,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /device", s.webDeviceLookup)
 	m.HandleFunc("POST /device/confirm", s.webDeviceConfirm)
 	m.HandleFunc("GET /account", s.webAccount)
+	m.HandleFunc("GET /projects", s.webProjects)
 	m.HandleFunc("POST /account/devices/{id}/suspend", s.webSuspendDevice)
 	m.HandleFunc("POST /account/sessions/{device}/end", s.webEndSessions)
 	m.HandleFunc("POST /account/slots/{id}/disable", s.webDisableSlot)
@@ -226,7 +232,9 @@ func decodeStrict(b []byte, v any) error {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Debug("response write failed", "error", err)
+	}
 }
 
 func writeErr(w http.ResponseWriter, status int, code, desc string) {
@@ -267,7 +275,7 @@ func newLimiter() *limiter { return &limiter{m: map[string]*window{}} }
 
 // allow counts one event for key and reports whether it is within max per
 // period.
-func (l *limiter) allow(key string, max int, period time.Duration, now time.Time) bool {
+func (l *limiter) allow(key string, limit int, period time.Duration, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w, ok := l.m[key]
@@ -276,7 +284,7 @@ func (l *limiter) allow(key string, max int, period time.Duration, now time.Time
 		l.m[key] = w
 	}
 	w.count++
-	return w.count <= max
+	return w.count <= limit
 }
 
 func (l *limiter) prune(now time.Time) {
@@ -334,5 +342,3 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 	s.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 	writeErr(w, http.StatusInternalServerError, wire.ErrInternal, "internal error")
 }
-
-func errorf(format string, args ...any) error { return fmt.Errorf(format, args...) }

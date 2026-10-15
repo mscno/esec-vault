@@ -89,6 +89,7 @@ func (a *Account) approve(ctx context.Context, p Pending) error {
 // DeviceView combines the verified chain with server-side status.
 type DeviceView struct {
 	chain.DeviceState
+
 	ServerStatus string
 	LastSeen     time.Time
 	LastIP       string
@@ -283,6 +284,7 @@ func (a *Account) Suspend(ctx context.Context, deviceID string) error {
 // SlotView is an agent unlock slot.
 type SlotView struct {
 	chain.SlotState
+
 	ServerDisabled bool
 }
 

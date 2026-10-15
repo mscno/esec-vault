@@ -119,7 +119,7 @@ func printServerStatus(s *serverStatus, store *storeStatus) {
 	fmt.Printf("Account key: %s; chain %d links, user key version %d\n", s.AccountWords, s.ChainSeq, s.UKeyVersion)
 	last := "never"
 	if !s.LastSync.IsZero() {
-		last = s.LastSync.Local().Format(time.RFC3339)
+		last = s.LastSync.Local().Format(time.RFC3339) //nolint:gosmopolitan // shown to the local user
 	}
 	fmt.Printf("Vault: version %d, generation %d, last sync %s\n", s.VaultVersion, s.VaultGen, last)
 }

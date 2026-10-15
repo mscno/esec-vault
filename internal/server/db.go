@@ -88,6 +88,7 @@ var schema = []string{
 		version INTEGER NOT NULL,
 		blob BLOB NOT NULL,
 		sig BLOB NOT NULL,
+		index_json BLOB,
 		sha256 TEXT NOT NULL,
 		pushed_by TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
@@ -176,6 +177,10 @@ func OpenDB(path string) (*DB, error) {
 
 // Close closes the database.
 func (d *DB) Close() error { return d.sql.Close() }
+
+// SQL exposes the underlying database for operations tooling and tests that
+// simulate a misbehaving server.
+func (d *DB) SQL() *sql.DB { return d.sql }
 
 // tx runs fn in a transaction.
 func (d *DB) tx(ctx context.Context, fn func(*sql.Tx) error) error {

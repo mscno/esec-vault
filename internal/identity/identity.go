@@ -37,7 +37,6 @@ import (
 
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/storage"
 )
 
 // masterInfo is the HKDF info string for the current master-key derivation.
@@ -235,16 +234,6 @@ func decodeHeader(data []byte) (fileHeader, []byte, error) {
 		copy(h.SignPublic[:], rest[n+65:n+97])
 	}
 	return h, rest[n+1+keys:], nil
-}
-
-// writeWrapped seals the identity private key to the master public key and
-// stores it at identity.esec (0600, atomic).
-func writeWrapped(id *Identity, masterPub *[32]byte, passphraseProtected bool) error {
-	body, err := Wrapped(id, masterPub, passphraseProtected)
-	if err != nil {
-		return err
-	}
-	return storage.Write(paths.IdentityFile(), body)
 }
 
 // Wrapped returns the on-disk bytes of the master-wrapped identity key, for

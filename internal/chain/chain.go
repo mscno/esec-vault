@@ -147,6 +147,7 @@ type AgentSlotRemoveBody struct {
 // DeviceState is a device as seen by the verified chain.
 type DeviceState struct {
 	Device
+
 	Status     string `json:"status"`
 	Method     string `json:"method"`
 	ApprovedBy string `json:"approved_by,omitempty"`
@@ -522,7 +523,7 @@ func (s *State) applyInit(e *envelope.Envelope, l Link) error {
 	return nil
 }
 
-func (s *State) apply(e *envelope.Envelope, l Link) error {
+func (s *State) apply(e *envelope.Envelope, l Link) error { //nolint:gocyclo // one case per link type
 	if l.Type == TypeInit {
 		return fmt.Errorf("init link after the start of the chain")
 	}
@@ -597,7 +598,7 @@ func (s *State) apply(e *envelope.Envelope, l Link) error {
 	return fmt.Errorf("unknown link type %q", l.Type)
 }
 
-func (s *State) applyDeviceAdd(l Link) error {
+func (s *State) applyDeviceAdd(l Link) error { //nolint:gocyclo // every rule for adding a device in one place
 	var b DeviceAddBody
 	if err := decodeBody(l, &b); err != nil {
 		return err

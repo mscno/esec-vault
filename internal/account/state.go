@@ -33,6 +33,9 @@ type State struct {
 	// IdentityFromAccount records that the local identity was created for or
 	// installed from this account, so a newer user key may replace it.
 	IdentityFromAccount bool `toml:"identity_from_account"`
+	// NoIndex stops this device from publishing the project index (project
+	// ids, environment names and public keys) shown in the web UI.
+	NoIndex bool `toml:"no_index"`
 
 	Chain  ChainPin  `toml:"chain"`
 	Vault  VaultPin  `toml:"vault"`

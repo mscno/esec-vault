@@ -10,7 +10,7 @@
 <body>
 <header>
   <a class="brand" href="/">esec vault</a>
-  {{with .User}}<span class="who">{{.Login}} <span class="muted">(GitHub {{.GitHubID}})</span></span>{{end}}
+  {{with .User}}<nav><a href="/projects">Projects</a> <a href="/account">Devices</a> <span class="who">{{.Login}} <span class="muted">(GitHub {{.GitHubID}})</span></span></nav>{{end}}
 </header>
 <main>
 {{end}}

@@ -63,21 +63,24 @@ func Find(root string, pub [32]byte) ([]string, error) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		format, err := fileutils.ParseFormat(d.Name())
-		if err != nil {
-			return nil
+		format, ferr := fileutils.ParseFormat(d.Name())
+		if ferr != nil {
+			return nil //nolint:nilerr // not a secrets file name
 		}
 		info, err := d.Info()
-		if err != nil || info.Size() > maxFileSize {
+		if err != nil {
+			return err
+		}
+		if info.Size() > maxFileSize {
 			return nil
 		}
 		data, err := os.ReadFile(path) //nolint:gosec // files inside the project being rotated
 		if err != nil {
 			return err
 		}
-		got, err := esec.ExtractPublicKey(data, esec.FileFormat(format))
-		if err != nil || got != pub {
-			return nil
+		got, kerr := esec.ExtractPublicKey(data, esec.FileFormat(format))
+		if kerr != nil || got != pub {
+			return nil //nolint:nilerr // no public key, or another key
 		}
 		out = append(out, path)
 		return nil

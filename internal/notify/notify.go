@@ -30,7 +30,7 @@ func Send(title, body string) {
 			return
 		}
 		if path, err := exec.LookPath("notify-send"); err == nil {
-			_ = exec.CommandContext(ctx, path, "--app-name=esec-vault", "--", title, body).Run() //nolint:gosec // fixed tool, arguments are plain strings
+			_ = exec.CommandContext(ctx, path, "--app-name=esec-vault", "--", title, body).Run()
 		}
 	}
 }

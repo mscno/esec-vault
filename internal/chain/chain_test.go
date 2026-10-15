@@ -255,7 +255,10 @@ func TestSequenceTamperingAndPins(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.CTime = l.CTime.Add(time.Hour)
-	raw, _ := json.Marshal(l)
+	raw, err := json.Marshal(l)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tampered := *f.links[2]
 	tampered.Body = raw
 	if _, err := chain.Verify(user, []*envelope.Envelope{f.links[0], f.links[1], &tampered}); err == nil {
@@ -265,7 +268,10 @@ func TestSequenceTamperingAndPins(t *testing.T) {
 	var generic map[string]any
 	_ = json.Unmarshal(f.links[1].Body, &generic)
 	generic["extra"] = true
-	raw, _ = json.Marshal(generic)
+	raw, err = json.Marshal(generic)
+	if err != nil {
+		t.Fatal(err)
+	}
 	extra, err := envelope.NewRaw(chain.KindLink, raw, f.u.Sign)
 	if err != nil {
 		t.Fatal(err)

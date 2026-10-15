@@ -33,26 +33,6 @@ type Store struct {
 	Secrets secretstore.Store
 }
 
-func (s *Store) codec() keyringfile.Codec { return keyringfile.Codec{Store: s.Secrets} }
-
-// readPlain returns the decoded text of a keyring file, refusing symlinks.
-func (s *Store) readPlain(p string) ([]byte, bool, error) {
-	info, err := os.Lstat(p)
-	if err != nil {
-		return nil, false, err
-	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return nil, false, fmt.Errorf("refusing keyring symlink: %s", p)
-	}
-	data, err := os.ReadFile(p) //nolint:gosec // path derived from a validated project id inside the store dir
-	if err != nil {
-		return nil, false, err
-	}
-	sealed := keyringfile.IsSealed(data)
-	plain, err := s.codec().Decode(p, data)
-	return plain, sealed, err
-}
-
 // IsSealed reports whether a project's keyring file is sealed.
 func (s *Store) IsSealed(project string) (bool, error) {
 	p, err := s.path(project)
@@ -84,7 +64,7 @@ func (s *Store) Read(project string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	plain, _, err := s.readPlain(p)
+	plain, err := s.readPlain(p)
 	if err != nil {
 		return nil, err
 	}
@@ -95,80 +75,6 @@ func (s *Store) Read(project string) (map[string]string, error) {
 // symlinks and, unless force is set, to overwrite an existing file.
 func (s *Store) Write(project string, entries map[string]string, force bool) error {
 	return s.write(project, entries, force, nil)
-}
-
-// write stores entries; sealed nil keeps the existing form or applies the
-// default for new files.
-func (s *Store) write(project string, entries map[string]string, force bool, sealed *bool) error {
-	p, err := s.path(project)
-	if err != nil {
-		return err
-	}
-	seal := keyringfile.SealNewByDefault()
-	if info, err := os.Lstat(p); err == nil {
-		if !force {
-			return fmt.Errorf("keyring already exists at %s (use force to overwrite)", p)
-		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to follow symlink at %s", p)
-		}
-		data, err := os.ReadFile(p) //nolint:gosec // validated project path
-		if err != nil {
-			return err
-		}
-		seal = keyringfile.IsSealed(data)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if sealed != nil {
-		seal = *sealed
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
-		return err
-	}
-
-	var buf bytes.Buffer
-	buf.WriteString("###########################################################\n")
-	buf.WriteString("### Private key file - Do not commit to version control ###\n")
-	buf.WriteString("###########################################################\n\n")
-	fmt.Fprintf(&buf, "# ESEC_PROJECT=%s\n", project)
-	keys := make([]string, 0, len(entries))
-	for k := range entries {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(&buf, "%s=%s\n", k, entries[k])
-	}
-	out, err := s.codec().Encode(p, buf.Bytes(), seal)
-	if err != nil {
-		return err
-	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".keyring-*.tmp")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), p)
 }
 
 // Delete removes a project's keyring.
@@ -202,7 +108,7 @@ func (s *Store) List() ([]string, error) {
 			projects = append(projects, "default")
 			continue
 		}
-		data, _, err := s.readPlain(filepath.Join(s.Dir, name))
+		data, err := s.readPlain(filepath.Join(s.Dir, name))
 		if err != nil {
 			return nil, err
 		}
@@ -402,4 +308,96 @@ func ensureGitignore(repoDir, entry string) error {
 	}
 	_, err = f.WriteString(prefix + entry + "\n")
 	return err
+}
+
+func (s *Store) codec() keyringfile.Codec { return keyringfile.Codec{Store: s.Secrets} }
+
+// readPlain returns the decoded text of a keyring file, refusing symlinks.
+func (s *Store) readPlain(p string) ([]byte, error) {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing keyring symlink: %s", p)
+	}
+	data, err := os.ReadFile(p) //nolint:gosec // path derived from a validated project id inside the store dir
+	if err != nil {
+		return nil, err
+	}
+	return s.codec().Decode(p, data)
+}
+
+// write stores entries; sealed nil keeps the existing form or applies the
+// default for new files.
+func (s *Store) write(project string, entries map[string]string, force bool, sealed *bool) error {
+	p, err := s.path(project)
+	if err != nil {
+		return err
+	}
+	seal := keyringfile.SealNewByDefault()
+	if info, err := os.Lstat(p); err == nil {
+		if !force {
+			return fmt.Errorf("keyring already exists at %s (use force to overwrite)", p)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to follow symlink at %s", p)
+		}
+		data, err := os.ReadFile(p) //nolint:gosec // validated project path
+		if err != nil {
+			return err
+		}
+		seal = keyringfile.IsSealed(data)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if sealed != nil {
+		seal = *sealed
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("###########################################################\n")
+	buf.WriteString("### Private key file - Do not commit to version control ###\n")
+	buf.WriteString("###########################################################\n\n")
+	fmt.Fprintf(&buf, "# ESEC_PROJECT=%s\n", project)
+	keys := make([]string, 0, len(entries))
+	for k := range entries {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&buf, "%s=%s\n", k, entries[k])
+	}
+	out, err := s.codec().Encode(p, buf.Bytes(), seal)
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".keyring-*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), p)
 }

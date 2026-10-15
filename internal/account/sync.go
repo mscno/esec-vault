@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mscno/esec"
+	"github.com/mscno/esec/pkg/crypto"
 
 	"github.com/mscno/esec-vault/internal/chain"
 	"github.com/mscno/esec-vault/internal/client"
@@ -223,7 +227,80 @@ func (a *Account) vaultPut(st *chain.State, id *identity.Identity, wrapped []byt
 		return nil, 0, err
 	}
 	sig := ed25519.Sign(id.Sign, wire.VaultMessage(a.State.User, blob))
-	return &wire.VaultPut{Blob: blob, Sig: sig, IfMatch: ifMatch}, gen, nil
+	put := &wire.VaultPut{Blob: blob, Sig: sig, IfMatch: ifMatch}
+	if !a.State.NoIndex {
+		index, err := json.Marshal(BuildIndex(local, gen))
+		if err != nil {
+			return nil, 0, err
+		}
+		put.Index, put.IndexSig = index, ed25519.Sign(id.Sign, wire.IndexMessage(a.State.User, index))
+	}
+	return put, gen, nil
+}
+
+var hexName = regexp.MustCompile(`^[0-9A-F]{64}$`)
+
+// BuildIndex summarizes keyrings without any private material: environment
+// names come from ESEC_PRIVATE_KEY_<ENV> entries and public keys are derived
+// from the private keys.
+func BuildIndex(projects map[string]map[string]string, gen uint64) wire.VaultIndex {
+	idx := wire.VaultIndex{Generation: gen, Projects: []wire.IndexProject{}}
+	ids := make([]string, 0, len(projects))
+	for p := range projects {
+		ids = append(ids, p)
+	}
+	sort.Strings(ids)
+	for _, p := range ids {
+		ip := wire.IndexProject{ID: p, Environments: []wire.IndexEnv{}}
+		names := make([]string, 0, len(projects[p]))
+		for k := range projects[p] {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		namedPubs := map[string]bool{}
+		var byPubKey []string
+		for _, k := range names {
+			suffix, named := strings.CutPrefix(k, esec.EsecPrivateKey+"_")
+			if k == esec.EsecPrivateKey {
+				suffix, named = "default", true
+			}
+			if !named {
+				continue
+			}
+			if hexName.MatchString(suffix) {
+				byPubKey = append(byPubKey, strings.ToLower(suffix))
+				continue
+			}
+			pub, err := publicHex(projects[p][k])
+			if err != nil {
+				continue
+			}
+			namedPubs[pub] = true
+			ip.Environments = append(ip.Environments, wire.IndexEnv{Name: strings.ToLower(strings.ReplaceAll(suffix, "_", ".")), PublicKey: pub})
+		}
+		// Public-key entries of named environments are aliases; count the rest.
+		for _, pub := range byPubKey {
+			if !namedPubs[pub] {
+				ip.OtherKeys++
+			}
+		}
+		idx.Projects = append(idx.Projects, ip)
+	}
+	return idx
+}
+
+func publicHex(priv string) (string, error) {
+	raw, err := hex.DecodeString(strings.TrimSpace(priv))
+	if err != nil || len(raw) != 32 {
+		return "", errors.New("malformed key")
+	}
+	var k [32]byte
+	copy(k[:], raw)
+	pub, err := crypto.PublicFromPrivate(k)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(pub[:]), nil
 }
 
 func (a *Account) localProjects() (map[string]map[string]string, error) {
@@ -252,7 +329,7 @@ func (a *Account) localProjects() (map[string]map[string]string, error) {
 //     asked about when interactive, otherwise reported and left alone.
 //
 // Entries missing here are added. Nothing local is ever deleted.
-func (a *Account) merge(remote, base map[string]map[string]string, interactive bool) (added, conflicts []string, err error) {
+func (a *Account) merge(remote, base map[string]map[string]string, interactive bool) (added, conflicts []string, err error) { //nolint:gocyclo // the merge table is clearer in one place
 	names := make([]string, 0, len(remote))
 	for p := range remote {
 		names = append(names, p)

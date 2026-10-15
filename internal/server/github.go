@@ -77,7 +77,7 @@ func (g *githubClient) Exchange(ctx context.Context, redirectURI, code, verifier
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("X-Github-Api-Version", "2022-11-28")
 	var u GitHubUser
 	if err := g.do(req, &u); err != nil {
 		return nil, err

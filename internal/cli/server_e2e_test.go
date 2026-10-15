@@ -29,7 +29,7 @@ import (
 var (
 	buildOnce sync.Once
 	binDir    string
-	buildErr  error
+	errBuild  error
 )
 
 // buildBinaries compiles esec-vault and esec (from the module's esec
@@ -37,28 +37,28 @@ var (
 func buildBinaries(t *testing.T) string {
 	t.Helper()
 	buildOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "esec-e2e-bin-")
+		dir, err := os.MkdirTemp("", "esec-e2e-bin-") //nolint:usetesting // shared by every test in the run
 		if err != nil {
-			buildErr = err
+			errBuild = err
 			return
 		}
 		binDir = dir
 		root, err := filepath.Abs("../..")
 		if err != nil {
-			buildErr = err
+			errBuild = err
 			return
 		}
 		for _, target := range [][2]string{{"esec-vault", "./cmd/esec-vault"}, {"esec", "github.com/mscno/esec/cmd/esec"}} {
 			cmd := exec.Command("go", "build", "-o", filepath.Join(dir, target[0]), target[1])
 			cmd.Dir = root
 			if out, err := cmd.CombinedOutput(); err != nil {
-				buildErr = fmt.Errorf("build %s: %v\n%s", target[0], err, out)
+				errBuild = fmt.Errorf("build %s: %v\n%s", target[0], err, out)
 				return
 			}
 		}
 	})
-	if buildErr != nil {
-		t.Fatal(buildErr)
+	if errBuild != nil {
+		t.Fatal(errBuild)
 	}
 	return binDir
 }
@@ -113,13 +113,12 @@ func (m *machine) run(stdin string, args ...string) string {
 	return string(out)
 }
 
-func (m *machine) runFail(stdin string, args ...string) string {
+func (m *machine) runFail(stdin string, args ...string) {
 	m.t.Helper()
 	out, err := m.cmd(m.home, stdin, "esec-vault", args...).CombinedOutput()
 	if err == nil {
 		m.t.Fatalf("%s: esec-vault %s succeeded unexpectedly:\n%s", m.name, strings.Join(args, " "), out)
 	}
-	return string(out)
 }
 
 func (m *machine) tool(dir string, args ...string) string {
@@ -199,11 +198,11 @@ func (b *background) wait(wantOK bool) string {
 var codePattern = `enter ([0-9A-Z]{4}-[0-9A-Z]{4})`
 
 // login signs m in and confirms the code in the browser as login.
-func login(t *testing.T, h *servertest.Harness, m *machine, ghLogin string, stdin string, args ...string) *background {
+func login(t *testing.T, h *servertest.Harness, m *machine, stdin string, args ...string) *background {
 	t.Helper()
 	p := m.start(stdin, append([]string{"login", h.URL, "--no-browser", "--name", m.name}, args...)...)
 	code := p.waitFor(codePattern)
-	if err := h.Browser(ghLogin).Confirm(code, true); err != nil {
+	if err := h.Browser("mscno").Confirm(code, true); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -212,7 +211,7 @@ func login(t *testing.T, h *servertest.Harness, m *machine, ghLogin string, stdi
 // testAgent serves an in-memory SSH agent holding one Ed25519 key.
 func testAgent(t *testing.T) (string, string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "esa")
+	dir, err := os.MkdirTemp("/tmp", "esa") //nolint:usetesting // unix socket paths must stay short
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,11 +240,13 @@ func testAgent(t *testing.T) (string, string) {
 	return sock, ssh.FingerprintSHA256(pub)
 }
 
-func decryptsTo(t *testing.T, m *machine, repo, file, want string) {
+// decryptsTo checks that m can decrypt the test project's dev file.
+func decryptsTo(t *testing.T, m *machine, repo string) {
 	t.Helper()
-	out := m.tool(repo, "decrypt", file)
+	const want = "postgres://db-dev"
+	out := m.tool(repo, "decrypt", ".env.dev")
 	if !strings.Contains(out, want) {
-		t.Fatalf("%s: decrypt %s = %q, want it to contain %q", m.name, file, out, want)
+		t.Fatalf("%s: decrypt .env.dev = %q, want it to contain %q", m.name, out, want)
 	}
 }
 
@@ -253,7 +254,7 @@ func decryptsTo(t *testing.T, m *machine, repo, file, want string) {
 // account creation, approval, SSH-agent unlock, recovery phrase, key sync,
 // revocation with key rotation, environment rotation, and a rejected
 // intruder.
-func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential story with explicit checks
+func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential story with explicit checks
 	if testing.Short() {
 		t.Skip("builds binaries")
 	}
@@ -276,16 +277,16 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential 
 	repo := t.TempDir()
 	laptop.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")
 	envDev := filepath.Join(repo, ".env.dev")
-	data, err := os.ReadFile(envDev)
+	data, err := os.ReadFile(envDev) //nolint:gosec // test temp dir
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(envDev, append(data, []byte("DATABASE_URL=postgres://db-dev\n")...), 0o600); err != nil {
+	if err := os.WriteFile(envDev, append(data, []byte("DATABASE_URL=postgres://db-dev\n")...), 0o600); err != nil { //nolint:gosec // test temp dir
 		t.Fatal(err)
 	}
 	laptop.tool(repo, "encrypt", "dev", "-f", "env")
 
-	p := login(t, h, laptop, "mscno", "")
+	p := login(t, h, laptop, "")
 	out = p.wait(true)
 	for _, want := range []string{"Signed in as mscno", "Created the vault account", "Account key:", "Sealed"} {
 		if !strings.Contains(out, want) {
@@ -297,7 +298,7 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential 
 	if err != nil || !keyringfile.IsSealed(raw) {
 		t.Fatalf("laptop keyring not sealed after login: %v", err)
 	}
-	decryptsTo(t, laptop, repo, ".env.dev", "postgres://db-dev")
+	decryptsTo(t, laptop, repo)
 
 	// --- An intruder's GitHub account cannot get in. ---
 	intruder := newMachine(t, bin, "intruder")
@@ -310,7 +311,7 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential 
 
 	// --- VM 1: approval from the laptop. ---
 	vm1 := newMachine(t, bin, "vm1")
-	p = login(t, h, vm1, "mscno", "")
+	p = login(t, h, vm1, "")
 	words := p.waitFor(`Check that it shows this fingerprint: (\S+)`)
 	approved := laptop.run("y\n", "devices", "approve")
 	if !strings.Contains(approved, words) || !strings.Contains(approved, accountKey) {
@@ -320,7 +321,7 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential 
 	if !strings.Contains(out, "Approved by laptop") || !strings.Contains(out, "Account key: "+accountKey) {
 		t.Fatalf("vm1 login output:\n%s", out)
 	}
-	decryptsTo(t, vm1, repo, ".env.dev", "postgres://db-dev")
+	decryptsTo(t, vm1, repo)
 
 	// --- Laptop: enable SSH-agent unlock; VM 2 uses it. ---
 	out = laptop.run("", "agent-unlock", "enable", "--key", fp, "--expires", "30d")
@@ -328,22 +329,22 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential 
 		t.Fatalf("agent-unlock enable:\n%s", out)
 	}
 	vm2 := newMachine(t, bin, "vm2").with("SSH_AUTH_SOCK=" + sock)
-	out = login(t, h, vm2, "mscno", "", "--ssh-agent").wait(true)
+	out = login(t, h, vm2, "", "--ssh-agent").wait(true)
 	if !strings.Contains(out, "Added this device using ssh_agent") {
 		t.Fatalf("vm2 login:\n%s", out)
 	}
-	decryptsTo(t, vm2, repo, ".env.dev", "postgres://db-dev")
+	decryptsTo(t, vm2, repo)
 
 	// --- VM 3: recovery phrase; a wrong phrase is refused. ---
 	vm3 := newMachine(t, bin, "vm3")
 	wrong := "legal winner thank year wave sausage worth useful legal winner thank yellow"
-	login(t, h, vm3, "mscno", wrong+"\n", "--recover").wait(false)
+	login(t, h, vm3, wrong+"\n", "--recover").wait(false)
 	vm3 = newMachine(t, bin, "vm3b")
-	out = login(t, h, vm3, "mscno", mnemonic[1]+"\n", "--recover").wait(true)
+	out = login(t, h, vm3, mnemonic[1]+"\n", "--recover").wait(true)
 	if !strings.Contains(out, "Added this device using recovery") {
 		t.Fatalf("vm3 login:\n%s", out)
 	}
-	decryptsTo(t, vm3, repo, ".env.dev", "postgres://db-dev")
+	decryptsTo(t, vm3, repo)
 
 	// --- A key added on the laptop reaches the VMs. ---
 	added := laptop.run("", "env", "add", "qa", "--project", "acme/store")
@@ -381,16 +382,16 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential 
 	vm1.runFail("", "sync", "--server")
 	// The agent slot was invalidated by the rotation.
 	vm4 := newMachine(t, bin, "vm4").with("SSH_AUTH_SOCK=" + sock)
-	login(t, h, vm4, "mscno", "", "--ssh-agent").wait(false)
+	login(t, h, vm4, "", "--ssh-agent").wait(false)
 
 	// --- Environment rotation re-encrypts the file; another device follows. ---
 	out = laptop.with().run("", "env", "rotate", "dev", "--project", "acme/store", "--dir", repo, "--yes")
 	if !strings.Contains(out, "re-encrypted .env.dev") {
 		t.Fatalf("env rotate:\n%s", out)
 	}
-	decryptsTo(t, laptop, repo, ".env.dev", "postgres://db-dev")
+	decryptsTo(t, laptop, repo)
 	vm2.run("", "sync", "--server")
-	decryptsTo(t, vm2, repo, ".env.dev", "postgres://db-dev")
+	decryptsTo(t, vm2, repo)
 
 	// --- Status reports the server, device and sealed keyrings. ---
 	out = vm2.run("", "status")
@@ -400,7 +401,45 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential 
 		}
 	}
 
+	// --- The web UI lists projects and environments, never private keys. ---
+	b := h.Browser("mscno")
+	status, page, err := b.Get("/projects")
+	if err != nil || status != 200 {
+		t.Fatalf("projects page: %d %v", status, err)
+	}
+	for _, want := range []string{"acme/store", "dev", "prod", "qa", qaPub[:16]} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("projects page lacks %q:\n%s", want, page)
+		}
+	}
+	entries := readKeyring(t, vm2, "acme/store")
+	for name, priv := range entries {
+		if strings.Contains(page, priv) {
+			t.Fatalf("projects page leaks the private key of %s", name)
+		}
+	}
+
 	// --- Logout ends the session; the server rejects the old token. ---
 	vm3.run("", "logout")
 	vm3.runFail("", "sync", "--server")
+}
+
+// readKeyring decodes a machine's keyring through its own secret store.
+func readKeyring(t *testing.T, m *machine, project string) map[string]string {
+	t.Helper()
+	path := filepath.Join(m.home, "keyrings", strings.ReplaceAll(project, "/", "_")+".keyring")
+	raw, err := os.ReadFile(path) //nolint:gosec // test machine home
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ESEC_VAULT_HOME", m.home)
+	t.Setenv("ESEC_SECRET_STORE", "file")
+	entries, err := keyringfile.Parse(path, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("empty keyring")
+	}
+	return entries
 }

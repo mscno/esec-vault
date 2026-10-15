@@ -99,6 +99,80 @@ func LoadConfig(path string) (*Config, error) {
 	return c, c.Validate()
 }
 
+func parseIDs(s string) ([]int64, error) {
+	var out []int64
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid GitHub user id %q (use numeric ids, not usernames)", part)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// Validate checks the configuration.
+func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent checks
+	var errs []error
+	u, err := url.Parse(c.BaseURL)
+	switch {
+	case c.BaseURL == "" || err != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.User != nil:
+		errs = append(errs, errors.New("base_url must be an origin such as https://vault.example.com"))
+	case u.Scheme != "https" && (u.Scheme != "http" || !isLoopback(u.Hostname())):
+		errs = append(errs, errors.New("base_url must use https (http is allowed only for localhost)"))
+	}
+	if c.DBPath == "" {
+		errs = append(errs, errors.New("db_path is required"))
+	}
+	if c.GitHub.ClientID == "" {
+		errs = append(errs, errors.New("github.client_id is required"))
+	}
+	if c.GitHub.ClientSecret == "" {
+		errs = append(errs, errors.New("ESEC_SERVER_GITHUB_CLIENT_SECRET is required"))
+	}
+	if len(c.Access.AllowedGitHubIDs) == 0 {
+		errs = append(errs, errors.New("access.allowed_github_ids must list at least one numeric GitHub user id"))
+	}
+	for _, id := range c.Access.AllowedGitHubIDs {
+		if id <= 0 {
+			errs = append(errs, fmt.Errorf("invalid GitHub user id %d", id))
+		}
+	}
+	if c.VaultHistory < 1 || c.VaultHistory > 1000 {
+		errs = append(errs, errors.New("vault_history must be between 1 and 1000"))
+	}
+	if c.Sessions.Idle.Duration < time.Hour || c.Sessions.Absolute.Duration < c.Sessions.Idle.Duration || c.Sessions.Absolute.Duration > 366*24*time.Hour {
+		errs = append(errs, errors.New("sessions: idle must be at least 1h and absolute between idle and 366 days"))
+	}
+	for _, raw := range []string{c.GitHub.WebURL, c.GitHub.APIURL} {
+		if gu, err := url.Parse(raw); err != nil || gu.Host == "" || (gu.Scheme != "https" && (gu.Scheme != "http" || !isLoopback(gu.Hostname()))) {
+			errs = append(errs, fmt.Errorf("invalid GitHub URL %q", raw))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Secure reports whether the server is served over https.
+func (c *Config) Secure() bool { return strings.HasPrefix(c.BaseURL, "https://") }
+
+// Allowed reports whether a GitHub user id may sign in.
+func (c *Config) Allowed(githubID int64) bool {
+	for _, id := range c.Access.AllowedGitHubIDs {
+		if id == githubID {
+			return true
+		}
+	}
+	return false
+}
+
+func isLoopback(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 func (c *Config) applyEnv() error {
 	set := func(env string, dst *string) {
 		if v := os.Getenv(env); v != "" {
@@ -130,22 +204,6 @@ func (c *Config) applyEnv() error {
 	return nil
 }
 
-func parseIDs(s string) ([]int64, error) {
-	var out []int64
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		n, err := strconv.ParseInt(part, 10, 64)
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("invalid GitHub user id %q (use numeric ids, not usernames)", part)
-		}
-		out = append(out, n)
-	}
-	return out, nil
-}
-
 func (c *Config) defaults() {
 	if c.Listen == "" {
 		c.Listen = defaultListen
@@ -166,62 +224,4 @@ func (c *Config) defaults() {
 		c.GitHub.APIURL = "https://api.github.com"
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
-}
-
-// Validate checks the configuration.
-func (c *Config) Validate() error {
-	var errs []error
-	u, err := url.Parse(c.BaseURL)
-	switch {
-	case c.BaseURL == "" || err != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.User != nil:
-		errs = append(errs, errors.New("base_url must be an origin such as https://vault.example.com"))
-	case u.Scheme != "https" && !(u.Scheme == "http" && isLoopback(u.Hostname())):
-		errs = append(errs, errors.New("base_url must use https (http is allowed only for localhost)"))
-	}
-	if c.DBPath == "" {
-		errs = append(errs, errors.New("db_path is required"))
-	}
-	if c.GitHub.ClientID == "" {
-		errs = append(errs, errors.New("github.client_id is required"))
-	}
-	if c.GitHub.ClientSecret == "" {
-		errs = append(errs, errors.New("ESEC_SERVER_GITHUB_CLIENT_SECRET is required"))
-	}
-	if len(c.Access.AllowedGitHubIDs) == 0 {
-		errs = append(errs, errors.New("access.allowed_github_ids must list at least one numeric GitHub user id"))
-	}
-	for _, id := range c.Access.AllowedGitHubIDs {
-		if id <= 0 {
-			errs = append(errs, fmt.Errorf("invalid GitHub user id %d", id))
-		}
-	}
-	if c.VaultHistory < 1 || c.VaultHistory > 1000 {
-		errs = append(errs, errors.New("vault_history must be between 1 and 1000"))
-	}
-	if c.Sessions.Idle.Duration < time.Hour || c.Sessions.Absolute.Duration < c.Sessions.Idle.Duration || c.Sessions.Absolute.Duration > 366*24*time.Hour {
-		errs = append(errs, errors.New("sessions: idle must be at least 1h and absolute between idle and 366 days"))
-	}
-	for _, raw := range []string{c.GitHub.WebURL, c.GitHub.APIURL} {
-		if gu, err := url.Parse(raw); err != nil || gu.Host == "" || (gu.Scheme != "https" && !(gu.Scheme == "http" && isLoopback(gu.Hostname()))) {
-			errs = append(errs, fmt.Errorf("invalid GitHub URL %q", raw))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// Secure reports whether the server is served over https.
-func (c *Config) Secure() bool { return strings.HasPrefix(c.BaseURL, "https://") }
-
-// Allowed reports whether a GitHub user id may sign in.
-func (c *Config) Allowed(githubID int64) bool {
-	for _, id := range c.Access.AllowedGitHubIDs {
-		if id == githubID {
-			return true
-		}
-	}
-	return false
-}
-
-func isLoopback(host string) bool {
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

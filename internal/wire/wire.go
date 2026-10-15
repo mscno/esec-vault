@@ -10,7 +10,7 @@ import (
 	"github.com/mscno/esec-vault/internal/envelope"
 )
 
-// API version prefix.
+// Prefix is the API version prefix.
 const Prefix = "/v1"
 
 // Error codes. The device-flow codes follow RFC 8628.
@@ -156,6 +156,38 @@ type VaultPut struct {
 	Blob    []byte `json:"blob"`
 	Sig     []byte `json:"sig"`
 	IfMatch uint64 `json:"if_match"`
+	// Index optionally publishes non-secret metadata (project ids,
+	// environment names, public keys) for the web UI, signed separately.
+	Index    []byte `json:"index,omitempty"`
+	IndexSig []byte `json:"index_sig,omitempty"`
+}
+
+// VaultIndex is the plaintext, non-secret summary of a vault: what exists,
+// never a private key or a secret value.
+type VaultIndex struct {
+	Generation uint64         `json:"generation"`
+	Projects   []IndexProject `json:"projects"`
+}
+
+// IndexProject lists one project's environments.
+type IndexProject struct {
+	ID           string     `json:"id"`
+	Environments []IndexEnv `json:"environments"`
+	// OtherKeys counts keys stored only under their public key (retired
+	// keys kept for git history, or unnamed keys).
+	OtherKeys int `json:"other_keys"`
+}
+
+// IndexEnv is one named environment key.
+type IndexEnv struct {
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+}
+
+// IndexMessage returns the bytes an index signature covers.
+func IndexMessage(user string, index []byte) []byte {
+	sum := sha256.Sum256(index)
+	return []byte("esec-vault/index/v1\n" + user + "\n" + hex.EncodeToString(sum[:]))
 }
 
 // VaultMessage returns the bytes a vault signature covers.

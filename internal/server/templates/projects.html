@@ -1,0 +1,31 @@
+{{template "head" .}}
+<h1>Projects</h1>
+{{if .Index}}
+<p class="muted">As of vault version {{.Vault.Version}}, pushed {{ts .Vault.CreatedAt}}{{with .PushedBy}} by {{.}}{{end}}. Only names and public keys are shown; private keys and secret values stay encrypted on your devices.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Project</th><th>Environment</th><th>Public key</th></tr></thead>
+  <tbody>
+  {{range .Index.Projects}}
+    {{$p := .}}
+    {{range $i, $e := .Environments}}
+    <tr>
+      <td>{{if eq $i 0}}<strong>{{$p.ID}}</strong>{{if $p.OtherKeys}}<br><span class="muted">+{{$p.OtherKeys}} retired or unnamed key(s)</span>{{end}}{{end}}</td>
+      <td>{{$e.Name}}</td>
+      <td><code title="{{$e.PublicKey}}">{{short $e.PublicKey}}</code></td>
+    </tr>
+    {{else}}
+    <tr><td><strong>{{$p.ID}}</strong></td><td class="muted">no named environments</td><td>{{if $p.OtherKeys}}{{$p.OtherKeys}} key(s){{end}}</td></tr>
+    {{end}}
+  {{else}}
+  <tr><td colspan="3" class="muted">No projects yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else if .Vault}}
+<p>Your devices do not publish a project index. Turn it on with <code>esec vault index on</code>.</p>
+{{else}}
+<p>No vault yet. Run <code>esec vault login</code> on a machine with your keys.</p>
+{{end}}
+{{template "foot" .}}

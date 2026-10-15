@@ -113,6 +113,21 @@ func (a *Account) VerifiedChain(ctx context.Context) (*chain.State, error) {
 	return st, nil
 }
 
+// moveAside renames a file that can no longer be opened by the new identity.
+func moveAside(p, tag string) error {
+	if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	dst := p + ".pre-" + tag
+	if err := os.Rename(p, dst); err != nil {
+		return fmt.Errorf("move %s aside: %w", filepath.Base(p), err)
+	}
+	return nil
+}
+
+// Words returns this device's fingerprint words.
+func (a *Account) Words() string { return a.Device.Words() }
+
 // userKey returns the user key current in st, fetching and installing it
 // from this device's box when the local identity is older or missing.
 func (a *Account) userKey(ctx context.Context, st *chain.State) (*identity.Identity, error) {
@@ -176,18 +191,6 @@ func (a *Account) installIdentity(ctx context.Context, id *identity.Identity, st
 	return nil
 }
 
-// moveAside renames a file that can no longer be opened by the new identity.
-func moveAside(p, tag string) error {
-	if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	dst := p + ".pre-" + tag
-	if err := os.Rename(p, dst); err != nil {
-		return fmt.Errorf("move %s aside: %w", filepath.Base(p), err)
-	}
-	return nil
-}
-
 // material captures id as the transport form for version.
 func (a *Account) material(st *chain.State, id *identity.Identity) (*ukey.Material, error) {
 	return ukey.FromIdentity(a.State.User, st.UKeyVersion, id)
@@ -214,6 +217,3 @@ func (a *Account) boxFor(st *chain.State, id *identity.Identity, d chain.Device)
 func (a *Account) self(info wire.DeviceInfo) chain.Device {
 	return chain.Device{ID: info.ID, Name: info.Name, Platform: info.Platform, EncPub: a.Device.EncPubHex(), SignPub: a.Device.SignPubHex(), Created: info.Created.UTC()}
 }
-
-// Words returns this device's fingerprint words.
-func (a *Account) Words() string { return a.Device.Words() }

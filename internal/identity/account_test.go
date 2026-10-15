@@ -172,7 +172,11 @@ func TestUnwrapRejectsSwappedSigningKey(t *testing.T) {
 	// Replace the cleartext signing key in the header; the sealed payload
 	// still carries the original header and seed.
 	_, fake, _ := ed25519.GenerateKey(nil)
-	tampered := bytes.Replace(raw, h.SignPublic[:], fake.Public().(ed25519.PublicKey), 1)
+	fakePub, ok := fake.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("not an ed25519 key")
+	}
+	tampered := bytes.Replace(raw, h.SignPublic[:], fakePub, 1)
 	masterPub, masterPriv, err := DeriveMaster(mnemonic, "")
 	if err != nil {
 		t.Fatal(err)

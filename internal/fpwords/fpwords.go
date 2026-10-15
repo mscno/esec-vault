@@ -35,7 +35,7 @@ func Words(domain string, parts ...[]byte) string {
 	return strings.Join(words, "-")
 }
 
-func writePart(h interface{ Write([]byte) (int, error) }, p []byte) {
+func writePart(h interface{ Write(p []byte) (int, error) }, p []byte) {
 	var l [4]byte
 	binary.BigEndian.PutUint32(l[:], uint32(len(p))) //nolint:gosec // fingerprint inputs are small keys
 	_, _ = h.Write(l[:])

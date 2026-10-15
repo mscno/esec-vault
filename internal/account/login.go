@@ -34,6 +34,8 @@ type LoginOptions struct {
 	Name            string
 	Method          string
 	ReplaceIdentity bool
+	// NoIndex stops publishing the project index from this device.
+	NoIndex bool
 	// OpenBrowser opens the verification URL; nil prints it only.
 	OpenBrowser func(url string) error
 	// Agent overrides SSH_AUTH_SOCK for the ssh-agent method (tests).
@@ -46,7 +48,7 @@ type LoginOptions struct {
 
 // Login signs this machine in, enrolls or re-authenticates its device, makes
 // sure it holds the current user key, and syncs the vault.
-func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*Account, error) {
+func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*Account, error) { //nolint:gocyclo // sequential sign-in steps
 	existing, err := LoadState()
 	if err != nil && !errors.Is(err, ErrNotLoggedIn) {
 		return nil, err
@@ -93,7 +95,10 @@ func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*
 	}
 	st := &State{Server: c.Base, User: tok.User.ID, GitHubID: tok.User.GitHubID, Login: tok.User.Login, DeviceID: tok.Device.ID, DeviceName: tok.Device.Name}
 	if existing != nil && existing.User == tok.User.ID {
-		st.Chain, st.Vault, st.Events, st.IdentityFromAccount = existing.Chain, existing.Vault, existing.Events, existing.IdentityFromAccount
+		st.Chain, st.Vault, st.Events, st.IdentityFromAccount, st.NoIndex = existing.Chain, existing.Vault, existing.Events, existing.IdentityFromAccount, existing.NoIndex
+	}
+	if opts.NoIndex {
+		st.NoIndex = true
 	}
 	if err := st.Save(); err != nil {
 		return nil, err
@@ -353,7 +358,7 @@ func (a *Account) fromAgent(ctx context.Context, st *chain.State, socket string)
 		return nil, "", err
 	}
 	now := a.Now()
-	var lastErr error = errors.New("no SSH-agent unlock slot matches a key in the agent; add one with 'esec vault agent-unlock enable' on a trusted device")
+	lastErr := errors.New("no SSH-agent unlock slot matches a key in the agent; add one with 'esec vault agent-unlock enable' on a trusted device")
 	for _, sl := range slots {
 		cs, ok := st.UsableSlot(sl.SlotID, now)
 		if !ok || cs.SSHKeyFP != sl.SSHKeyFP || sl.UKeyVersion != st.UKeyVersion {

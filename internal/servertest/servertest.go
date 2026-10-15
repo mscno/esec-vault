@@ -99,7 +99,7 @@ func newFakeGitHub(t *testing.T) *FakeGitHub {
 		v.Set("code", code)
 		v.Set("state", q.Get("state"))
 		u.RawQuery = v.Encode()
-		http.Redirect(w, r, u.String(), http.StatusFound)
+		http.Redirect(w, r, u.String(), http.StatusFound) //nolint:gosec // fake GitHub in tests
 	})
 	mux.HandleFunc("POST /login/oauth/access_token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()

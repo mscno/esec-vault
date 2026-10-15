@@ -56,6 +56,7 @@ type cli struct {
 	Logout      LogoutCmd      `cmd:"" help:"End this machine's vault server session."`
 	Devices     DevicesCmd     `cmd:"" help:"List, approve, revoke and rename your devices."`
 	AgentUnlock AgentUnlockCmd `cmd:"" name:"agent-unlock" help:"Let an SSH-agent key unlock new devices (optional)."`
+	Index       IndexCmd       `cmd:"" help:"Publish project and environment names (no secrets) for the web UI: on or off."`
 
 	Version kong.VersionFlag `help:"Show version"`
 	Debug   bool             `help:"Enable debug logging" env:"ESEC_DEBUG"`

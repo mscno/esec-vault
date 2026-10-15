@@ -79,7 +79,7 @@ type apiHandler func(w http.ResponseWriter, r *http.Request, c *reqCtx)
 
 // api authenticates a request: a live session, an allowlisted user, a device
 // in the right state, and a valid device signature with a fresh nonce.
-func (s *Server) api(allowPending bool, h apiHandler) http.Handler {
+func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:gocyclo // every check is a separate, ordered gate
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := s.now()
 		ctx := r.Context()
@@ -217,14 +217,15 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceCode := randomToken("")
 	var userCode string
-	err = s.db.tx(r.Context(), func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(r.Context(), `INSERT INTO devices (id, name, platform, enc_pub, sign_pub, status, created_at, register_ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	ctx := r.Context()
+	err = s.db.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (id, name, platform, enc_pub, sign_pub, status, created_at, register_ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			dev.ID, dev.Name, dev.Platform, dev.EncPub, dev.SignPub, wire.DeviceRegistering, created.Unix(), ip); err != nil {
 			return err
 		}
 		for range 5 {
 			userCode = newUserCode()
-			_, err := tx.ExecContext(r.Context(), `INSERT INTO device_codes (device_code_hash, user_code_hash, device_id, status, expires_at, created_at) VALUES (?, ?, ?, 'pending', ?, ?)`,
+			_, err := tx.ExecContext(ctx, `INSERT INTO device_codes (device_code_hash, user_code_hash, device_id, status, expires_at, created_at) VALUES (?, ?, ?, 'pending', ?, ?)`,
 				hashHex(deviceCode), hashHex(normalizeUserCode(userCode)), dev.ID, now.Add(deviceCodeTTL).Unix(), now.Unix())
 			if err == nil {
 				return nil
@@ -251,7 +252,7 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) {
+func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo // RFC 8628 state machine plus device matching
 	now := s.now()
 	ctx := r.Context()
 	body, err := readBody(w, r, maxSmallBody)
@@ -393,11 +394,12 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiLogout(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	now := s.now()
-	err := s.db.tx(r.Context(), func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(r.Context(), `UPDATE sessions SET revoked_at = ? WHERE token_hash = ?`, now.Unix(), c.session); err != nil {
+	ctx := r.Context()
+	err := s.db.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE token_hash = ?`, now.Unix(), c.session); err != nil {
 			return err
 		}
-		return s.db.audit(r.Context(), tx, c.user.ID, c.device.ID, c.ip, "logout", "", now)
+		return s.db.audit(ctx, tx, c.user.ID, c.device.ID, c.ip, "logout", "", now)
 	})
 	if err != nil {
 		s.internalError(w, r, err)

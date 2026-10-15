@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/mscno/esec/pkg/projectfile"
 
 	"github.com/mscno/esec-vault/internal/chain"
 	"github.com/mscno/esec-vault/internal/envelope"
@@ -93,11 +96,12 @@ func (s *Server) apiDeviceProof(w http.ResponseWriter, r *http.Request, c *reqCt
 		return
 	}
 	now := s.now()
-	err = s.db.tx(r.Context(), func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(r.Context(), `UPDATE devices SET proof = ? WHERE id = ?`, raw, c.device.ID); err != nil {
+	ctx := r.Context()
+	err = s.db.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE devices SET proof = ? WHERE id = ?`, raw, c.device.ID); err != nil {
 			return err
 		}
-		return s.db.addEvent(r.Context(), tx, c.user.ID, wire.EventDevicePending, c.device.ID, now)
+		return s.db.addEvent(ctx, tx, c.user.ID, wire.EventDevicePending, c.device.ID, now)
 	})
 	if err != nil {
 		s.internalError(w, r, err)
@@ -344,8 +348,9 @@ func (s *Server) apiVaultPut(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		return
 	}
 	var out *wire.Vault
-	err := s.db.tx(r.Context(), func(tx *sql.Tx) error {
-		v, err := s.putVault(r.Context(), tx, c, &req, nil)
+	ctx := r.Context()
+	err := s.db.tx(ctx, func(tx *sql.Tx) error {
+		v, err := s.putVault(ctx, tx, c, &req, nil)
 		out = v
 		return err
 	})
@@ -377,6 +382,16 @@ func (s *Server) putVault(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.
 	if state.Seq == 0 || !ed25519.Verify(state.SignPub, wire.VaultMessage(c.user.ID, req.Blob), req.Sig) {
 		return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "vault blob is not signed by the current user key")
 	}
+	var index []byte
+	if len(req.Index) > 0 {
+		if !ed25519.Verify(state.SignPub, wire.IndexMessage(c.user.ID, req.Index), req.IndexSig) {
+			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "vault index is not signed by the current user key")
+		}
+		if err := checkIndex(req.Index); err != nil {
+			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid vault index: %v", err)
+		}
+		index = req.Index
+	}
 	var current sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM vault_versions WHERE user_id = ?`, c.user.ID).Scan(&current); err != nil {
 		return nil, err
@@ -391,8 +406,8 @@ func (s *Server) putVault(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.
 	now := s.now()
 	sum := sha256.Sum256(req.Blob)
 	v := &wire.Vault{Version: cur + 1, SHA256: hex.EncodeToString(sum[:]), Size: len(req.Blob), CreatedAt: now.UTC().Truncate(time.Second), PushedBy: c.device.ID}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO vault_versions (user_id, version, blob, sig, sha256, pushed_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		c.user.ID, v.Version, req.Blob, req.Sig, v.SHA256, v.PushedBy, now.Unix()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO vault_versions (user_id, version, blob, sig, index_json, sha256, pushed_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.user.ID, v.Version, req.Blob, req.Sig, index, v.SHA256, v.PushedBy, now.Unix()); err != nil {
 		return nil, err
 	}
 	keepFrom := int64(v.Version) - int64(s.cfg.VaultHistory) //nolint:gosec // versions are small positive counters
@@ -488,8 +503,9 @@ func (s *Server) apiCommit(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		return
 	}
 	var result wire.CommitResult
-	err := s.db.tx(r.Context(), func(tx *sql.Tx) error {
-		res, err := s.commit(r.Context(), tx, c, &req)
+	ctx := r.Context()
+	err := s.db.tx(ctx, func(tx *sql.Tx) error {
+		res, err := s.commit(ctx, tx, c, &req)
 		if res != nil {
 			result = *res
 		}
@@ -507,7 +523,7 @@ func (s *Server) apiCommit(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 // every new link with the same rules clients use, mirrors the result into the
 // device table, and enforces that every active device can read the current
 // user key.
-func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Commit) (*wire.CommitResult, error) { //nolint:gocyclo // one linear validation pass over a commit
+func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Commit) (*wire.CommitResult, error) { //nolint:gocyclo,maintidx // one linear validation pass over a commit, kept together for review
 	now := s.now()
 	stored, err := s.db.chainLinks(ctx, tx, c.user.ID, 0)
 	if err != nil {
@@ -803,4 +819,61 @@ func checkIdentityBlob(blob []byte, state *chain.State) error {
 		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "identity blob does not match the current user key")
 	}
 	return nil
+}
+
+var (
+	indexEnvName = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
+	indexPubKey  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
+
+// checkIndex validates a published index. It is shown in the web UI, so
+// every string is constrained, and its size is bounded.
+func checkIndex(raw []byte) error {
+	if len(raw) > 512<<10 {
+		return errors.New("too large")
+	}
+	var idx wire.VaultIndex
+	if err := decodeStrict(raw, &idx); err != nil {
+		return err
+	}
+	if len(idx.Projects) > 1000 {
+		return errors.New("too many projects")
+	}
+	for _, p := range idx.Projects {
+		if p.ID != "default" && projectfile.ValidateOrgRepo(p.ID) != nil {
+			return fmt.Errorf("invalid project id %q", p.ID)
+		}
+		if len(p.Environments) > 200 || p.OtherKeys < 0 || p.OtherKeys > 10000 {
+			return fmt.Errorf("project %s has too many keys", p.ID)
+		}
+		for _, e := range p.Environments {
+			if len(e.Name) > 128 || !indexEnvName.MatchString(e.Name) || !indexPubKey.MatchString(e.PublicKey) {
+				return fmt.Errorf("invalid environment in %s", p.ID)
+			}
+		}
+	}
+	return nil
+}
+
+// latestIndex returns the newest published index and when it was pushed.
+func (s *Server) latestIndex(ctx context.Context, userID string) (*wire.VaultIndex, *wire.Vault, error) {
+	var raw []byte
+	var v wire.Vault
+	var created int64
+	err := s.db.sql.QueryRowContext(ctx, `SELECT version, index_json, pushed_by, created_at FROM vault_versions WHERE user_id = ? ORDER BY version DESC LIMIT 1`, userID).Scan(&v.Version, &raw, &v.PushedBy, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	v.CreatedAt = fromUnix(created)
+	if len(raw) == 0 {
+		return nil, &v, nil
+	}
+	var idx wire.VaultIndex
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return nil, nil, err
+	}
+	return &idx, &v, nil
 }

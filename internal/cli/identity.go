@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"github.com/mscno/esec-vault/internal/account"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/tyler-smith/go-bip39"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/identity/legacy"
 	"github.com/mscno/esec-vault/internal/paths"

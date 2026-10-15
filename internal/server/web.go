@@ -33,7 +33,7 @@ func (s *Server) cookieName(base string) string {
 }
 
 func (s *Server) setCookie(w http.ResponseWriter, name, value, path string, maxAge time.Duration) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is set whenever the server runs on https; plain http is allowed only on localhost
 		Name:     s.cookieName(name),
 		Value:    value,
 		Path:     path,
@@ -45,14 +45,17 @@ func (s *Server) setCookie(w http.ResponseWriter, name, value, path string, maxA
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter, name, path string) {
-	http.SetCookie(w, &http.Cookie{Name: s.cookieName(name), Value: "", Path: path, MaxAge: -1, HttpOnly: true, Secure: s.cfg.Secure(), SameSite: http.SameSiteLaxMode})
+	s.setCookie(w, name, "", path, -time.Second)
 }
 
 // webSession returns the signed-in browser session, or nil.
 func (s *Server) webSession(r *http.Request) (*webSession, error) {
 	c, err := r.Cookie(s.cookieName("esec_session"))
-	if err != nil || c.Value == "" {
+	if errors.Is(err, http.ErrNoCookie) || (err == nil && c.Value == "") {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	var userID, csrf string
 	var expires int64
@@ -102,6 +105,9 @@ func (s *Server) webError(w http.ResponseWriter, status int, msg string) {
 
 // safeNext accepts only same-site paths the login flow may return to.
 func safeNext(next string) string {
+	if next == "/projects" {
+		return next
+	}
 	if next == "" {
 		return "/account"
 	}
@@ -376,6 +382,7 @@ func (s *Server) webDeviceConfirm(w http.ResponseWriter, r *http.Request) {
 
 type deviceView struct {
 	*deviceRow
+
 	Sessions int
 	Words    string
 }
@@ -429,7 +436,9 @@ func (s *Server) webAccount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) webSuspendDevice(w http.ResponseWriter, r *http.Request) {
+// webAction runs a CSRF-checked account form action and returns to the
+// account page.
+func (s *Server) webAction(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context, ws *webSession) error) {
 	ws := s.requireWeb(w, r)
 	if ws == nil {
 		return
@@ -438,7 +447,7 @@ func (s *Server) webSuspendDevice(w http.ResponseWriter, r *http.Request) {
 		s.webError(w, http.StatusForbidden, "The form expired. Reload the page and try again.")
 		return
 	}
-	if err := s.suspend(r.Context(), ws.user.ID, "", r.PathValue("id"), s.clientIP(r)); err != nil {
+	if err := fn(r.Context(), ws); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) {
 			s.webError(w, ae.status, ae.desc)
@@ -450,48 +459,46 @@ func (s *Server) webSuspendDevice(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/account", http.StatusSeeOther)
 }
 
+func (s *Server) webSuspendDevice(w http.ResponseWriter, r *http.Request) {
+	s.webAction(w, r, func(ctx context.Context, ws *webSession) error {
+		return s.suspend(ctx, ws.user.ID, "", r.PathValue("id"), s.clientIP(r))
+	})
+}
+
 func (s *Server) webEndSessions(w http.ResponseWriter, r *http.Request) {
+	s.webAction(w, r, func(ctx context.Context, ws *webSession) error {
+		now := s.now()
+		device := r.PathValue("device")
+		return s.db.tx(ctx, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE device_id = ? AND user_id = ? AND revoked_at = 0`, now.Unix(), device, ws.user.ID); err != nil {
+				return err
+			}
+			return s.db.audit(ctx, tx, ws.user.ID, "", s.clientIP(r), "sessions_ended", device, now)
+		})
+	})
+}
+
+func (s *Server) webDisableSlot(w http.ResponseWriter, r *http.Request) {
+	s.webAction(w, r, func(ctx context.Context, ws *webSession) error {
+		return s.disableSlot(ctx, ws.user.ID, "", r.PathValue("id"), s.clientIP(r))
+	})
+}
+
+func (s *Server) webProjects(w http.ResponseWriter, r *http.Request) {
 	ws := s.requireWeb(w, r)
 	if ws == nil {
 		return
 	}
-	if !s.checkForm(r, ws) {
-		s.webError(w, http.StatusForbidden, "The form expired. Reload the page and try again.")
-		return
-	}
-	ctx := r.Context()
-	now := s.now()
-	device := r.PathValue("device")
-	err := s.db.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE device_id = ? AND user_id = ? AND revoked_at = 0`, now.Unix(), device, ws.user.ID); err != nil {
-			return err
-		}
-		return s.db.audit(ctx, tx, ws.user.ID, "", s.clientIP(r), "sessions_ended", device, now)
-	})
+	idx, v, err := s.latestIndex(r.Context(), ws.user.ID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/account", http.StatusSeeOther)
-}
-
-func (s *Server) webDisableSlot(w http.ResponseWriter, r *http.Request) {
-	ws := s.requireWeb(w, r)
-	if ws == nil {
-		return
-	}
-	if !s.checkForm(r, ws) {
-		s.webError(w, http.StatusForbidden, "The form expired. Reload the page and try again.")
-		return
-	}
-	if err := s.disableSlot(r.Context(), ws.user.ID, "", r.PathValue("id"), s.clientIP(r)); err != nil {
-		var ae *apiError
-		if errors.As(err, &ae) {
-			s.webError(w, ae.status, ae.desc)
-			return
+	data := map[string]any{"User": ws.user, "CSRF": ws.csrf, "Index": idx, "Vault": v}
+	if v != nil {
+		if d, err := s.db.device(r.Context(), s.db.sql, v.PushedBy); err == nil {
+			data["PushedBy"] = d.Name
 		}
-		s.internalError(w, r, err)
-		return
 	}
-	http.Redirect(w, r, "/account", http.StatusSeeOther)
+	s.render(w, http.StatusOK, "projects.html", data)
 }

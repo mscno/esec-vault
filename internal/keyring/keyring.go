@@ -43,30 +43,6 @@ type OS struct {
 // NewOS returns the secret-store-backed keyring.
 func NewOS() *OS { return &OS{} }
 
-func (o *OS) resolve(write bool) (secretstore.Store, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.store != nil {
-		return o.store, nil
-	}
-	var (
-		s   secretstore.Store
-		err error
-	)
-	if write {
-		s, err = secretstore.EnsureSelected()
-	} else {
-		s, err = secretstore.Default()
-	}
-	if err != nil {
-		return nil, err
-	}
-	if write || secretstore.Configured() {
-		o.store = s
-	}
-	return s, nil
-}
-
 // Store returns the underlying secret store, selecting one if necessary.
 func (o *OS) Store() (secretstore.Store, error) { return o.resolve(true) }
 
@@ -189,4 +165,28 @@ func Describe(kr Keyring) (string, bool) {
 		return s.Backend(), s.HardwareBound()
 	}
 	return "unknown", false
+}
+
+func (o *OS) resolve(write bool) (secretstore.Store, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.store != nil {
+		return o.store, nil
+	}
+	var (
+		s   secretstore.Store
+		err error
+	)
+	if write {
+		s, err = secretstore.EnsureSelected()
+	} else {
+		s, err = secretstore.Default()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if write || secretstore.Configured() {
+		o.store = s
+	}
+	return s, nil
 }

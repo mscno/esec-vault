@@ -33,7 +33,7 @@ func write(t *testing.T, path, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o640); err != nil { //nolint:gosec // checks that rotation keeps the mode
 		t.Fatal(err)
 	}
 	if _, err := esec.EncryptFileInPlace(path); err != nil {
@@ -52,7 +52,7 @@ func TestRotateReencryptsAllFormatsAndKeepsOldKey(t *testing.T) {
 	otherPub, _, _ := esec.GenerateKeypair()
 	other := filepath.Join(repo, ".env.prod")
 	write(t, other, "ESEC_PUBLIC_KEY="+otherPub+"\nTOKEN=prod\n")
-	otherBefore, _ := os.ReadFile(other)
+	otherBefore, _ := os.ReadFile(other) //nolint:gosec // test temp dir
 	// Files inside .git and node_modules are ignored.
 	ignored := filepath.Join(repo, ".git", ".env.dev")
 	write(t, ignored, "ESEC_PUBLIC_KEY="+pub+"\nTOKEN=x\n")
@@ -90,11 +90,11 @@ func TestRotateReencryptsAllFormatsAndKeepsOldKey(t *testing.T) {
 	if info.Mode().Perm() != 0o640 {
 		t.Fatalf("file mode changed to %o", info.Mode().Perm())
 	}
-	otherAfter, _ := os.ReadFile(other)
+	otherAfter, _ := os.ReadFile(other) //nolint:gosec // test temp dir
 	if !bytes.Equal(otherBefore, otherAfter) {
 		t.Fatal("a file using another key was modified")
 	}
-	ign, _ := os.ReadFile(ignored)
+	ign, _ := os.ReadFile(ignored) //nolint:gosec // test temp dir
 	if !strings.Contains(string(ign), pub) {
 		t.Fatal("file under .git was rewritten")
 	}
@@ -113,12 +113,12 @@ func TestRotateAbortsWithoutChangesOnAmbiguousFile(t *testing.T) {
 	// occurrence to replace, so it must refuse before changing anything.
 	bad := filepath.Join(repo, "app", ".env.dev")
 	write(t, bad, "ESEC_PUBLIC_KEY="+pub+"\nCOPY="+pub+"\n")
-	before, _ := os.ReadFile(good)
+	before, _ := os.ReadFile(good) //nolint:gosec // test temp dir
 
 	if _, err := Rotate(ks, "acme/store", "dev", repo); err == nil {
 		t.Fatal("ambiguous file accepted")
 	}
-	after, _ := os.ReadFile(good)
+	after, _ := os.ReadFile(good) //nolint:gosec // test temp dir
 	if !bytes.Equal(before, after) {
 		t.Fatal("a file changed although rotation failed")
 	}

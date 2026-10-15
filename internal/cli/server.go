@@ -52,6 +52,7 @@ type LoginCmd struct {
 	ReplaceIdentity bool   `help:"Replace a different local identity with the account's without asking"`
 	NoBrowser       bool   `help:"Do not try to open a browser"`
 	NoSeal          bool   `help:"Do not seal keyrings on this machine"`
+	NoIndex         bool   `help:"Do not publish project and environment names for the web UI"`
 }
 
 // Run implements login.
@@ -69,7 +70,7 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	if _, err := secretstore.EnsureSelected(); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
-	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity}
+	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex}
 	if !c.NoBrowser {
 		opts.OpenBrowser = openBrowser
 	}
@@ -79,6 +80,7 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
+
 	if !c.NoSeal {
 		if err := enableSealing(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "! keyrings stay plain:", err)
@@ -129,12 +131,12 @@ func openBrowser(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url) //nolint:gosec // URL comes from our own server's verification URI
+		cmd = exec.Command("open", url)
 	case "linux":
 		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 			return errors.New("no display")
 		}
-		cmd = exec.Command("xdg-open", url) //nolint:gosec // URL comes from our own server's verification URI
+		cmd = exec.Command("xdg-open", url)
 	default:
 		return errors.New("unsupported platform")
 	}
@@ -149,7 +151,7 @@ func esecSupportsSealed() error {
 	}
 	c, cancel := timeout(5 * time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(c, path, "capabilities").Output() //nolint:gosec // resolved esec binary, fixed argument
+	out, err := exec.CommandContext(c, path, "capabilities").Output()
 	if err != nil || !strings.Contains(string(out), keyringfile.Capability) {
 		return errors.New("the esec on PATH cannot read sealed keyrings; upgrade it to v0.9.0 or later")
 	}
@@ -274,7 +276,7 @@ func (c *DevicesListCmd) Run(ctx *cliCtx) error {
 		}
 		seen := "never"
 		if !d.LastSeen.IsZero() {
-			seen = d.LastSeen.Local().Format("2006-01-02 15:04")
+			seen = d.LastSeen.Local().Format("2006-01-02 15:04") //nolint:gosmopolitan // shown to the local user
 		}
 		method := d.Method
 		if method == "" {
@@ -424,7 +426,7 @@ func (c *AgentUnlockEnableCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	fp := c.Key
-	if data, err := os.ReadFile(c.Key); err == nil { //nolint:gosec // user-selected public key file
+	if data, err := os.ReadFile(c.Key); err == nil {
 		_, fp, err = sshagent.ParseAuthorizedKey(data)
 		if err != nil {
 			return err
@@ -494,7 +496,7 @@ func (c *AgentUnlockListCmd) Run(ctx *cliCtx) error {
 		case s.UKeyVersion != a.State.Chain.UKeyVersion:
 			state = "stale (user key rotated)"
 		}
-		fmt.Printf("%s  %s  expires %s  %s\n", s.SlotID, s.SSHKeyFP, s.Expires.Local().Format("2006-01-02"), state)
+		fmt.Printf("%s  %s  expires %s  %s\n", s.SlotID, s.SSHKeyFP, s.Expires.Local().Format("2006-01-02"), state) //nolint:gosmopolitan // shown to the local user
 	}
 	return nil
 }

@@ -61,7 +61,7 @@ func ValidateBase(raw string) (string, error) {
 	}
 	host := u.Hostname()
 	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
-	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
+	if u.Scheme != "https" && (u.Scheme != "http" || !loopback) {
 		return "", fmt.Errorf("server must use https (http is allowed only for localhost)")
 	}
 	return u.Scheme + "://" + u.Host, nil
@@ -92,63 +92,6 @@ const (
 	signedOnly
 	authenticated
 )
-
-func (c *Client) do(ctx context.Context, method, path string, m mode, in, out any) error {
-	var body []byte
-	if in != nil {
-		var err error
-		body, err = json.Marshal(in)
-		if err != nil {
-			return err
-		}
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "esec-vault")
-	if m != unsigned {
-		if c.DeviceID == "" || c.Key == nil {
-			return errors.New("client has no device key")
-		}
-		if err := apisig.Sign(req, body, c.DeviceID, c.Key, c.Now()); err != nil {
-			return err
-		}
-	}
-	if m == authenticated {
-		if c.Token == "" {
-			return &APIError{Status: http.StatusUnauthorized, Code: wire.ErrUnauthorized, Description: "not signed in; run 'esec vault login'"}
-		}
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode >= 300 {
-		var e wire.Error
-		if json.Unmarshal(raw, &e) == nil && e.Code != "" {
-			return &APIError{Status: resp.StatusCode, Code: e.Code, Description: e.Description}
-		}
-		return &APIError{Status: resp.StatusCode, Code: "http_" + strconv.Itoa(resp.StatusCode)}
-	}
-	if out == nil {
-		return nil
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("invalid server response: %w", err)
-	}
-	return nil
-}
 
 // RegisterDevice starts the device authorization grant.
 func (c *Client) RegisterDevice(ctx context.Context, req wire.DeviceRegisterRequest) (*wire.DeviceRegisterResponse, error) {
@@ -264,4 +207,61 @@ func (c *Client) Audit(ctx context.Context, limit int) ([]wire.AuditEntry, error
 	var out wire.Audit
 	err := c.do(ctx, http.MethodGet, "/v1/audit?limit="+strconv.Itoa(limit), authenticated, nil, &out)
 	return out.Entries, err
+}
+
+func (c *Client) do(ctx context.Context, method, path string, m mode, in, out any) error {
+	var body []byte
+	if in != nil {
+		var err error
+		body, err = json.Marshal(in)
+		if err != nil {
+			return err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "esec-vault")
+	if m != unsigned {
+		if c.DeviceID == "" || c.Key == nil {
+			return errors.New("client has no device key")
+		}
+		if err := apisig.Sign(req, body, c.DeviceID, c.Key, c.Now()); err != nil {
+			return err
+		}
+	}
+	if m == authenticated {
+		if c.Token == "" {
+			return &APIError{Status: http.StatusUnauthorized, Code: wire.ErrUnauthorized, Description: "not signed in; run 'esec vault login'"}
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		var e wire.Error
+		if json.Unmarshal(raw, &e) == nil && e.Code != "" {
+			return &APIError{Status: resp.StatusCode, Code: e.Code, Description: e.Description}
+		}
+		return &APIError{Status: resp.StatusCode, Code: "http_" + strconv.Itoa(resp.StatusCode)}
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("invalid server response: %w", err)
+	}
+	return nil
 }

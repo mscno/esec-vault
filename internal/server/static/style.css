@@ -35,3 +35,4 @@ button.danger { background: transparent; color: var(--danger); border-color: var
 .status-active { color: var(--accent); }
 .status-suspended, .status-revoked { color: var(--danger); }
 .logout { margin-top: 2rem; }
+nav { display: flex; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
