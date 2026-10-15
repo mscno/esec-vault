@@ -392,7 +392,6 @@ func (s *Server) webDeviceLookup(w http.ResponseWriter, r *http.Request) {
 		"Code":     pc.code,
 		"Device":   pc.device,
 		"Existing": pc.existing,
-		"Words":    devicekey.Words(pc.device.EncPub, pc.device.SignPub),
 	})
 }
 
@@ -477,7 +476,13 @@ func (s *Server) webAccount(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, err)
 			return
 		}
-		devices = append(devices, deviceView{deviceRow: d, Sessions: n, Words: devicekey.Words(d.EncPub, d.SignPub)})
+		// A waiting device's words are never shown here: approving it needs
+		// them typed from the device's own screen.
+		words := ""
+		if d.Status != wire.DevicePending {
+			words = devicekey.Words(d.EncPub, d.SignPub)
+		}
+		devices = append(devices, deviceView{deviceRow: d, Sessions: n, Words: words})
 	}
 	slots, err := s.slots(ctx, ws.user.ID, now, true)
 	if err != nil {

@@ -92,6 +92,9 @@ type Server struct {
 	serverWake chan struct{}
 	// lastGeneration is the local snapshot generation last seen by automatic.
 	lastGeneration uint64
+	// noteWindow and notes rate-limit pending-device notifications.
+	noteWindow time.Time
+	notes      int
 }
 
 // New constructs a locked daemon. Tests inject an in-memory keyring.

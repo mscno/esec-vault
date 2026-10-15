@@ -143,6 +143,10 @@ func (s *Server) announceChain(ctx context.Context, a *account.Account, seq uint
 	}
 }
 
+// maxPendingNotes bounds "device waiting" notifications per hour, so a flood
+// of sign-ins cannot flood the desktop; the rest go to the log.
+const maxPendingNotes = 5
+
 func (s *Server) announcePending(ctx context.Context, a *account.Account, id string, seen map[string]bool) {
 	pending, err := a.PendingDevices(ctx)
 	if err != nil {
@@ -153,9 +157,19 @@ func (s *Server) announcePending(ctx context.Context, a *account.Account, id str
 			continue
 		}
 		seen[id] = true
-		msg := fmt.Sprintf("%q (%s) is waiting for approval. Fingerprint %s.", p.Proof.Device.Name, p.Proof.Device.Platform, p.Words)
+		msg := fmt.Sprintf("%q (%s) is waiting for approval.", p.Proof.Device.Name, p.Proof.Device.Platform)
 		s.Logger.Info("vault server: "+msg, "device", id)
-		Notifier("esec vault: approve device?", msg+" Run: esec vault devices approve")
+		now := time.Now()
+		if now.Sub(s.noteWindow) > time.Hour {
+			s.noteWindow, s.notes = now, 0
+		}
+		s.notes++
+		switch {
+		case s.notes <= maxPendingNotes:
+			Notifier("esec vault: approve device?", msg+" Run: esec vault devices approve")
+		case s.notes == maxPendingNotes+1:
+			Notifier("esec vault: many sign-ins", "Many devices are waiting for approval. If you did not sign them in, someone may control your GitHub account.")
+		}
 	}
 }
 

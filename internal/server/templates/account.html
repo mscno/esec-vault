@@ -15,7 +15,7 @@
     <td>{{.Name}}<br><span class="muted">{{.Platform}} · {{.ID}}</span></td>
     <td class="status-{{.Status}}">{{.Status}}</td>
     <td>{{if .Method}}{{.Method}}{{else}}—{{end}}</td>
-    <td><code>{{.Words}}</code></td>
+    <td>{{if .Words}}<code>{{.Words}}</code>{{else}}<span class="muted">shown on the device</span>{{end}}</td>
     <td>{{ts .LastSeen}}<br><span class="muted">{{.LastIP}}</span></td>
     <td>{{.Sessions}}</td>
     <td class="actions">

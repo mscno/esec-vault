@@ -161,7 +161,12 @@ func TestServerLoopSyncsAndNotifies(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, n := range notes {
-			if strings.Contains(n, "vm-new") && strings.Contains(n, key.Words()) {
+			if strings.Contains(n, "vm-new") {
+				// The words must never appear: approval requires typing them
+				// from the new device's own screen.
+				if strings.Contains(n, key.Words()) {
+					t.Error("notification shows the fingerprint words")
+				}
 				return true
 			}
 		}

@@ -28,10 +28,6 @@ const (
 	maxOpenRegistrations = 200000
 	// maxOpenOAuthStates caps GitHub sign-ins started per 10 minutes.
 	maxOpenOAuthStates = 200000
-	// maxPendingPerUser bounds devices waiting for approval per account.
-	// When it is reached the oldest waiting device is dropped, never the
-	// new one, so nobody can keep an owner's new device out by filling it.
-	maxPendingPerUser = 50
 )
 
 // checkRegistration verifies that the registrant holds the private key it
@@ -331,7 +327,7 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo,maintidx // RFC 8628 state machine plus device matching, kept in order for review
+func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo // RFC 8628 state machine plus device matching, kept in order for review
 	now := s.now()
 	ctx := r.Context()
 	body, err := readBody(w, r, maxSmallBody)
@@ -459,26 +455,6 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 			if reg.Status != wire.DeviceRegistering {
 				denied = "device registration is no longer valid"
 				return nil
-			}
-			var waiting []*deviceRow
-			for _, d := range existing {
-				if d.Status == wire.DevicePending && now.Before(d.PendingExpires) {
-					waiting = append(waiting, d)
-				}
-			}
-			// devicesOf lists oldest first.
-			for len(waiting) >= maxPendingPerUser {
-				old := waiting[0]
-				waiting = waiting[1:]
-				if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE device_id = ?`, old.ID); err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx, `DELETE FROM devices WHERE id = ? AND status = ?`, old.ID, wire.DevicePending); err != nil {
-					return err
-				}
-				if err := s.db.audit(ctx, tx, user.ID, old.ID, s.clientIP(r), "pending_device_dropped", old.Name, now); err != nil {
-					return err
-				}
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE devices SET user_id = ?, status = ?, pending_expires = ? WHERE id = ?`, user.ID, wire.DevicePending, now.Add(pendingDeviceTT).Unix(), reg.ID); err != nil {
 				return err

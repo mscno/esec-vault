@@ -135,7 +135,7 @@ CLI                                   Server                       Browser (any 
  |                                    |<-- GET /device, code typed   |
  |                                    |    GitHub OAuth (if needed)  |
  |                                    |--> confirm page: code, device name,
- |                                    |    platform, IP, D fingerprint words
+ |                                    |    platform, requesting IP
  |                                    |<-- POST confirm (CSRF token) |
  |<- session (status: pending|active) |                             |
 ```
@@ -144,6 +144,9 @@ CLI                                   Server                       Browser (any 
   expire after 10 minutes. Wrong codes are limited per address and per
   signed-in user (see "Rate limits"). Input is normalized: case-folded, `O→0`,
   `I/L→1`, dashes and spaces removed.
+- **A waiting device's fingerprint is shown only on that device.** No web
+  page, notification or CLI listing shows it, so the words typed into
+  `devices approve` can only come from the new machine's own screen.
 - **The code is always typed.** The server never issues a link with the code
   in it, and the page ignores a `?code=` parameter (RFC 8628 §5.4). A link
   someone mails you therefore cannot carry their code; you would have to type
@@ -205,25 +208,30 @@ CLI                                   Server                       Browser (any 
 vm$ esec vault login https://vault.example.com
   Open https://vault.example.com/device and enter K7QM-2XDP
   ✓ Signed in as mscno (GitHub 1234567)
-  New device "hetzner-3"  fingerprint: tiger-lamp-orbit-maple
+  New device "hetzner-3"  fingerprint: tiger-lamp-orbit-maple-cream-thumb
   Waiting for approval. On a trusted device run: esec vault devices approve
   Other options: --ssh-agent, --recover
 
 laptop$ esec vault devices approve
-  Pending: hetzner-3  linux/amd64  203.0.113.7  40s ago
-  Fingerprint: tiger-lamp-orbit-maple      ← computed here from D, not sent by the server
-  Account key: river-cloud-anchor-plume
-  Approve? [y/N] y
+  Pending: hetzner-3  linux/amd64  from 203.0.113.7  40s ago
+  Account key: river-cloud-anchor-plume-…
+  Type the fingerprint words shown on the new device to approve it: tiger lamp orbit maple cream thumb
 
-vm$ ✓ Approved by macbook. Account key: river-cloud-anchor-plume
+vm$ Account key: river-cloud-anchor-plume-…
+  Is this the account key your other devices show? [y/N] y
+  ✓ Approved by macbook.
   ✓ Synced 4 projects, 11 environments.
 ```
 
 The approving device does the following:
 
-1. Fetch the pending device's public keys. Compute the fingerprint words
-   locally and show them.
-2. If you confirm, append `device_add` (signed by U), upload
+1. Fetch the pending device's self-signed proof and verify it. Compute the
+   fingerprint words locally from the proof's keys, but do **not** show them:
+   the person approving types the words shown on the new device, and the
+   approval proceeds only if they match. No web page, notification or CLI
+   listing shows a waiting device's words, so the typed words can only come
+   from the new machine's own screen.
+2. If they match, append `device_add` (signed by U), upload
    `device_box = SealAnonymous(U.enc.priv ‖ U.sign.priv ‖ ukey_version, D.enc)`,
    and post the approval.
 
@@ -659,9 +667,9 @@ secret store.
 | GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. At most 50 devices wait for approval at once; beyond that the oldest is dropped, so the owner's new device always gets in. Before the user's first login, the attacker could create the account with their own keys. A machine holding the user's identity refuses to join it (different master key), and a new device sees unknown account-key words. |
 | Takeover before the first login | Creating an account needs the server's bootstrap token, which the operator hands out separately; a GitHub session alone cannot create one. If the token also leaked: a machine with the user's identity refuses the foreign account, and a new device warns that the account already exists and asks for the account key, which a user who never set up esec vault must reject. |
 | Flooding sign-ins from thousands of networks | Availability only: new devices and new browsers may have to wait for the flood to pass. Devices and browsers that signed in before keep working, and nothing is disclosed. Resisting floods of that size needs upstream protection (a proxy or WAF), as for any internet service. |
-| Flooding devices that wait for approval | They see nothing and cannot be approved without their own fingerprint words. Past 50 the oldest is dropped, so a flood cannot keep the owner's new device out. |
+| Flooding devices that wait for approval | They see nothing and cannot be approved without their own fingerprint words. There is no per-account cap to fill (registrations are limited per address and network instead), so a flood cannot keep the owner's new device out or evict it. Desktop notifications are limited to 5 an hour, then one warning. |
 | Chain at `MaxLinks` (10,000 links) | The account freezes: no more revocations or rotations. That is far beyond normal use; start a new account if it ever happens. |
-| Code phishing | There are no prefilled links: the victim would have to type an attacker's code into the page by hand, on a page warning that only self-started sign-ins should be confirmed. Even then the attacker's device is only pending: it can read the chain, the wrapped identity and slot data (all useless without the phrase or agent). It cannot be approved by answering yes: `devices approve` requires typing the fingerprint words from the new device's own terminal, which only the attacker sees. |
+| Code phishing | There are no prefilled links: the victim would have to type an attacker's code into the page by hand, on a page warning that only self-started sign-ins should be confirmed. Even then the attacker's device is only pending: it sees nothing of the account without proving the recovery phrase or an SSH key. It cannot be approved by answering yes: `devices approve` requires typing the fingerprint words from the new device's own screen, and they appear nowhere else. |
 | Stolen session token | Useless without `D.sign`. |
 | Stolen VM disk | With macOS Keychain or a TPM-bound secret store, sealed keyrings are useless without C. With the 0600 file store, everything is exposed: revoke and rotate. |
 | Live compromise of an active device | Everything that device can decrypt. Response: revoke, rotate U, rotate env keys, rotate values. |

@@ -681,7 +681,7 @@ func TestStoredKeysAreWriteOnce(t *testing.T) {
 	}
 }
 
-func TestPendingDeviceCapDropsTheOldest(t *testing.T) {
+func TestWaitingDevicesNeverBlockOrEvictOthers(t *testing.T) {
 	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(1000, 1000)}, ownerID)
 	h.GitHub.AddUser(ownerID, "mscno")
 	owner := signIn(t, h, nil, "laptop")
@@ -706,16 +706,15 @@ func TestPendingDeviceCapDropsTheOldest(t *testing.T) {
 		h.Advance(time.Second)
 		pending(fmt.Sprintf("filler%d", i))
 	}
-	// The cap is full; a new device still gets in, and the oldest waiting
-	// device is dropped instead.
+	// However many devices wait, a new one gets in and none is dropped.
 	h.Advance(time.Second)
 	newcomer := pending("owners-new-laptop")
 	first.Now, newcomer.Now = h.Now, h.Now
 	if _, err := newcomer.Me(ctx); err != nil {
 		t.Fatalf("new device refused at the cap: %v", err)
 	}
-	if _, err := first.Me(ctx); code(err) != wire.ErrUnauthorized {
-		t.Fatalf("oldest waiting device was not dropped: %v", err)
+	if _, err := first.Me(ctx); err != nil {
+		t.Fatalf("a waiting device was dropped: %v", err)
 	}
 }
 
@@ -978,5 +977,35 @@ func TestPendingDevicesCannotLockOutRecovery(t *testing.T) {
 	ts := h.Now().Unix()
 	if _, err := vm.c.Recovery(ctx, wire.RecoveryRequest{Timestamp: ts, Sig: ed25519.Sign(a.masterSign, wire.RecoveryMessage(user, vm.info.ID, ts))}); err != nil {
 		t.Fatalf("junk proofs from another device blocked recovery: %v", err)
+	}
+}
+
+func TestWaitingDeviceWordsAreNeverShownOnTheWeb(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	key, _ := devicekey.Generate()
+	_, reg := register(t, h, key, "vm")
+	b := h.Browser("mscno")
+	_, page, err := b.Get("/device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, confirm, err := b.Post("/device", servertest.CSRF(page), url.Values{"code": {reg.UserCode}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(confirm, key.Words()) {
+		t.Fatal("the confirm page shows the waiting device's fingerprint words")
+	}
+	if _, _, err := b.Post("/device/confirm", servertest.CSRF(page), url.Values{"code": {reg.UserCode}, "decision": {"approve"}}); err != nil {
+		t.Fatal(err)
+	}
+	_, account, err := b.Get("/account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(account, key.Words()) {
+		t.Fatal("the account page shows the waiting device's fingerprint words")
 	}
 }
