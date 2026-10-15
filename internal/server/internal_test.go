@@ -170,3 +170,19 @@ func TestFreshKeysCannotFillTheLimiter(t *testing.T) {
 		t.Fatal("a new address was refused")
 	}
 }
+
+func TestEvictionScansAreRareWhenMostlyExhausted(t *testing.T) {
+	l := newLimiter()
+	now := time.Now()
+	for i := range maxLimiterKeys - 1 {
+		l.allow(fmt.Sprintf("x%d", i), 1, time.Hour, now)
+	}
+	l.allow("fresh", 5, time.Hour, now)
+	l.allow("trigger", 5, time.Hour, now.Add(time.Second))
+	if l.quietUntil.IsZero() {
+		t.Fatal("a table of exhausted windows did not pause eviction scans")
+	}
+	if !l.allow("newcomer", 5, time.Hour, now.Add(2*time.Second)) {
+		t.Fatal("a new address was refused")
+	}
+}

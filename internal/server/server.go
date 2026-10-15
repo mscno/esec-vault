@@ -350,9 +350,9 @@ func (l *limiter) refund(key string) {
 
 // evict drops expired windows, then windows that have not reached their
 // limit (lowest counts first) until the table is back to nine tenths of
-// maxLimiterKeys. Exhausted windows are kept. Only when nothing but
-// exhausted windows remain does it pause scanning for a minute, so a table
-// full of exhausted windows does not cost a full scan per request.
+// maxLimiterKeys. Exhausted windows are kept. When exhausted windows alone
+// exceed that target, it frees every other window and pauses scanning for a
+// minute, so such a table costs at most one scan per minute.
 func (l *limiter) evict(now time.Time) {
 	if now.Before(l.quietUntil) {
 		return
@@ -376,7 +376,12 @@ func (l *limiter) evict(now time.Time) {
 			candidates = append(candidates, entry{k, w})
 		}
 	}
-	if len(candidates) == 0 {
+	if len(l.m)-len(candidates) > target {
+		// Exhausted windows alone exceed the target: free everything else
+		// and pause, rather than rescanning for one or two slots per key.
+		for _, c := range candidates {
+			delete(l.m, c.key)
+		}
 		l.quietUntil = now.Add(time.Minute)
 		return
 	}
