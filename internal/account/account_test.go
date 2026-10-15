@@ -300,3 +300,23 @@ func TestReplacedIdentityIsKept(t *testing.T) {
 		t.Fatal("kept file is not the first identity")
 	}
 }
+
+// TestUnconfirmedAccountIsNotUsed covers an interrupted or declined login:
+// without a pinned chain no command may sync or install keys.
+func TestUnconfirmedAccountIsNotUsed(t *testing.T) {
+	_, a := setup(t)
+	a.State.Chain = account.ChainPin{}
+	if err := a.State.Save(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := account.Open(a.KR, &testUI{t: t})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := again.Sync(context.Background(), account.SyncOptions{}); !errors.Is(err, account.ErrUnconfirmed) {
+		t.Fatalf("unconfirmed account synced: %v", err)
+	}
+	if _, err := again.Devices(context.Background()); !errors.Is(err, account.ErrUnconfirmed) {
+		t.Fatalf("unconfirmed account listed devices: %v", err)
+	}
+}

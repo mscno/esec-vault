@@ -69,7 +69,7 @@ func inspectServer(ctx *cliCtx, problems *[]string) *serverStatus {
 	}
 	out.DeviceStatus, out.SessionExpires = me.Device.Status, me.SessionExpires
 	if me.Device.Status != "active" {
-		*problems = append(*problems, "this device is "+me.Device.Status+" on the vault server")
+		*problems = append(*problems, "this device is "+safetext.Clean(me.Device.Status)+" on the vault server")
 		return out
 	}
 	if devices, err := a.Devices(bg); err == nil {

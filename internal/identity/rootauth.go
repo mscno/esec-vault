@@ -18,6 +18,7 @@ import (
 // root of a vault account. It is public data, kept so that creating an
 // account later does not need the phrase again.
 type RootAuth struct {
+	MasterPub     string `json:"master_pub"`
 	EncPub        string `json:"enc_pub"`
 	SignPub       string `json:"sign_pub"`
 	MasterSignPub string `json:"master_sign_pub"`
@@ -32,20 +33,21 @@ func MakeRootAuth(keys *MasterKeys, id *Identity) (*RootAuth, error) {
 		return nil, errors.New("identity has no signing key")
 	}
 	return &RootAuth{
+		MasterPub:     hex.EncodeToString(keys.Public[:]),
 		EncPub:        hex.EncodeToString(id.Public[:]),
 		SignPub:       hex.EncodeToString(id.SignPublic()),
 		MasterSignPub: hex.EncodeToString(keys.SignPublic()),
-		Sig:           ed25519.Sign(keys.Sign, chain.RootStatement(id.Public, id.SignPublic())),
+		Sig:           ed25519.Sign(keys.Sign, chain.RootStatement(id.Public, id.SignPublic(), keys.Public)),
 	}, nil
 }
 
-// Matches reports whether ra authorizes exactly id.
-func (ra *RootAuth) Matches(id *Identity) bool {
-	if ra == nil || id.Sign == nil || ra.EncPub != hex.EncodeToString(id.Public[:]) || ra.SignPub != hex.EncodeToString(id.SignPublic()) {
+// Matches reports whether ra authorizes exactly id under masterPub.
+func (ra *RootAuth) Matches(id *Identity, masterPub [32]byte) bool {
+	if ra == nil || id.Sign == nil || ra.MasterPub != hex.EncodeToString(masterPub[:]) || ra.EncPub != hex.EncodeToString(id.Public[:]) || ra.SignPub != hex.EncodeToString(id.SignPublic()) {
 		return false
 	}
 	pub, err := chain.ParseSignKey(ra.MasterSignPub)
-	return err == nil && ed25519.Verify(pub, chain.RootStatement(id.Public, id.SignPublic()), ra.Sig)
+	return err == nil && ed25519.Verify(pub, chain.RootStatement(id.Public, id.SignPublic(), masterPub), ra.Sig)
 }
 
 // SaveRootAuth stores ra for later account creation.
@@ -71,19 +73,4 @@ func LoadRootAuth() (*RootAuth, error) {
 		return nil, fmt.Errorf("invalid %s: %w", rootAuthPath(), err)
 	}
 	return &ra, nil
-}
-
-// RememberRootAuth derives the master keys from the phrase and stores the
-// authorization for id. Commands that already hold the phrase call it so the
-// first vault login needs no phrase.
-func RememberRootAuth(mnemonic, passphrase string, id *Identity) error {
-	keys, err := DeriveMasterKeys(mnemonic, passphrase)
-	if err != nil {
-		return err
-	}
-	ra, err := MakeRootAuth(keys, id)
-	if err != nil {
-		return err
-	}
-	return SaveRootAuth(ra)
 }

@@ -3,6 +3,7 @@ package identity
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"os"
 	"testing"
@@ -186,5 +187,29 @@ func TestUnwrapRejectsSwappedSigningKey(t *testing.T) {
 	}
 	if _, err := UnwrapBytes(tampered, masterPub, masterPriv, false); err == nil {
 		t.Fatal("tampered header accepted")
+	}
+}
+
+func TestPassphraseChangeRefreshesRootAuth(t *testing.T) {
+	kr := setup(t)
+	mnemonic, err := Init(kr, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := Load(kr)
+	if _, err := ChangePassphrase(kr, mnemonic, "", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := DeriveMasterKeys(mnemonic, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, err := LoadRootAuth()
+	if err != nil || !ra.Matches(id, keys.Public) || ra.MasterSignPub != hex.EncodeToString(keys.SignPublic()) {
+		t.Fatal("root authorization still belongs to the old passphrase")
+	}
+	old, _ := DeriveMasterKeys(mnemonic, "")
+	if ra.Matches(id, old.Public) {
+		t.Fatal("root authorization matches the old master key")
 	}
 }

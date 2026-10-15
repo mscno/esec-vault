@@ -601,10 +601,15 @@ CSP, and no third-party scripts.
 
 | Action | Limit |
 |---|---|
-| Code entry | 30 per IP per hour, 10 per signed-in user per 10 minutes |
-| GitHub sign-in starts | 30 per IP per hour |
-| `auth/device` | 10 per IP per hour |
+| Wrong codes (entry or confirm form) | 30 per address per hour, 10 per signed-in user per 10 minutes, reserved before the lookup |
+| GitHub sign-in starts | 30 per address and 300 per network per hour; 20,000 open sign-ins server-wide |
+| `auth/device` | 10 per address and 100 per network per hour; 20,000 open registrations server-wide |
 | Agent-slot reads | 10 per user per hour |
+
+An address is an IPv4 address or an IPv6 /64; a network is an IPv4 /24 or an
+IPv6 /48. Anonymous and signed-in counters are kept apart, so a flood of
+anonymous requests cannot evict signed-in counters. A full counter table
+evicts its oldest entries; it never refuses new keys.
 
 ## 11. CLI changes
 
@@ -630,6 +635,9 @@ secret store.
 |---|---|
 | Full server and database compromise | Metadata (devices, times, IPs, and project/env names if the index is on); refuse service; delete data (local cache plus offline remotes are the fallback); hold back updates (heads pinned). **Cannot** decrypt, add devices, or plant keys: chain links, vault blobs and the index are signed by U. Cannot inject a fake U into existing devices. A brand-new device is protected by the account-key words (§4). |
 | GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. At most 5 devices can wait for approval at once. Before the user's first login, the attacker could create the account with their own keys. A machine holding the user's identity refuses to join it (different master key), and a new device sees unknown account-key words. |
+| Takeover before the first login, user has no identity anywhere yet | The attacker can create the account and approve the user's first device. The new device warns that the account already exists (creation time, first device) and asks the user to confirm the account key. A user who never set up esec vault must answer no. This is the one case the design cannot detect on its own. |
+| Filling the 5 pending-device slots | Someone with the GitHub session can keep approval slots full. The owner suspends those devices on the web page and secures the GitHub account. |
+| Chain at `MaxLinks` (10,000 links) | The account freezes: no more revocations or rotations. That is far beyond normal use; start a new account if it ever happens. |
 | Phishing with a prefilled code link | The victim must click Continue and Confirm on a page warning that only self-started sign-ins should be confirmed. A confirmed attacker device is only pending: it can read the chain, the wrapped identity and slot data (all useless without the phrase or agent), and it can ask for approval. Approval shows its own fingerprint, which matches no terminal the victim has. |
 | Stolen session token | Useless without `D.sign`. |
 | Stolen VM disk | With macOS Keychain or a TPM-bound secret store, sealed keyrings are useless without C. With the 0600 file store, everything is exposed: revoke and rotate. |
@@ -680,6 +688,8 @@ server (`httptest`) with a memory secret store.
 | Recovery checks the master X25519 key | Recovery also checks a phrase-derived signing key's authorization of the chain root | The X25519 key is public, so a server could build a forged account around it (found in security review). |
 | 4-word fingerprints, shown after login | 6-word device and 8-word account fingerprints; a new device confirms the account key before installing anything | Short words could be searched for offline; the late check let keys sync to a forged account (found in security review). |
 | Boxes and identity upserted | Write-once boxes; identity only with a new user key | A compromised device could otherwise silently break recovery and other devices (found in security review). |
+| Login state saved before confirmation | Commands refuse an account this machine never pinned; a declined account key deletes the half-finished login | A declined account could otherwise be installed by the next background sync (found in security review). |
+| Root signature over the user key only | Also covers the master X25519 key; passphrase changes refresh it, and are blocked while signed in | A stale authorization could make recovery impossible (found in security review). |
 | Rate limits on all code entries | Limits on wrong codes, on both forms, per address (IPv6 /64) and per user; caps on open registrations, OAuth states and pending devices | Found in security review. |
 
 ## Later phases (sketch)

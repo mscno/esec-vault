@@ -171,15 +171,31 @@ func (a *Account) confirmAccount(st *chain.State, opts LoginOptions) error {
 	words := st.AccountWords()
 	if opts.AccountKey != "" {
 		if normalizeWords(opts.AccountKey) != words {
-			return fmt.Errorf("the account key is %s, not the expected %s; nothing was installed", words, normalizeWords(opts.AccountKey))
+			return errors.Join(fmt.Errorf("the account key is %s, not the expected %s; nothing was installed", words, normalizeWords(opts.AccountKey)), a.forget())
 		}
 		return nil
 	}
 	a.UI.Printf("Account key: %s\n", words)
+	if len(st.Links) > 0 {
+		first := "unknown"
+		for _, d := range st.Devices {
+			if d.Method == chain.MethodFirst {
+				first = d.Name
+			}
+		}
+		a.UI.Printf("This vault account already exists: created %s, first device %q.\n", st.Links[0].CTime.Local().Format("2006-01-02 15:04"), first) //nolint:gosmopolitan // shown to the local user
+		a.UI.Printf("If you have never set up esec vault before, answer no: someone else may control your GitHub account.\n")
+	}
 	if !a.UI.Confirm("Is this the account key your other devices show (esec vault status)?") {
-		return errors.New("account key not confirmed; nothing was installed. If the words differ, do not use this server")
+		return errors.Join(errors.New("account key not confirmed; nothing was installed. If the words differ, do not use this server"), a.forget())
 	}
 	return nil
+}
+
+// forget removes this login's session and account record, so nothing keeps
+// using an account the user did not confirm.
+func (a *Account) forget() error {
+	return errors.Join(a.KR.Delete(SessionTokenName), Remove())
 }
 
 func normalizeWords(s string) string {
@@ -342,15 +358,22 @@ func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *enve
 // their own keys; a machine that already has the user's identity notices.
 func (a *Account) checkSameRecoveryKey(st *chain.State, opts LoginOptions) error {
 	raw, err := identity.WrappedFile()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return nil //nolint:nilerr // no local identity: nothing to compare
+		return fmt.Errorf("read this machine's identity: %w", err)
 	}
 	h, err := identity.ReadHeader(raw)
 	if err != nil {
-		return nil //nolint:nilerr // unreadable identity: nothing to compare
+		return fmt.Errorf("read this machine's identity: %w", err)
 	}
 	foreign := h.MasterPublic != st.MasterPub
-	if ra, err := identity.LoadRootAuth(); err == nil && ra != nil && ra.MasterSignPub != hex.EncodeToString(st.MasterSignPub) {
+	ra, err := identity.LoadRootAuth()
+	if err != nil {
+		return err
+	}
+	if ra != nil && ra.MasterPub == hex.EncodeToString(h.MasterPublic[:]) && ra.MasterSignPub != hex.EncodeToString(st.MasterSignPub) {
 		foreign = true
 	}
 	if foreign && !opts.ReplaceIdentity {
@@ -363,7 +386,7 @@ func (a *Account) checkSameRecoveryKey(st *chain.State, opts LoginOptions) error
 // root: the one stored by identity init/recover/rotate, or a new one made
 // from the phrase, which is then asked for once.
 func (a *Account) rootAuth(id *identity.Identity, h *identity.Header, opts LoginOptions) (*identity.RootAuth, error) {
-	if ra, err := identity.LoadRootAuth(); err == nil && ra.Matches(id) {
+	if ra, err := identity.LoadRootAuth(); err == nil && ra.Matches(id, h.MasterPublic) {
 		return ra, nil
 	}
 	a.UI.Printf("Creating the account needs your recovery phrase once: it signs this identity as the account's root,\nso a device recovering with the phrase can tell your account from a forged one.\n")

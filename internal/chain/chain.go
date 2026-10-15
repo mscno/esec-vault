@@ -98,14 +98,15 @@ func NewInitBody(encPub [32]byte, signPub ed25519.PublicKey, masterPub [32]byte,
 		SignPub:       hex.EncodeToString(signPub),
 		MasterPub:     hex.EncodeToString(masterPub[:]),
 		MasterSignPub: hex.EncodeToString(msp),
-		RootSig:       ed25519.Sign(masterSign, RootStatement(encPub, signPub)),
+		RootSig:       ed25519.Sign(masterSign, RootStatement(encPub, signPub, masterPub)),
 	}
 }
 
 // RootStatement is what the master signing key signs to make a user key the
-// root of an account.
-func RootStatement(encPub [32]byte, signPub ed25519.PublicKey) []byte {
-	return []byte("esec-vault root v1\n" + hex.EncodeToString(encPub[:]) + "\n" + hex.EncodeToString(signPub) + "\n")
+// root of an account. It names the master X25519 key too, so a signing key
+// can only vouch for an account wrapped to its own phrase's master key.
+func RootStatement(encPub [32]byte, signPub ed25519.PublicKey, masterPub [32]byte) []byte {
+	return []byte("esec-vault root v1\n" + hex.EncodeToString(encPub[:]) + "\n" + hex.EncodeToString(signPub) + "\n" + hex.EncodeToString(masterPub[:]) + "\n")
 }
 
 // Device describes a device's public identity.
@@ -547,7 +548,7 @@ func (s *State) applyInit(e *envelope.Envelope, l Link) error {
 	if err != nil {
 		return fmt.Errorf("master signing key: %w", err)
 	}
-	if !ed25519.Verify(masterSign, RootStatement(enc, sign), b.RootSig) {
+	if !ed25519.Verify(masterSign, RootStatement(enc, sign, master), b.RootSig) {
 		return fmt.Errorf("root key is not authorized by the master signing key")
 	}
 	if err := e.Require(KindLink, sign); err != nil {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -98,5 +99,38 @@ func TestDeployConfigLoads(t *testing.T) {
 	}
 	if c.ClientIPHeader != "Fly-Client-IP" || c.Sessions.Idle.Duration != 720*time.Hour {
 		t.Fatalf("config: %+v", c)
+	}
+}
+
+func TestLimiterNeverRefusesWhenFull(t *testing.T) {
+	l := newLimiter()
+	now := time.Now()
+	for i := range maxLimiterKeys {
+		l.allow(fmt.Sprintf("k%d", i), 1, time.Hour, now.Add(time.Duration(i)))
+	}
+	if !l.allow("new", 1, time.Hour, now.Add(time.Hour/2)) {
+		t.Fatal("a full limiter refused a new key")
+	}
+	if l.allow("new", 1, time.Hour, now.Add(time.Hour/2)) {
+		t.Fatal("a new key was not counted")
+	}
+	if !l.allow("refunded", 1, time.Hour, now.Add(time.Hour/2)) {
+		t.Fatal("first attempt refused")
+	}
+	l.refund("refunded")
+	if !l.allow("refunded", 1, time.Hour, now.Add(time.Hour/2)) {
+		t.Fatal("refund did not give the attempt back")
+	}
+	if len(l.m) > maxLimiterKeys {
+		t.Fatal("limiter grew past its bound")
+	}
+}
+
+func TestPrefixKeys(t *testing.T) {
+	if prefixKey("203.0.113.7") != "203.0.113.0/24" || prefixKey("2001:db8:1:2:3::1") != "2001:db8:1::/48" {
+		t.Fatal(prefixKey("2001:db8:1:2:3::1"))
+	}
+	if rateKey("2001:db8:1:2:3::1") != "2001:db8:1:2::/64" || rateKey("203.0.113.7") != "203.0.113.7" {
+		t.Fatal(rateKey("2001:db8:1:2:3::1"))
 	}
 }

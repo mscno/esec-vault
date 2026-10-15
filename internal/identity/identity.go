@@ -545,13 +545,18 @@ func ChangePassphrase(kr keyring.Keyring, mnemonic, oldPassphrase, newPassphrase
 	if verified.Public != current.Public {
 		return nil, fmt.Errorf("keychain and wrapped identity disagree")
 	}
-	newPub, _, err := DeriveMaster(mnemonic, newPassphrase)
+	newKeys, err := DeriveMasterKeys(mnemonic, newPassphrase)
 	if err != nil {
 		return nil, err
 	}
+	newPub := newKeys.Public
 	current.Derivation = masterInfo
 	current.PassphraseProtected = newPassphrase != ""
 	if err := commit(kr, current, &newPub); err != nil {
+		return nil, err
+	}
+	// The master keys changed, so the stored root authorization must too.
+	if err := saveRootAuthFor(newKeys, current); err != nil {
 		return nil, err
 	}
 	return current, nil

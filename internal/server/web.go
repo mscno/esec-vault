@@ -155,7 +155,7 @@ func (s *Server) webIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
-	if !s.limits.allow("oauth:"+rateKey(s.clientIP(r)), 30, time.Hour, now) {
+	if !s.allowAnon("oauth", s.clientIP(r), 30, 300, time.Hour) {
 		s.webError(w, http.StatusTooManyRequests, "Too many sign-in attempts from this address. Try again later.")
 		return
 	}
@@ -164,7 +164,7 @@ func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	if open >= 2000 {
+	if open >= 20000 {
 		s.webError(w, http.StatusServiceUnavailable, "Too many sign-ins in progress. Try again in a few minutes.")
 		return
 	}
@@ -268,19 +268,22 @@ func (s *Server) webDevice(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf, "Code": code})
 }
 
-// allowCode reports whether the address and the signed-in user may still
-// try codes. Only wrong codes count (see failedCode), on both the entry and
-// the confirmation form, so codes cannot be guessed through either.
+// allowCode reserves one code attempt for the address and the signed-in
+// user, on both the entry and the confirmation form. The reservation is
+// counted before the lookup, so parallel requests cannot overshoot; a code
+// that turns out valid gives it back (see goodCode), so only wrong codes
+// add up.
 func (s *Server) allowCode(r *http.Request, ws *webSession) bool {
 	now := s.now()
-	return !s.limits.blocked("code:ip:"+rateKey(s.clientIP(r)), 30, time.Hour, now) && !s.limits.blocked("code:user:"+ws.user.ID, 10, 10*time.Minute, now)
+	ipOK := s.limits.allow("code:ip:"+rateKey(s.clientIP(r)), 30, time.Hour, now)
+	userOK := s.limits.allow("code:user:"+ws.user.ID, 10, 10*time.Minute, now)
+	return ipOK && userOK
 }
 
-// failedCode counts a wrong or expired code.
-func (s *Server) failedCode(r *http.Request, ws *webSession) {
-	now := s.now()
-	s.limits.allow("code:ip:"+rateKey(s.clientIP(r)), 30, time.Hour, now)
-	s.limits.allow("code:user:"+ws.user.ID, 10, 10*time.Minute, now)
+// goodCode refunds the reservation of a valid code.
+func (s *Server) goodCode(r *http.Request, ws *webSession) {
+	s.limits.refund("code:ip:" + rateKey(s.clientIP(r)))
+	s.limits.refund("code:user:" + ws.user.ID)
 }
 
 // pendingCode is a device code waiting for confirmation, with its device.
@@ -343,10 +346,10 @@ func (s *Server) webDeviceLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pc == nil {
-		s.failedCode(r, ws)
 		s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf, "Error": "That code is not valid or has expired. Check the code in your terminal."})
 		return
 	}
+	s.goodCode(r, ws)
 	s.render(w, http.StatusOK, "confirm.html", map[string]any{
 		"User":     ws.user,
 		"CSRF":     ws.csrf,
@@ -378,10 +381,10 @@ func (s *Server) webDeviceConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pc == nil {
-		s.failedCode(r, ws)
 		s.webError(w, http.StatusBadRequest, "That code is no longer valid. Run 'esec vault login' again.")
 		return
 	}
+	s.goodCode(r, ws)
 	approve := r.PostForm.Get("decision") == "approve"
 	status, action := "denied", "device_code_denied"
 	if approve {

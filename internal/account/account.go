@@ -71,6 +71,9 @@ func Open(kr keyring.Keyring, ui UI) (*Account, error) {
 // Locked runs fn while holding the account lock, after reloading the state
 // from disk, so the CLI and the daemon never overwrite each other's pins.
 func (a *Account) Locked(fn func() error) error {
+	if err := a.requireConfirmed(); err != nil {
+		return err
+	}
 	// Lock order: keyrings, then the account. Sync merges into keyring files,
 	// so it must exclude every other keyring writer (env add/rotate, esec
 	// keygen --save, the daemon).
@@ -91,6 +94,10 @@ func (a *Account) Locked(fn func() error) error {
 	}
 	return fn()
 }
+
+// ErrUnconfirmed is returned when this machine never verified and pinned its
+// account (an interrupted or declined login).
+var ErrUnconfirmed = errors.New("this machine has not confirmed its vault account; run 'esec vault login' again")
 
 // lockAccount waits up to a minute for the cross-process account lock.
 func lockAccount() (func(), error) {
@@ -232,4 +239,14 @@ func (a *Account) boxFor(st *chain.State, id *identity.Identity, d chain.Device)
 // self describes this device as the server registered it.
 func (a *Account) self(info wire.DeviceInfo) chain.Device {
 	return chain.Device{ID: info.ID, Name: info.Name, Platform: info.Platform, EncPub: a.Device.EncPubHex(), SignPub: a.Device.SignPubHex(), Created: info.Created.UTC()}
+}
+
+// requireConfirmed refuses to act on an account this machine never pinned.
+// Without a pin, nothing distinguishes the real account from one a server
+// made up, so only Login (which confirms it) may use an unpinned account.
+func (a *Account) requireConfirmed() error {
+	if a.State.Chain.Root == "" {
+		return ErrUnconfirmed
+	}
+	return nil
 }

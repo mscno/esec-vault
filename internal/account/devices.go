@@ -31,6 +31,9 @@ type Pending struct {
 
 // PendingDevices lists devices waiting for approval whose proofs verify.
 func (a *Account) PendingDevices(ctx context.Context) ([]Pending, error) {
+	if err := a.requireConfirmed(); err != nil {
+		return nil, err
+	}
 	devices, err := a.Client.Devices(ctx)
 	if err != nil {
 		return nil, err
@@ -100,6 +103,9 @@ type DeviceView struct {
 // Devices lists devices from the verified chain plus pending and suspended
 // devices the server knows about.
 func (a *Account) Devices(ctx context.Context) ([]DeviceView, error) {
+	if err := a.requireConfirmed(); err != nil {
+		return nil, err
+	}
 	st, err := a.VerifiedChain(ctx)
 	if err != nil {
 		return nil, err
@@ -309,6 +315,9 @@ type SlotView struct {
 
 // AgentSlots lists slots from the verified chain with their server state.
 func (a *Account) AgentSlots(ctx context.Context) ([]SlotView, error) {
+	if err := a.requireConfirmed(); err != nil {
+		return nil, err
+	}
 	st, err := a.VerifiedChain(ctx)
 	if err != nil {
 		return nil, err

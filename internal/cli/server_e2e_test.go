@@ -321,6 +321,10 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	if _, err := os.Stat(filepath.Join(vm0.home, "identity.esec")); err == nil {
 		t.Fatal("identity installed despite a wrong account key")
 	}
+	if _, err := os.Stat(filepath.Join(vm0.home, "account.toml")); err == nil {
+		t.Fatal("a declined account was kept")
+	}
+	vm0.runFail("", "sync", "--server")
 
 	vm1 := newMachine(t, bin, "vm1")
 	p = login(t, h, vm1, "", "--account-key", accountKey)

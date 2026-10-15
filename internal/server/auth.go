@@ -21,7 +21,7 @@ const (
 	pollInterval    = 5 * time.Second
 	pendingDeviceTT = 15 * time.Minute
 	// maxOpenRegistrations caps unconfirmed registrations server-wide.
-	maxOpenRegistrations = 1000
+	maxOpenRegistrations = 20000
 	// maxPendingPerUser caps devices waiting for approval per account.
 	maxPendingPerUser = 5
 )
@@ -217,7 +217,7 @@ func (s *Server) verifySignature(ctx context.Context, r *http.Request, body []by
 func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	ip := s.clientIP(r)
-	if !s.limits.allow("register:"+rateKey(ip), 10, time.Hour, now) {
+	if !s.allowAnon("register", ip, 10, 100, time.Hour) {
 		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many device registrations from this address")
 		return
 	}

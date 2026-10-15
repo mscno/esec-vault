@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,9 @@ type Server struct {
 	tmpl   *template.Template
 	github GitHub
 	now    func() time.Time
+	// anon rate-limits unauthenticated requests and limits signed-in ones.
+	// They are separate so anonymous floods cannot evict signed-in counters.
+	anon   *limiter
 	limits *limiter
 	notify *notifier
 	mux    *http.ServeMux
@@ -69,7 +73,7 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, db: db, log: log, tmpl: tmpl, now: time.Now, limits: newLimiter(), notify: newNotifier()}
+	s := &Server{cfg: cfg, db: db, log: log, tmpl: tmpl, now: time.Now, anon: newLimiter(), limits: newLimiter(), notify: newNotifier()}
 	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
 	for _, o := range opts {
 		o(s)
@@ -117,6 +121,7 @@ func (s *Server) housekeeping(ctx context.Context) {
 			s.log.Warn("cleanup failed", "error", err)
 		}
 		s.limits.prune(s.now())
+		s.anon.prune(s.now())
 		select {
 		case <-ctx.Done():
 			return
@@ -216,6 +221,26 @@ func rateKey(ip string) string {
 	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
+// prefixKey groups addresses by network: IPv4 /24, IPv6 /48. It bounds what
+// one network can do with many addresses.
+func prefixKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	switch {
+	case parsed == nil:
+		return ip
+	case parsed.To4() != nil:
+		return parsed.Mask(net.CIDRMask(24, 32)).String() + "/24"
+	default:
+		return parsed.Mask(net.CIDRMask(48, 128)).String() + "/48"
+	}
+}
+
+// allowAnon counts an unauthenticated request per address and per network.
+func (s *Server) allowAnon(kind, ip string, perAddr, perNet int, period time.Duration) bool {
+	now := s.now()
+	return s.anon.allow(kind+":"+rateKey(ip), perAddr, period, now) && s.anon.allow(kind+":net:"+prefixKey(ip), perNet, period, now)
+}
+
 // ---- JSON helpers ----
 
 const maxSmallBody = 64 << 10
@@ -298,14 +323,7 @@ func (l *limiter) allow(key string, limit int, period time.Duration, now time.Ti
 	defer l.mu.Unlock()
 	w, ok := l.m[key]
 	if !ok && len(l.m) >= maxLimiterKeys {
-		for k, old := range l.m {
-			if now.Sub(old.start) > 2*time.Hour {
-				delete(l.m, k)
-			}
-		}
-		if len(l.m) >= maxLimiterKeys {
-			return false
-		}
+		l.evict(now)
 	}
 	if !ok || now.Sub(w.start) >= period {
 		w = &window{start: now}
@@ -315,13 +333,37 @@ func (l *limiter) allow(key string, limit int, period time.Duration, now time.Ti
 	return w.count <= limit
 }
 
-// blocked reports whether key already used up max events in its window,
-// without counting a new one.
-func (l *limiter) blocked(key string, limit int, period time.Duration, now time.Time) bool {
+// refund takes back one counted event, for attempts that turned out fine.
+func (l *limiter) refund(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	w, ok := l.m[key]
-	return ok && now.Sub(w.start) < period && w.count >= limit
+	if w, ok := l.m[key]; ok && w.count > 0 {
+		w.count--
+	}
+}
+
+// evict drops expired windows, then the oldest tenth, so a full table never
+// refuses new keys (which would lock out everyone) or forgets to count.
+func (l *limiter) evict(now time.Time) {
+	for k, w := range l.m {
+		if now.Sub(w.start) > 2*time.Hour {
+			delete(l.m, k)
+		}
+	}
+	if len(l.m) < maxLimiterKeys {
+		return
+	}
+	starts := make([]time.Time, 0, len(l.m))
+	for _, w := range l.m {
+		starts = append(starts, w.start)
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i].Before(starts[j]) })
+	cut := starts[len(starts)/10]
+	for k, w := range l.m {
+		if !w.start.After(cut) {
+			delete(l.m, k)
+		}
+	}
 }
 
 func (l *limiter) prune(now time.Time) {
