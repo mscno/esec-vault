@@ -137,6 +137,7 @@ var schema = []string{
 		detail TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS audit_user ON audit(user_id, id)`,
+	`CREATE INDEX IF NOT EXISTS audit_created ON audit(created_at)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 
