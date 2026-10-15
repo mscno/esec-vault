@@ -584,7 +584,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 			}
 		case chain.TypeDeviceRevoke:
 			var b chain.DeviceRevokeBody
-			if err := json.Unmarshal(l.Body, &b); err != nil {
+			if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 				return nil, err
 			}
 			if err := s.setRevoked(ctx, tx, c.user.ID, b.DeviceID, now); err != nil {
@@ -592,7 +592,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 			}
 		case chain.TypeDeviceRename:
 			var b chain.DeviceRenameBody
-			if err := json.Unmarshal(l.Body, &b); err != nil {
+			if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 				return nil, err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE devices SET name = ? WHERE id = ? AND user_id = ?`, b.Name, b.DeviceID, c.user.ID); err != nil {
@@ -600,7 +600,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 			}
 		case chain.TypeAgentSlotAdd:
 			var b chain.AgentSlotAddBody
-			if err := json.Unmarshal(l.Body, &b); err != nil {
+			if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 				return nil, err
 			}
 			sl, ok := slotData[b.SlotID]
@@ -614,7 +614,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 			usedSlots[b.SlotID] = true
 		case chain.TypeAgentSlotRemove:
 			var b chain.AgentSlotRemoveBody
-			if err := json.Unmarshal(l.Body, &b); err != nil {
+			if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 				return nil, err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE agent_slots SET disabled_at = ? WHERE id = ? AND user_id = ? AND disabled_at = 0`, now.Unix(), b.SlotID, c.user.ID); err != nil {
@@ -756,7 +756,7 @@ func checkPendingCommit(state *chain.State, c *reqCtx, req *wire.Commit) error {
 		types = append(types, l.Type)
 		if l.Type == chain.TypeDeviceAdd {
 			var b chain.DeviceAddBody
-			if err := json.Unmarshal(l.Body, &b); err != nil || b.Device.ID != c.device.ID {
+			if err := envelope.DecodeStrict(l.Body, &b); err != nil || b.Device.ID != c.device.ID {
 				return deny("can only add itself")
 			}
 		}
@@ -775,7 +775,7 @@ func checkPendingCommit(state *chain.State, c *reqCtx, req *wire.Commit) error {
 
 func (s *Server) applyDeviceAdd(ctx context.Context, tx *sql.Tx, c *reqCtx, l chain.Link, now time.Time) error {
 	var b chain.DeviceAddBody
-	if err := json.Unmarshal(l.Body, &b); err != nil {
+	if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 		return err
 	}
 	row, err := s.db.device(ctx, tx, b.Device.ID)

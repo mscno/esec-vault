@@ -151,3 +151,22 @@ func TestEvictionKeepsExhaustedCounters(t *testing.T) {
 		t.Fatal("flooding the table reset an exhausted counter")
 	}
 }
+
+func TestFreshKeysCannotFillTheLimiter(t *testing.T) {
+	l := newLimiter()
+	now := time.Now()
+	// Exhausted keys from an attacker, then a flood of fresh keys: the table
+	// must stay bounded instead of growing towards the hard limit.
+	for i := range maxLimiterKeys / 2 {
+		l.allow(fmt.Sprintf("x%d", i), 1, time.Hour, now)
+	}
+	for i := range 3 * maxLimiterKeys {
+		l.allow(fmt.Sprintf("f%d", i), 5, time.Hour, now.Add(time.Second))
+	}
+	if len(l.m) > maxLimiterKeys {
+		t.Fatalf("limiter grew to %d keys", len(l.m))
+	}
+	if !l.allow("newcomer", 5, time.Hour, now.Add(2*time.Second)) {
+		t.Fatal("a new address was refused")
+	}
+}

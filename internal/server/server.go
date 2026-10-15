@@ -303,8 +303,8 @@ func (w *window) exhausted() bool { return w.count >= w.limit }
 type limiter struct {
 	mu sync.Mutex
 	m  map[string]*window
-	// quietUntil skips eviction scans after one that freed nothing, so a
-	// table full of exhausted windows does not cost a full scan per request.
+	// quietUntil pauses eviction scans after one found only exhausted
+	// windows, so such a table does not cost a full scan per request.
 	quietUntil time.Time
 }
 
@@ -348,23 +348,22 @@ func (l *limiter) refund(key string) {
 	}
 }
 
-// evict drops expired windows, then up to a tenth of the table from windows
-// that have not reached their limit, lowest counts first.
+// evict drops expired windows, then windows that have not reached their
+// limit (lowest counts first) until the table is back to nine tenths of
+// maxLimiterKeys. Exhausted windows are kept. Only when nothing but
+// exhausted windows remain does it pause scanning for a minute, so a table
+// full of exhausted windows does not cost a full scan per request.
 func (l *limiter) evict(now time.Time) {
 	if now.Before(l.quietUntil) {
 		return
 	}
-	defer func() {
-		if len(l.m) >= maxLimiterKeys {
-			l.quietUntil = now.Add(time.Minute)
-		}
-	}()
 	for k, w := range l.m {
 		if now.Sub(w.start) > 2*time.Hour {
 			delete(l.m, k)
 		}
 	}
-	if len(l.m) < maxLimiterKeys {
+	target := maxLimiterKeys * 9 / 10
+	if len(l.m) <= target {
 		return
 	}
 	type entry struct {
@@ -377,13 +376,20 @@ func (l *limiter) evict(now time.Time) {
 			candidates = append(candidates, entry{k, w})
 		}
 	}
+	if len(candidates) == 0 {
+		l.quietUntil = now.Add(time.Minute)
+		return
+	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].w.count != candidates[j].w.count {
 			return candidates[i].w.count < candidates[j].w.count
 		}
 		return candidates[i].w.start.Before(candidates[j].w.start)
 	})
-	for _, c := range candidates[:min(len(candidates), maxLimiterKeys/10)] {
+	for _, c := range candidates {
+		if len(l.m) <= target {
+			break
+		}
 		delete(l.m, c.key)
 	}
 }
