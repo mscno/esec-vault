@@ -95,12 +95,8 @@ Run a single machine. The database is SQLite on the volume.
 Use a dedicated bucket for Litestream, with credentials limited to it. Keep
 those credentials outside the vault: you need them to restore the server.
 
-The code needs esec v0.9.0, which is not released yet. Until then `go.mod`
-pins v0.8.1, and a local `go.work` (not committed) builds against the
-`feat/sealed-keyring` branch in `../esec`. A Docker or CI build without that
-workspace fails. Tag and push esec v0.9.0, run
-`go get github.com/mscno/esec@v0.9.0`, and commit `go.mod` and `go.sum`
-before you deploy.
+The server is built from this repository alone; it depends on esec v0.9.0
+or later from the module proxy.
 
 ## Step 4: Connect your first machine
 
