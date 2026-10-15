@@ -681,20 +681,41 @@ func TestStoredKeysAreWriteOnce(t *testing.T) {
 	}
 }
 
-func TestPendingDeviceCap(t *testing.T) {
-	h := harness(t)
+func TestPendingDeviceCapDropsTheOldest(t *testing.T) {
+	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(1000, 1000)}, ownerID)
+	h.GitHub.AddUser(ownerID, "mscno")
 	owner := signIn(t, h, nil, "laptop")
 	create(t, owner)
-	for i := range 5 {
-		signIn(t, h, nil, fmt.Sprintf("vm%d", i))
+	ctx := context.Background()
+	b := h.Browser("mscno")
+	pending := func(name string) *client.Client {
+		key, _ := devicekey.Generate()
+		c, reg := register(t, h, key, name) //nolint:contextcheck // test helper with its own background context
+		if err := b.Confirm(reg.UserCode, true); err != nil {
+			t.Fatal(err)
+		}
+		tok, err := c.PollToken(ctx, reg.DeviceCode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.DeviceID, c.Token = tok.Device.ID, tok.SessionToken
+		return c
 	}
-	key, _ := devicekey.Generate()
-	c, reg := register(t, h, key, "one-too-many")
-	if err := h.Browser("mscno").Confirm(reg.UserCode, true); err != nil {
-		t.Fatal(err)
+	first := pending("filler0")
+	for i := 1; i < 50; i++ {
+		h.Advance(time.Second)
+		pending(fmt.Sprintf("filler%d", i))
 	}
-	if _, err := c.PollToken(context.Background(), reg.DeviceCode); code(err) != wire.ErrAccessDenied {
-		t.Fatalf("sixth pending device: %v", err)
+	// The cap is full; a new device still gets in, and the oldest waiting
+	// device is dropped instead.
+	h.Advance(time.Second)
+	newcomer := pending("owners-new-laptop")
+	first.Now, newcomer.Now = h.Now, h.Now
+	if _, err := newcomer.Me(ctx); err != nil {
+		t.Fatalf("new device refused at the cap: %v", err)
+	}
+	if _, err := first.Me(ctx); code(err) != wire.ErrUnauthorized {
+		t.Fatalf("oldest waiting device was not dropped: %v", err)
 	}
 }
 
