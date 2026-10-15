@@ -41,6 +41,7 @@ var schema = []string{
 		last_ip TEXT NOT NULL DEFAULT '',
 		register_ip TEXT NOT NULL DEFAULT '')`,
 	`CREATE INDEX IF NOT EXISTS devices_user ON devices(user_id)`,
+	`CREATE INDEX IF NOT EXISTS devices_status_created ON devices(status, created_at)`,
 	`CREATE TABLE IF NOT EXISTS device_codes (
 		device_code_hash TEXT PRIMARY KEY,
 		user_code_hash TEXT UNIQUE NOT NULL,
@@ -114,6 +115,7 @@ var schema = []string{
 		verifier TEXT NOT NULL,
 		next TEXT NOT NULL,
 		created_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS oauth_states_created ON oauth_states(created_at)`,
 	`CREATE TABLE IF NOT EXISTS events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id TEXT NOT NULL,
@@ -411,7 +413,8 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM oauth_states WHERE created_at < ?`, []any{unix(now.Add(-time.Hour))}},
 		{`DELETE FROM web_sessions WHERE expires_at < ?`, []any{unix(now)}},
 		{`DELETE FROM sessions WHERE expires_at < ? OR (revoked_at > 0 AND revoked_at < ?)`, []any{unix(now), unix(now.Add(-24 * time.Hour))}},
-		{`DELETE FROM devices WHERE status = 'registering' AND created_at < ?`, []any{unix(now.Add(-24 * time.Hour))}},
+		// Unconfirmed registrations are useless once their code expired.
+		{`DELETE FROM devices WHERE status = 'registering' AND created_at < ?`, []any{unix(now.Add(-time.Hour - 10*time.Minute))}},
 		{`DELETE FROM devices WHERE status = 'pending' AND pending_expires < ?`, []any{unix(now.Add(-24 * time.Hour))}},
 		{`DELETE FROM sessions WHERE device_id NOT IN (SELECT id FROM devices)`, nil},
 		{`DELETE FROM events WHERE created_at < ?`, []any{unix(now.Add(-30 * 24 * time.Hour))}},

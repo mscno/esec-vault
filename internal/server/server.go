@@ -113,7 +113,7 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) housekeeping(ctx context.Context) {
-	t := time.NewTicker(10 * time.Minute)
+	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for {
 		if err := s.db.cleanup(ctx, s.now()); err != nil && ctx.Err() == nil {

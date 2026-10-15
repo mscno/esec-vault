@@ -195,3 +195,41 @@ func TestEvictionScansAreRareWhenMostlyExhausted(t *testing.T) {
 		t.Fatal("a sweep reset a counter near its limit")
 	}
 }
+
+func TestCapQueriesUseIndexes(t *testing.T) {
+	db, err := OpenDB(t.TempDir() + "/q.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for q, index := range map[string]string{
+		`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM devices WHERE status = 'registering' AND created_at > 0`: "devices_status_created",
+		`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM oauth_states WHERE created_at > 0`:                       "oauth_states_created",
+	} {
+		if plan := queryPlan(t, db, q); !strings.Contains(plan, index) {
+			t.Fatalf("query does not use %s:\n%s", index, plan)
+		}
+	}
+}
+
+func queryPlan(t *testing.T, db *DB, q string) string {
+	t.Helper()
+	rows, err := db.sql.Query(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "\n"
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
