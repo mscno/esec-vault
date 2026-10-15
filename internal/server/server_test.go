@@ -940,3 +940,22 @@ func TestPendingDevicesSeeNothingWithoutProof(t *testing.T) {
 		t.Fatalf("invalid SSH proof: %v", err)
 	}
 }
+
+func TestPendingDevicesCannotLockOutRecovery(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	a := create(t, owner)
+	attacker := signIn(t, h, nil, "attacker")
+	ctx := context.Background()
+	_, junk, _ := ed25519.GenerateKey(rand.Reader)
+	for range 15 {
+		ts := h.Now().Unix()
+		_, _ = attacker.c.Recovery(ctx, wire.RecoveryRequest{Timestamp: ts, Sig: ed25519.Sign(junk, wire.RecoveryMessage(user, attacker.info.ID, ts))})
+	}
+	// The owner's genuine recovery from another new device still works.
+	vm := signIn(t, h, nil, "new-laptop")
+	ts := h.Now().Unix()
+	if _, err := vm.c.Recovery(ctx, wire.RecoveryRequest{Timestamp: ts, Sig: ed25519.Sign(a.masterSign, wire.RecoveryMessage(user, vm.info.ID, ts))}); err != nil {
+		t.Fatalf("junk proofs from another device blocked recovery: %v", err)
+	}
+}

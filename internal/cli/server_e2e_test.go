@@ -355,7 +355,7 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 		t.Fatalf("agent-unlock enable:\n%s", out)
 	}
 	vm2 := newMachine(t, bin, "vm2").with("SSH_AUTH_SOCK=" + sock)
-	out = login(t, h, vm2, "", "--ssh-agent").wait(true)
+	out = login(t, h, vm2, "", "--ssh-agent", "--ssh-key", fp).wait(true)
 	if !strings.Contains(out, "Added this device using ssh_agent") {
 		t.Fatalf("vm2 login:\n%s", out)
 	}

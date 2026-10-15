@@ -55,6 +55,7 @@ func timeout(d time.Duration) (context.Context, context.CancelFunc) {
 type LoginCmd struct {
 	Server          string `arg:"" optional:"" help:"Server origin, e.g. https://vault.example.com (default: the current server or ESEC_VAULT_SERVER)"`
 	SSHAgent        bool   `name:"ssh-agent" help:"Unlock with an SSH-agent unlock slot instead of waiting for approval"`
+	SSHKey          string `name:"ssh-key" help:"With --ssh-agent: use only this key (.pub file or SHA256 fingerprint); otherwise every agent key is tried"`
 	Recover         bool   `help:"Unlock with the recovery phrase instead of waiting for approval"`
 	Name            string `help:"Device name (default: hostname)"`
 	ReplaceIdentity bool   `help:"Replace a different local identity with the account's without asking"`
@@ -76,10 +77,20 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	case c.Recover:
 		method = account.LoginRecover
 	}
+	sshKey := ""
+	if c.SSHKey != "" {
+		if data, err := os.ReadFile(c.SSHKey); err == nil {
+			if _, sshKey, err = sshagent.ParseAuthorizedKey(data); err != nil {
+				return err
+			}
+		} else {
+			sshKey = sshagent.NormalizeFingerprint(c.SSHKey)
+		}
+	}
 	if _, err := secretstore.EnsureSelected(); err != nil {
 		return fmt.Errorf("secret store: %w", err)
 	}
-	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex, AccountKey: c.AccountKey,
+	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex, AccountKey: c.AccountKey, SSHKey: sshKey,
 		// The account creation token is read from the environment or a hidden
 		// prompt, never a flag: command lines are visible to other users.
 		BootstrapToken: os.Getenv("ESEC_VAULT_BOOTSTRAP_TOKEN")}

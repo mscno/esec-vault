@@ -15,6 +15,7 @@ import (
 
 	"github.com/mscno/esec-vault/internal/apisig"
 	"github.com/mscno/esec-vault/internal/chain"
+	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
@@ -521,12 +522,14 @@ func (s *Server) apiMe(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	}
 	me := wire.Me{User: c.user.wire(), Device: c.device.wire(false), ChainSeq: seq, SessionExpires: c.expires}
 	if seq > 0 {
-		links, err := s.db.chainLinks(r.Context(), s.db.sql, c.user.ID, 0)
+		// The recovery keys live in the first link; verifying that one link
+		// is enough and keeps this cheap for polling devices.
+		first, err := s.db.firstLink(r.Context(), c.user.ID)
 		if err != nil {
 			s.internalError(w, r, err)
 			return
 		}
-		if st, err := chain.Verify(c.user.ID, links); err == nil {
+		if st, err := chain.Verify(c.user.ID, []*envelope.Envelope{first}); first != nil && err == nil {
 			me.AccountMasterPub, me.AccountMasterSignPub = hex.EncodeToString(st.MasterPub[:]), hex.EncodeToString(st.MasterSignPub)
 		}
 	}

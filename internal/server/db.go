@@ -340,6 +340,23 @@ func (d *DB) chainLinks(ctx context.Context, q queryer, userID string, after uin
 	return out, rows.Err()
 }
 
+// firstLink returns the first link of a user's chain, or nil.
+func (d *DB) firstLink(ctx context.Context, userID string) (*envelope.Envelope, error) {
+	var raw []byte
+	err := d.sql.QueryRowContext(ctx, `SELECT envelope FROM chain_links WHERE user_id = ? AND seq = 1`, userID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var e envelope.Envelope
+	if err := jsonUnmarshal(raw, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 func (d *DB) chainSeq(ctx context.Context, q queryer, userID string) (uint64, error) {
 	var seq sql.NullInt64
 	if err := q.QueryRowContext(ctx, `SELECT MAX(seq) FROM chain_links WHERE user_id = ?`, userID).Scan(&seq); err != nil {

@@ -134,7 +134,7 @@ There are two other ways to unlock a new machine:
 | Method | Command | Needs |
 |---|---|---|
 | Recovery phrase | `esec vault login --recover` | Your 24 words (and passphrase, if set) |
-| SSH-agent unlock | `esec vault login --ssh-agent` | A forwarded SSH agent holding an enabled key |
+| SSH-agent unlock | `esec vault login --ssh-agent --ssh-key ~/.ssh/id_ed25519.pub` | A forwarded SSH agent holding an enabled key (without `--ssh-key`, every agent key is tried) |
 
 To enable SSH-agent unlock, run this on a trusted machine:
 

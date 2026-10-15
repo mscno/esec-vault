@@ -956,7 +956,10 @@ func (s *Server) verifiedChain(ctx context.Context, userID string) ([]*envelope.
 // it proves it can derive the master signing key from the recovery phrase.
 func (s *Server) apiRecovery(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	now := s.now()
-	if !s.limits.allow("recovery:"+c.user.ID, 10, time.Hour, now) {
+	// Limited per device, never per account: the proof cannot be guessed,
+	// and a per-account limit would let a device someone else signed in
+	// lock the owner out of recovery.
+	if !s.limits.allow("recovery:"+c.device.ID, 10, time.Hour, now) {
 		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many recovery attempts; try again later")
 		return
 	}
@@ -997,7 +1000,8 @@ func (s *Server) apiRecovery(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 // the slot key derivation, so it reveals nothing about the slot key.
 func (s *Server) apiAgentUnlock(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	now := s.now()
-	if !s.limits.allow("slots:"+c.user.ID, 10, time.Hour, now) {
+	// Per device for the same reason as apiRecovery.
+	if !s.limits.allow("unlock:"+c.device.ID, 10, time.Hour, now) {
 		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many agent unlock attempts; try again later")
 		return
 	}

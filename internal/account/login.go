@@ -46,6 +46,9 @@ type LoginOptions struct {
 	OpenBrowser func(url string) error
 	// Agent overrides SSH_AUTH_SOCK for the ssh-agent method (tests).
 	AgentSocket string
+	// SSHKey limits the ssh-agent method to one key (SHA256 fingerprint),
+	// so other agent keys are neither shown to the server nor asked to sign.
+	SSHKey string
 	// Poll overrides polling intervals (tests).
 	Poll time.Duration
 	// Mnemonic and Passphrase are read through UI.Secret when empty.
@@ -561,7 +564,7 @@ func (a *Account) fromAgent(ctx context.Context, d chain.Device, opts LoginOptio
 	lastErr := errors.New("no SSH-agent unlock slot matches a key in the agent; add one with 'esec vault agent-unlock enable' on a trusted device")
 	for i := range keys {
 		key := &keys[i]
-		if sshagent.Supported(key.Public) != nil {
+		if sshagent.Supported(key.Public) != nil || (opts.SSHKey != "" && key.Fingerprint != opts.SSHKey) {
 			continue
 		}
 		ts := a.Now().Unix()
@@ -591,21 +594,7 @@ func (a *Account) fromAgent(ctx context.Context, d chain.Device, opts LoginOptio
 			continue
 		}
 		a.UI.Printf("Unlocking with SSH key %s (slot %s); your agent may ask for confirmation.\n", key.Fingerprint, sl.SlotID)
-		secret, err := ag.Secret(key, ukey.SlotNamespace, ukey.SlotChallenge(a.State.User, sl.SlotID, sl.Salt))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		kek, err := ukey.SlotKEK(secret, sl.Salt)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		m, err := ukey.OpenSlot(sl.Box, kek, a.State.User, sl.SlotID)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		id, err := m.Check(st)
+		id, err := a.openSlot(ag, key, st, sl)
 		if err != nil {
 			lastErr = err
 			continue
@@ -613,6 +602,24 @@ func (a *Account) fromAgent(ctx context.Context, d chain.Device, opts LoginOptio
 		return id, st, sl.SlotID, nil
 	}
 	return nil, nil, "", lastErr
+}
+
+// openSlot derives the slot key from the agent's signature, opens the slot
+// box and checks the user key against the verified chain.
+func (a *Account) openSlot(ag *sshagent.Agent, key *sshagent.Key, st *chain.State, sl wire.AgentSlot) (*identity.Identity, error) {
+	secret, err := ag.Secret(key, ukey.SlotNamespace, ukey.SlotChallenge(a.State.User, sl.SlotID, sl.Salt))
+	if err != nil {
+		return nil, err
+	}
+	kek, err := ukey.SlotKEK(secret, sl.Salt)
+	if err != nil {
+		return nil, err
+	}
+	m, err := ukey.OpenSlot(sl.Box, kek, a.State.User, sl.SlotID)
+	if err != nil {
+		return nil, err
+	}
+	return m.Check(st)
 }
 
 // waitForApproval waits until a trusted device approves this one, then
