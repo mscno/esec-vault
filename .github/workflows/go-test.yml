@@ -41,3 +41,6 @@ jobs:
           go-version-file: go.mod
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
+        with:
+          # Keep in step with mise.toml.
+          version: v2.15.0
