@@ -1216,7 +1216,10 @@ func TestBodiesNeedASignatureFirst(t *testing.T) {
 	if st := rawPost(h, vm.c.Token, nil, nil, countingReader{bytes.NewReader(make([]byte, size)), &read}, size); st != http.StatusUnauthorized {
 		t.Fatalf("unsigned upload: HTTP %d", st)
 	}
-	if n := read.Load(); n > 1<<20 {
+	// read counts what the client sent, including what the kernel's socket
+	// buffers took (over 1 MiB on macOS runners), so allow a quarter of the
+	// upload; reading the body would take all of it.
+	if n := read.Load(); n > size/4 {
 		t.Fatalf("the server read %d bytes of an unsigned upload", n)
 	}
 	if st := rawPost(h, owner.c.Token, owner, []byte(`{}`), strings.NewReader(`{"x":1}`), 7); st != http.StatusUnauthorized {
