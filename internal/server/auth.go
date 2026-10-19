@@ -596,6 +596,9 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 			if err := s.db.audit(ctx, tx, user.ID, dev.ID, s.clientIP(r), "device_registered", dev.Name, now); err != nil {
 				return err
 			}
+			if err := s.queueAlert(ctx, tx, alertDeviceRegistered, user.ID, dev.ID, s.clientIP(r), "", now); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO sessions (token_hash, user_id, device_id, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
 			hashHex(token), user.ID, dev.ID, now.Unix(), now.Unix(), sessionExpires.Unix()); err != nil {
@@ -612,6 +615,7 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 		return
 	}
 	s.notify.wake(user.ID)
+	s.kickAlerts()
 	writeJSON(w, http.StatusOK, wire.TokenResponse{SessionToken: token, ExpiresAt: sessionExpires, User: user.wire(), Device: dev.wire(false)})
 }
 

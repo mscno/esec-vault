@@ -166,8 +166,30 @@ func (s *Server) webAccount(w http.ResponseWriter, r *http.Request) {
 	if vault != nil {
 		data["PushedBy"] = names[vault.PushedBy]
 	}
-	data["Notices"] = s.notices(devices, slots, len(links) > 0, enabledSlots, now)
+	alertNotice, err := s.alertData(ctx, data, ws.user.ID, now)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	data["Notices"] = append(s.notices(devices, slots, len(links) > 0, enabledSlots, now), alertNotice...)
 	s.render(w, http.StatusOK, "account.html", data)
+}
+
+// alertData adds the overview's alert section, and returns a notice that
+// suggests email alerts to an account without them.
+func (s *Server) alertData(ctx context.Context, data map[string]any, userID string, now time.Time) ([]notice, error) {
+	email, pending, err := s.db.alertAddresses(ctx, userID, now)
+	if err != nil {
+		return nil, err
+	}
+	data["EmailAlerts"] = s.cfg.Alerts.Email()
+	data["OperatorAlerts"] = len(s.cfg.Alerts.EmailTo) > 0 || s.cfg.Alerts.Webhook()
+	data["AlertEmail"] = email
+	data["AlertPending"] = pending
+	if !s.cfg.Alerts.Email() || email != "" || pending != "" {
+		return nil, nil
+	}
+	return []notice{{Level: "info", Text: "Get an email when a device signs in to your account, is approved, suspended or revoked, or when someone signs in here from a new browser.", Link: "#alerts", LinkTo: "Set up email alerts"}}, nil
 }
 
 // notices lists what needs the account owner's attention, most urgent first.
@@ -527,8 +549,16 @@ func (s *Server) webAdmin(w http.ResponseWriter, r *http.Request) {
 	data["Config"] = adminConfig{
 		BaseURL: s.cfg.BaseURL, ClientIPHeader: s.cfg.ClientIPHeader, VaultHistory: s.cfg.VaultHistory,
 		Allowed: len(s.cfg.Access.AllowedGitHubIDs), Idle: s.cfg.Sessions.Idle.Duration, Absolute: s.cfg.Sessions.Absolute.Duration,
+		EmailAlerts: s.cfg.Alerts.Email(), EmailFrom: s.cfg.Alerts.EmailFrom, OperatorEmails: len(s.cfg.Alerts.EmailTo),
+		Webhook: s.cfg.Alerts.Webhook(), WebhookSigned: s.cfg.Alerts.WebhookSecret != "",
 	}
 	data["NewDevicesClosed"] = s.cfg.newDevicesClosed()
+	alerts, err := s.db.alertStats(ctx, now.Add(-7*24*time.Hour))
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	data["Alerts"] = alerts
 	s.render(w, http.StatusOK, "admin.html", data)
 }
 
@@ -539,6 +569,12 @@ type adminConfig struct {
 	VaultHistory   int
 	Allowed        int
 	Idle, Absolute time.Duration
+	// Alerts: whether each channel is on, never the token or webhook URL.
+	EmailAlerts    bool
+	EmailFrom      string
+	OperatorEmails int
+	Webhook        bool
+	WebhookSigned  bool
 }
 
 // adminAccounts lists every allowed id and every account: allowed ones

@@ -125,6 +125,44 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
+func TestAlertConfigValidation(t *testing.T) {
+	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "s")
+	t.Setenv("ESEC_SERVER_BOOTSTRAP_TOKEN", "0123456789abcdef")
+	t.Setenv("ESEC_SERVER_BASE_URL", "https://vault.example.com")
+	t.Setenv("ESEC_SERVER_DB_PATH", "/data/db")
+	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_ID", "id")
+	t.Setenv("ESEC_SERVER_ALLOWED_GITHUB_IDS", "53101343")
+	for _, c := range []struct {
+		name string
+		env  map[string]string
+		ok   bool
+	}{
+		{"email alerts", map[string]string{"ESEC_SERVER_LETTERMINT_TOKEN": "lm_x", "ESEC_SERVER_ALERT_EMAIL_FROM": "esec vault <vault@example.com>", "ESEC_SERVER_ALERT_EMAIL_TO": "ops@example.com, sec@example.com"}, true},
+		{"token without sender", map[string]string{"ESEC_SERVER_LETTERMINT_TOKEN": "lm_x"}, false},
+		{"sender without token", map[string]string{"ESEC_SERVER_ALERT_EMAIL_FROM": "vault@example.com"}, false},
+		{"operator address with a name", map[string]string{"ESEC_SERVER_LETTERMINT_TOKEN": "lm_x", "ESEC_SERVER_ALERT_EMAIL_FROM": "vault@example.com", "ESEC_SERVER_ALERT_EMAIL_TO": "Ops <ops@example.com>"}, false},
+		{"webhook", map[string]string{"ESEC_SERVER_ALERT_WEBHOOK_URL": "https://hooks.example.com/x", "ESEC_SERVER_ALERT_WEBHOOK_SECRET": "s"}, true},
+		{"plain http webhook", map[string]string{"ESEC_SERVER_ALERT_WEBHOOK_URL": "http://hooks.example.com/x"}, false},
+		{"webhook secret alone", map[string]string{"ESEC_SERVER_ALERT_WEBHOOK_SECRET": "s"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, k := range []string{"ESEC_SERVER_LETTERMINT_TOKEN", "ESEC_SERVER_ALERT_EMAIL_FROM", "ESEC_SERVER_ALERT_EMAIL_TO", "ESEC_SERVER_ALERT_WEBHOOK_URL", "ESEC_SERVER_ALERT_WEBHOOK_SECRET"} {
+				t.Setenv(k, c.env[k])
+			}
+			cfg, err := LoadConfig("")
+			if (err == nil) != c.ok {
+				t.Fatalf("ok %t: %v", c.ok, err)
+			}
+			if err != nil && strings.Contains(err.Error(), "hooks.example.com") {
+				t.Fatalf("the error shows the webhook URL: %v", err)
+			}
+			if c.name == "email alerts" && (!cfg.Alerts.Email() || len(cfg.Alerts.EmailTo) != 2) {
+				t.Fatalf("email alerts: %+v", cfg.Alerts.EmailTo)
+			}
+		})
+	}
+}
+
 // TestDeployConfigLoads keeps the shipped example configuration valid.
 func TestDeployConfigLoads(t *testing.T) {
 	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "s")
@@ -312,5 +350,13 @@ func TestClientIPUsesLastHeaderLine(t *testing.T) {
 	r.Header.Add("X-Forwarded-For", "203.0.113.7")
 	if ip := s.clientIP(r); ip != "203.0.113.7" {
 		t.Fatalf("client IP %s", ip)
+	}
+}
+
+func TestWebhookTextIsEscaped(t *testing.T) {
+	a := &alert{Text: "<https://evil.example|approve> & more", IP: "203.0.113.7", URL: "https://vault.example.com/account", Link: "secret"}
+	got := webhookBody(a)
+	if got.Text != "esec vault: &lt;https://evil.example|approve&gt; &amp; more (from 203.0.113.7) https://vault.example.com/account" || got.Link != "" {
+		t.Fatalf("%+v", got)
 	}
 }

@@ -21,6 +21,18 @@ const (
 
 // knownBrowser reports whether the request carries the cookie of a browser
 // that signed in before, for an account that is still allowed.
+// knownBy reports whether this browser signed in to the account before (and
+// did not sign out since).
+func (s *Server) knownBy(r *http.Request, userID string) bool {
+	c, err := r.Cookie(s.cookieName("esec_known"))
+	if err != nil || c.Value == "" {
+		return false
+	}
+	var n int
+	err = s.db.sql.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM known_browsers WHERE token_hash = ? AND user_id = ? AND expires_at > ?`, hashHex(c.Value), userID, s.now().Unix()).Scan(&n)
+	return err == nil && n > 0
+}
+
 func (s *Server) knownBrowser(r *http.Request) bool {
 	c, err := r.Cookie(s.cookieName("esec_known"))
 	if err != nil || c.Value == "" {
@@ -253,10 +265,21 @@ func (s *Server) webGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	if err := s.db.audit(ctx, s.db.sql, u.ID, "", ip, "web_login", gh.Login, now); err != nil {
+	newBrowser := !s.knownBy(r, u.ID)
+	err = s.db.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.db.audit(ctx, tx, u.ID, "", ip, "web_login", gh.Login, now); err != nil {
+			return err
+		}
+		if !newBrowser {
+			return nil
+		}
+		return s.queueAlert(ctx, tx, alertNewBrowser, u.ID, "", ip, browserSummary(r.UserAgent()), now)
+	})
+	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
+	s.kickAlerts()
 	s.setCookie(w, "esec_session", sid, webSessionTTL)
 	// Remember this browser: during a flood of sign-in attempts, browsers
 	// that signed in before skip the server-wide cap.

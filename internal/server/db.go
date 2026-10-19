@@ -141,12 +141,33 @@ var schema = []string{
 		created_at INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS audit_user ON audit(user_id, id)`,
 	`CREATE INDEX IF NOT EXISTS audit_created ON audit(created_at)`,
+	// alert_outbox queues alerts until they are delivered; see alerts.go.
+	`CREATE TABLE IF NOT EXISTS alert_outbox (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL,
+		channel TEXT NOT NULL,
+		recipient TEXT NOT NULL DEFAULT '',
+		payload BLOB NOT NULL,
+		created_at INTEGER NOT NULL,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		next_at INTEGER NOT NULL,
+		sent_at INTEGER NOT NULL DEFAULT 0,
+		failed_at INTEGER NOT NULL DEFAULT 0,
+		last_error TEXT NOT NULL DEFAULT '')`,
+	`CREATE INDEX IF NOT EXISTS alert_outbox_due ON alert_outbox(sent_at, failed_at, next_at)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 
 var addedColumns = []struct{ table, column, def string }{
 	{"web_sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"},
 	{"web_sessions", "ip", "TEXT NOT NULL DEFAULT ''"},
+	// The confirmed address for alert emails, and one waiting for its
+	// owner to open the confirmation link.
+	{"users", "alert_email", "TEXT NOT NULL DEFAULT ''"},
+	{"users", "alert_email_pending", "TEXT NOT NULL DEFAULT ''"},
+	{"users", "alert_email_token", "TEXT NOT NULL DEFAULT ''"},
+	{"users", "alert_email_expires", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 // addColumn adds a column to a table unless it is already there.
@@ -486,6 +507,8 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM events WHERE created_at < ?`, []any{unix(now.Add(-30 * 24 * time.Hour))}},
 		// Audit retention: a year, and at most auditKeep entries per account.
 		{`DELETE FROM audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
+		{`DELETE FROM alert_outbox WHERE (sent_at > 0 OR failed_at > 0) AND created_at < ?`, []any{unix(now.Add(-alertKeep))}},
+		{`UPDATE users SET alert_email_pending = '', alert_email_token = '', alert_email_expires = 0 WHERE alert_email_expires > 0 AND alert_email_expires < ?`, []any{unix(now)}},
 	}
 	for _, s := range stmts {
 		if _, err := d.sql.ExecContext(ctx, s.q, s.args...); err != nil {

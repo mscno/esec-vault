@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/mscno/esec-vault/internal/server"
 )
@@ -21,6 +22,7 @@ func main() {
 	configPath := flag.String("config", os.Getenv("ESEC_SERVER_CONFIG"), "path to the server TOML config")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	tokenFor := flag.Int64("bootstrap-token-for", 0, "print the account creation token for this numeric GitHub user id and exit")
+	testAlert := flag.Bool("test-alert", false, "send a test alert to the operator's email addresses and webhook, and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(buildVersion())
@@ -34,6 +36,9 @@ func main() {
 		}
 		fmt.Println(server.UserBootstrapToken(secret, *tokenFor))
 		return
+	}
+	if *testAlert {
+		os.Exit(sendTestAlert(*configPath))
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(*configPath, log); err != nil {
@@ -60,6 +65,25 @@ func run(configPath string, log *slog.Logger) error {
 	defer stop()
 	log.Info("starting", "version", buildVersion(), "allowed_users", len(cfg.Access.AllowedGitHubIDs))
 	return srv.Run(ctx)
+}
+
+func sendTestAlert(configPath string) int {
+	cfg, err := server.LoadConfig(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	errs := server.SendTestAlert(ctx, cfg, buildVersion())
+	for _, err := range errs {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	if len(errs) > 0 {
+		return 1
+	}
+	fmt.Println("test alert sent")
+	return 0
 }
 
 func buildVersion() string {

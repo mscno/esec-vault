@@ -52,6 +52,9 @@ type Server struct {
 	// version and started are shown on the admin page.
 	version string
 	started time.Time
+	// alertKick wakes the alert worker; alertHTTP delivers alerts.
+	alertKick chan struct{}
+	alertHTTP *http.Client
 }
 
 // Option customizes a Server, mainly for tests.
@@ -83,6 +86,7 @@ func WithGitHub(g GitHub) Option { return func(s *Server) { s.github = g } }
 func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error) {
 	s := &Server{cfg: cfg, db: db, log: log, now: time.Now, version: "dev", anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), bodies: newBodyBudget(maxBodyActive, maxBodyPerAccount), pendingSmall: newBodyBudget(maxPendingSmall, maxPendingPerDevice), pendingLarge: newBodyBudget(maxPendingLarge, maxLargeBody), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates, regPerAddr: 10, regPerNet: 100}
 	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
+	s.alertKick, s.alertHTTP = make(chan struct{}, 1), newAlertClient()
 	for _, o := range opts {
 		o(s)
 	}
@@ -132,6 +136,9 @@ func (s *Server) Run(ctx context.Context) error {
 		MaxHeaderBytes:    64 << 10,
 	}
 	go s.housekeeping(ctx)
+	if s.alertsOn() {
+		go s.alertWorker(ctx)
+	}
 	if s.cfg.ClientIPHeader == "" && s.cfg.Secure() {
 		s.log.Warn("client_ip_header is not set: rate limits and audit addresses use the TCP peer; behind a reverse proxy that is the proxy, so set client_ip_header")
 	}
@@ -188,6 +195,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /account/sessions/{device}/end", s.webEndSessions)
 	m.HandleFunc("POST /account/slots/{id}/disable", s.webDisableSlot)
 	m.HandleFunc("POST /account/browsers/{id}/end", s.webEndBrowser)
+	m.HandleFunc("POST /account/alerts", s.webSetAlertEmail)
+	m.HandleFunc("POST /account/alerts/remove", s.webRemoveAlertEmail)
+	m.HandleFunc("GET /alerts/confirm", s.webAlertConfirmPage)
+	m.HandleFunc("POST /alerts/confirm", s.webAlertConfirm)
 	m.HandleFunc("GET /admin", s.webAdmin)
 	m.HandleFunc("GET /admin/users/{id}", s.webAdminUser)
 

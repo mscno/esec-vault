@@ -130,6 +130,27 @@
 <form method="post" action="/account/browsers/others/end"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Sign out every other browser</button></form>
 {{end}}
 
+<h2 id="alerts">Alerts</h2>
+{{if .EmailAlerts}}
+<p class="muted">An email when a device signs in to your account, is approved, suspended or revoked, and when someone signs in here from a new browser.</p>
+{{if .AlertEmail}}<p>Alerts go to <strong>{{.AlertEmail}}</strong>.</p>{{end}}
+{{with .AlertPending}}<p>Waiting for you to confirm <strong>{{.}}</strong>: open the link sent there. It works for a day.</p>{{end}}
+<form method="post" action="/account/alerts" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label for="alert-email">{{if .AlertEmail}}New address{{else}}Email address{{end}}</label>
+  <div class="search">
+    <input type="email" id="alert-email" name="email" required maxlength="254" autocomplete="email" placeholder="name@example.com">
+    <button type="submit">Send confirmation</button>
+  </div>
+</form>
+{{if or .AlertEmail .AlertPending}}
+<form method="post" action="/account/alerts/remove" data-confirm="Stop emailing alerts about this account?{{if .AlertEmail}} {{.AlertEmail}} gets one last email saying so.{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Turn off email alerts</button></form>
+{{end}}
+{{else}}
+<p class="muted">This server does not send email alerts.</p>
+{{end}}
+{{if .OperatorAlerts}}<p class="muted">The server operator also receives these alerts for every account.</p>{{end}}
+
 <h2>Recent activity</h2>
 <div class="scroll">
 <table>

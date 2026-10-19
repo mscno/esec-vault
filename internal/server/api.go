@@ -267,10 +267,14 @@ func (s *Server) suspend(ctx context.Context, userID, actorDevice, target, ip st
 		if err := s.db.addEvent(ctx, tx, userID, wire.EventDeviceStatus, target, now); err != nil {
 			return err
 		}
-		return s.db.audit(ctx, tx, userID, actorDevice, ip, "device_suspended", target, now)
+		if err := s.db.audit(ctx, tx, userID, actorDevice, ip, "device_suspended", target, now); err != nil {
+			return err
+		}
+		return s.queueAlert(ctx, tx, alertDeviceSuspended, userID, target, ip, "", now)
 	})
 	if err == nil {
 		s.notify.wake(userID)
+		s.kickAlerts()
 	}
 	return err
 }
@@ -553,6 +557,7 @@ func (s *Server) apiCommit(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		return
 	}
 	s.notify.wake(c.user.ID)
+	s.kickAlerts()
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -613,7 +618,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 			initOrRotate = true
 		case chain.TypeUKeyRotate:
 			initOrRotate = true
-			if err := s.applyRotate(ctx, tx, c.user.ID, next, now); err != nil {
+			if err := s.applyRotate(ctx, tx, c.user.ID, c.ip, next, now); err != nil {
 				return nil, err
 			}
 		case chain.TypeDeviceAdd:
@@ -625,7 +630,7 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 			if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 				return nil, err
 			}
-			if err := s.setRevoked(ctx, tx, c.user.ID, b.DeviceID, now); err != nil {
+			if err := s.setRevoked(ctx, tx, c.user.ID, b.DeviceID, c.ip, now); err != nil {
 				return nil, err
 			}
 		case chain.TypeDeviceRename:
@@ -849,27 +854,40 @@ func (s *Server) applyDeviceAdd(ctx context.Context, tx *sql.Tx, c *reqCtx, l ch
 	if err := s.db.addEvent(ctx, tx, c.user.ID, wire.EventDeviceStatus, b.Device.ID, now); err != nil {
 		return err
 	}
-	return s.db.audit(ctx, tx, c.user.ID, c.device.ID, c.ip, "device_added", b.Device.ID+" via "+b.Method, now)
+	if err := s.db.audit(ctx, tx, c.user.ID, c.device.ID, c.ip, "device_added", b.Device.ID+" via "+b.Method, now); err != nil {
+		return err
+	}
+	return s.queueAlert(ctx, tx, alertDeviceAdded, c.user.ID, b.Device.ID, c.ip, "", now)
 }
 
-func (s *Server) setRevoked(ctx context.Context, tx *sql.Tx, userID, deviceID string, now time.Time) error {
+func (s *Server) setRevoked(ctx context.Context, tx *sql.Tx, userID, deviceID, ip string, now time.Time) error {
+	var was string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM devices WHERE id = ? AND user_id = ?`, deviceID, userID).Scan(&was); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE devices SET status = ? WHERE id = ? AND user_id = ?`, wire.DeviceRevoked, deviceID, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at = 0`, now.Unix(), deviceID); err != nil {
 		return err
 	}
-	return s.db.addEvent(ctx, tx, userID, wire.EventDeviceStatus, deviceID, now)
+	if err := s.db.addEvent(ctx, tx, userID, wire.EventDeviceStatus, deviceID, now); err != nil {
+		return err
+	}
+	if was == "" || was == wire.DeviceRevoked {
+		return nil
+	}
+	return s.queueAlert(ctx, tx, alertDeviceRevoked, userID, deviceID, ip, "", now)
 }
 
-func (s *Server) applyRotate(ctx context.Context, tx *sql.Tx, userID string, next *chain.State, now time.Time) error {
+func (s *Server) applyRotate(ctx context.Context, tx *sql.Tx, userID, ip string, next *chain.State, now time.Time) error {
 	rows, err := s.db.devicesOf(ctx, tx, userID)
 	if err != nil {
 		return err
 	}
 	for _, r := range rows {
 		if (r.Status == wire.DeviceActive || r.Status == wire.DeviceSuspended) && next.Devices[r.ID] != nil && next.Devices[r.ID].Status == chain.StatusRevoked {
-			if err := s.setRevoked(ctx, tx, userID, r.ID, now); err != nil {
+			if err := s.setRevoked(ctx, tx, userID, r.ID, ip, now); err != nil {
 				return err
 			}
 		}

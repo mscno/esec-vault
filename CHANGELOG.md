@@ -1,3 +1,29 @@
+# v0.6.0
+
+Security alerts by email and webhook.
+
+- The server alerts on a new device that signed in and waits for approval,
+  an approved device (or a new account), a suspended or revoked device, and
+  a web sign-in from a browser the account never used.
+- **Email** goes through Lettermint's sending API: set `alerts.email_from`
+  and `ESEC_SERVER_LETTERMINT_TOKEN`. Each person can enter an address under
+  **Alerts** on the overview; it gets alerts only after they open the
+  emailed link and press Confirm (mail scanners that open links confirm
+  nothing). A changed or removed address is told. `alerts.email_to` sends
+  every account's alerts to the operator as well.
+- **Webhook**: `ESEC_SERVER_ALERT_WEBHOOK_URL` gets every alert as JSON with
+  a Slack-ready `text`, signed with HMAC-SHA256 when
+  `ESEC_SERVER_ALERT_WEBHOOK_SECRET` is set (`X-Esec-Vault-Signature`).
+- Alerts are queued in the database with the event, so none are lost, and
+  are retried for about 11 hours. Email retries reuse an idempotency key.
+  Delivery errors never contain the webhook URL or the token.
+- The Admin page shows whether each channel is on, the alerts sent, waiting
+  and failed in the last 7 days, and the last error.
+  `esec-vault-server -test-alert` sends a test alert to the operator's
+  channels.
+- The database gains an `alert_outbox` table and four `users` columns. Both
+  are additive: v0.5.0 still opens the database after a rollback.
+
 # v0.5.0
 
 Web pages for people and for the operator. They still read only metadata:

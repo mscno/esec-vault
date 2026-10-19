@@ -167,6 +167,9 @@ var auditKinds = map[string]auditKind{
 	"chain_agent_slot_add":    {"SSH-agent slot added", ""},
 	"chain_agent_slot_remove": {"SSH-agent slot removed", ""},
 	"login_denied":            {"Sign-in refused: not allowed", "bad"},
+	"alert_email_requested":   {"Alert address entered", ""},
+	"alert_email_confirmed":   {"Alert address confirmed", "good"},
+	"alert_email_removed":     {"Email alerts turned off", "bad"},
 }
 
 // auditCategory groups actions for the activity filter.
@@ -181,6 +184,7 @@ var auditCategories = []auditCategory{
 	{"devices", "Devices", []string{"device_added", "device_suspended", "chain_device_add", "chain_device_revoke", "chain_device_rename"}},
 	{"vault", "Vault and keys", []string{"vault_put", "commit", "chain_init", "chain_ukey_rotate"}},
 	{"slots", "SSH-agent slots", []string{"agent_slot_disabled", "chain_agent_slot_add", "chain_agent_slot_remove"}},
+	{"alerts", "Alerts", []string{"alert_email_requested", "alert_email_confirmed", "alert_email_removed"}},
 }
 
 // securityActions are the entries the admin page shows by default: refusals,
@@ -188,6 +192,7 @@ var auditCategories = []auditCategory{
 var securityActions = []string{
 	"login_denied", "device_code_denied", "device_registered", "device_added", "device_suspended",
 	"sessions_ended", "web_sessions_ended", "agent_slot_disabled", "chain_init", "chain_device_revoke", "chain_ukey_rotate",
+	"alert_email_removed",
 }
 
 func categoryActions(key string) []string {

@@ -148,6 +148,13 @@ func Start(t *testing.T, allowed ...int64) *Harness {
 // StartWith is Start with extra server options.
 func StartWith(t *testing.T, opts []server.Option, allowed ...int64) *Harness {
 	t.Helper()
+	return StartConfig(t, opts, nil, allowed...)
+}
+
+// StartConfig is StartWith with a function that adjusts the configuration
+// before it is validated.
+func StartConfig(t *testing.T, opts []server.Option, edit func(*server.Config), allowed ...int64) *Harness {
+	t.Helper()
 	gh := newFakeGitHub(t)
 	clock := &Clock{}
 	db, err := server.OpenDB(filepath.Join(t.TempDir(), "vault.db"))
@@ -170,6 +177,9 @@ func StartWith(t *testing.T, opts []server.Option, allowed ...int64) *Harness {
 	cfg.BootstrapToken = BootstrapSecret
 	cfg.Sessions.Idle.Duration = 30 * 24 * time.Hour
 	cfg.Sessions.Absolute.Duration = 90 * 24 * time.Hour
+	if edit != nil {
+		edit(cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}

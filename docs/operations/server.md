@@ -73,6 +73,12 @@ Every setting can be overridden from the environment:
 | `ESEC_SERVER_CLIENT_IP_HEADER` | `client_ip_header`; set only behind a proxy that sets it |
 | `ESEC_SERVER_VAULT_HISTORY` | `vault_history` (default 50) |
 | `ESEC_SERVER_NEW_DEVICES` | `new_devices`: `open` (default) or `closed`, the emergency switch below |
+| `ESEC_SERVER_ALERT_EMAIL_FROM` | `alerts.email_from` |
+| `ESEC_SERVER_ALERT_EMAIL_TO` | `alerts.email_to`, comma-separated |
+| `ESEC_SERVER_LETTERMINT_ROUTE` | `alerts.lettermint_route` |
+| `ESEC_SERVER_LETTERMINT_TOKEN` | Lettermint project token (environment only) |
+| `ESEC_SERVER_ALERT_WEBHOOK_URL` | Webhook for alerts (environment only: chat webhook URLs are secrets) |
+| `ESEC_SERVER_ALERT_WEBHOOK_SECRET` | Signs webhook posts (environment only) |
 
 `base_url` must use https. Plain http is accepted only for `localhost`.
 
@@ -226,7 +232,7 @@ everyone who checks them.
 | Event | Response |
 |---|---|
 | Lost or stolen device | On a trusted device: `esec vault devices revoke <id>`. Or suspend it at once on the web overview or the device's page, then revoke. Rotate the environment keys it could read (`esec vault env rotate`) and the secret values at their providers. |
-| Unknown pending device | Do not approve it. Suspend it on the web overview. Check the **Activity** page, and secure your GitHub account. |
+| Unknown pending device | Do not approve it. Suspend it on the web overview. Check the **Activity** page, and secure your GitHub account. With [alerts](#send-alerts) on, you are told when one appears. |
 | Unknown device added via SSH agent | Revoke it. Disable the slot (`esec vault agent-unlock disable`). Treat the SSH key as exposed. |
 | Server compromised | The attacker gets metadata and can deny service. They cannot decrypt anything or add devices: clients verify the chain and refuse rollbacks. Redeploy from a clean image, rotate the GitHub client secret and Litestream credentials, and review the audit log. |
 | GitHub account taken over | The attacker can create pending devices but cannot decrypt anything without approval, the recovery phrase, or an SSH-agent slot. Secure the GitHub account, then suspend any unknown devices. |
@@ -243,6 +249,84 @@ fly secrets set --config deploy/fly.toml ESEC_SERVER_NEW_DEVICES=closed
 While closed, devices that are already trusted can still sign in, and so can
 browsers that signed in before. New devices and new browsers are refused.
 Set it back to `open` when the attack is over; nothing else changes.
+
+## Send alerts
+
+The server can tell people about security events on their account:
+
+- a new device signed in and waits for approval;
+- a device was approved (or the account was created);
+- a device was suspended or revoked;
+- someone signed in on the web from a browser the account never used, or
+  one that signed out since.
+
+Alerts go by email, through [Lettermint](https://lettermint.co), and to a
+webhook. Both are optional, and the server runs without either.
+
+**Email.** Verify a sending domain in Lettermint, create a project token,
+then:
+
+```toml
+[alerts]
+email_from = "esec vault <vault@example.com>"
+email_to = ["security@example.com"]   # the operator: every account's alerts
+```
+
+```sh
+fly secrets set --config deploy/fly.toml ESEC_SERVER_LETTERMINT_TOKEN=lm_...
+```
+
+With email on, each person can enter an address under **Alerts** on their
+overview. Alerts go there only after they open the confirmation link sent to
+it and press **Confirm**. When the address changes or alerts are turned
+off, the old address is told. `email_to` is optional; without it, only
+people who confirmed an address get email. Emails are plain text, with open
+and click tracking off.
+
+**Webhook.** Set `ESEC_SERVER_ALERT_WEBHOOK_URL` (it receives every
+account's alerts) and, to sign posts, `ESEC_SERVER_ALERT_WEBHOOK_SECRET`.
+Each post is JSON:
+
+```json
+{"id": "alt_42", "type": "device.registered", "time": "2026-10-19T20:23:52Z",
+ "server": "https://vault.example.com",
+ "account": {"id": "gh:53101343", "github_id": 53101343, "github_login": "mscno"},
+ "device": {"id": "d_...", "name": "laptop", "platform": "darwin/arm64"},
+ "ip": "203.0.113.7", "title": "New device waiting for approval",
+ "text": "esec vault: A new device, \"laptop\" ... https://vault.example.com/devices/d_...",
+ "url": "https://vault.example.com/devices/d_..."}
+```
+
+`type` is `device.registered`, `device.added`, `device.suspended`,
+`device.revoked` or `web.new_browser`. `text` is the whole message, so a
+Slack incoming webhook shows it as is. The headers are
+`X-Esec-Vault-Event` (the type), `X-Esec-Vault-Delivery` (the id),
+`X-Esec-Vault-Timestamp` (Unix seconds) and, with a secret,
+`X-Esec-Vault-Signature`: `sha256=` and the hex HMAC-SHA256, keyed with the
+secret, of the timestamp, a `.`, and the raw body. Check it in constant time
+and reject old timestamps.
+
+**Delivery.** Alerts are queued in the database in the same transaction as
+the event, so a crash or restart loses none. A worker sends them within
+seconds and retries failures for about 11 hours (server errors, timeouts,
+rate limits). An email Lettermint rejects, or a webhook answering 4xx, is not
+retried. Retries reuse a Lettermint idempotency key, so an email is never
+sent twice. The Admin page shows how many alerts were sent, are waiting or
+failed in the last 7 days, and the last error. Sent and failed alerts are
+deleted after 30 days.
+
+Check the setup from the server:
+
+```sh
+fly ssh console --config deploy/fly.toml -C "esec-vault-server -test-alert"
+```
+
+It sends a test alert to `email_to` and the webhook right away and prints
+any error.
+
+Alerts carry metadata the server already holds: logins, device names and
+platforms, addresses, times. Lettermint and the webhook's receiver see it.
+They never carry keys or the words a new device shows.
 
 ## Monitor
 
@@ -262,3 +346,5 @@ Set it back to `open` when the attack is over; nothing else changes.
   account has a page with its devices and activity. It never shows keys,
   fingerprint words or account creation tokens, and it cannot change
   anything: only the account owner suspends devices or ends sessions.
+  It also shows whether email and webhook alerts are on, and their delivery
+  in the last 7 days.

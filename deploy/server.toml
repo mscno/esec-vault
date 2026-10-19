@@ -30,3 +30,11 @@ admin_github_ids = [
 [sessions]
 idle = "720h"      # 30 days
 absolute = "2160h" # 90 days
+
+# Security alerts: new, approved, suspended and revoked devices, and web
+# sign-ins from new browsers. Email goes through Lettermint and needs
+# ESEC_SERVER_LETTERMINT_TOKEN; a webhook needs ESEC_SERVER_ALERT_WEBHOOK_URL
+# (and optionally ESEC_SERVER_ALERT_WEBHOOK_SECRET). Without them, no alerts.
+# [alerts]
+# email_from = "esec vault <vault@example.com>"
+# email_to = ["security@example.com"]

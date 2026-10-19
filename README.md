@@ -204,6 +204,9 @@ Sign in at your server with GitHub. The pages never decrypt anything.
   environment an encrypted file belongs to.
 - **Vault**: the stored versions of your vault, with who pushed each.
 - **Enter a code**: confirm a device sign-in.
+- **Alerts** (on the overview, when the server sends email): get an email
+  when a device signs in to your account, is approved, suspended or
+  revoked, or when someone signs in on the web from a new browser.
 
 Each device publishes the project index with its vault pushes. Turn it off on
 a device with:

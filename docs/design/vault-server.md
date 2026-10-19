@@ -583,6 +583,9 @@ identity_blobs(user_id, ukey_version, blob)       -- master-wrapped U
 vault_versions(user_id, version, blob, sig, index_json, sha256, pushed_by, created_at)
 agent_slots(id, user_id, ssh_key_fp, salt, box, ukey_version, expires_at, disabled_at)
 audit(id, user_id, device_id, ip, action, detail_json, created_at)
+alert_outbox(id, user_id, kind, channel[email|webhook], recipient, payload, created_at,
+             attempts, next_at, sent_at, failed_at, last_error)
+users.alert_email, alert_email_pending, alert_email_token (hash), alert_email_expires
 ```
 
 ### API
@@ -619,11 +622,24 @@ and a request signed with `D.sign`.
 | `/activity` | The account's audit log, filtered by kind or device, paged |
 | `/projects` | The published project index: projects, environments, public keys; search |
 | `/vault` | Stored vault versions: size, hash, pushing device |
-| `/admin`, `/admin/users/{id}` | Read-only, for `admin_github_ids`: server status, accounts, server-wide security events. No keys, fingerprints or creation tokens |
+| `/admin`, `/admin/users/{id}` | Read-only, for `admin_github_ids`: server status, alert delivery, accounts, server-wide security events. No keys, fingerprints or creation tokens |
+| `/alerts/confirm` | Confirms an alert address from the emailed link. Opening the link changes nothing (mail scanners open links); the button does |
 
 The pages use secure cookies (`SameSite=Lax` for OAuth), CSRF tokens, a strict
 CSP, and no third-party scripts. One first-party script adds copy buttons,
 confirmations, local times and table filters; every page works without it.
+
+### Alerts
+
+Security events (a device signed in, approved, suspended or revoked, a web
+sign-in from a new browser) are queued in `alert_outbox` in the transaction
+that records them, and a worker delivers them: email through Lettermint to
+the account's confirmed address and the operator's `email_to`, and a signed
+JSON post to the operator's webhook. Retries back off for about 11 hours;
+4xx answers are final. An address gets alerts only after its owner opens the
+emailed link and presses Confirm; a change or removal is told to the old
+address, so someone in the browser cannot silently redirect alerts. Alerts
+carry only metadata the server already holds.
 
 ### Rate limits
 
@@ -688,7 +704,8 @@ secret store.
 | Attacker | Outcome |
 |---|---|
 | Full server and database compromise | Metadata (devices, times, IPs, and project/env names if the index is on); refuse service; delete data (local cache plus offline remotes are the fallback); hold back updates (heads pinned). **Cannot** decrypt, add devices, or plant keys: chain links, vault blobs and the index are signed by U. Cannot inject a fake U into existing devices. A brand-new device is protected by the account-key words (§4). |
-| GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. At most 50 devices wait for approval at once; beyond that the oldest is dropped, so the owner's new device always gets in. Before the user's first login, the attacker could create the account with their own keys. A machine holding the user's identity refuses to join it (different master key), and a new device sees unknown account-key words. |
+| GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices, notifications and, with alerts on, an email and webhook post for each new device and new browser. Turning email alerts off or changing the address tells the old address. At most 50 devices wait for approval at once; beyond that the oldest is dropped, so the owner's new device always gets in. Before the user's first login, the attacker could create the account with their own keys. A machine holding the user's identity refuses to join it (different master key), and a new device sees unknown account-key words. |
+| Alert channel compromised (Lettermint or the webhook receiver) | It sees the alerts' metadata (logins, device names, addresses, times) and can drop alerts. It cannot affect the vault: alerts carry no keys, words or tokens except an address's own confirmation link. |
 | An admin's GitHub account taken over | The admin pages are read-only: the attacker sees every account's metadata (logins, device names, addresses, activity, storage) and which allowed ids have no account yet, but cannot change anything, see keys or fingerprint words, or get account creation tokens. Keep `admin_github_ids` short, and secure admins' GitHub accounts as you would the server. |
 | Takeover before the first login | Creating an account needs the server's bootstrap token, which the operator hands out separately; a GitHub session alone cannot create one. If the token also leaked: a machine with the user's identity refuses the foreign account, and a new device warns that the account already exists and asks for the account key, which a user who never set up esec vault must reject. |
 | Flooding sign-ins from thousands of networks | Availability only: new devices and new browsers may have to wait for the flood to pass. Devices and browsers that signed in before keep working, and nothing is disclosed. The operator can also close the server to new devices (`new_devices = "closed"`) until it passes. Floods of that size are otherwise a job for upstream protection (a proxy or WAF), as for any internet service. |

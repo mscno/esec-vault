@@ -1,0 +1,15 @@
+{{template "head" .}}
+{{if .Done}}
+<h1>Alerts confirmed</h1>
+<p>Alerts about <strong>{{.Login}}</strong>'s esec vault account now go to <strong>{{.Email}}</strong>.</p>
+<p><a href="/account">Overview</a></p>
+{{else}}
+<h1>Confirm your alert address</h1>
+<p>Send alerts about <strong>{{.Login}}</strong>'s esec vault account to <strong>{{.Email}}</strong>?</p>
+<p class="muted">You get an email when a device signs in to the account, is approved, suspended or revoked, and when someone signs in on the web from a new browser. If you did not ask for this, close this page.</p>
+<form method="post" action="/alerts/confirm" class="inline">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <button type="submit">Confirm</button>
+</form>
+{{end}}
+{{template "foot" .}}

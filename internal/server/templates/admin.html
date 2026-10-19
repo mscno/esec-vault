@@ -28,6 +28,15 @@
   <tr><th>Audit log</th><td>{{.Stats.AuditEntries}} entries{{if .Stats.AuditEntries}}, the oldest {{dur .Stats.OldestAuditAge}} old{{end}}</td></tr>
 </table>
 
+<h2>Alerts</h2>
+<table class="kv">
+  <tr><th>Email</th><td>{{if .Config.EmailAlerts}}<span class="badge status-active">on</span> from <code>{{.Config.EmailFrom}}</code> through Lettermint, to {{plural .Alerts.Addresses "account"}} with a confirmed address{{if .Config.OperatorEmails}} and {{plural .Config.OperatorEmails "operator address"}}{{end}}{{else}}<span class="badge">off</span> <span class="muted">set <code>alerts.email_from</code> and <code>ESEC_SERVER_LETTERMINT_TOKEN</code></span>{{end}}</td></tr>
+  <tr><th>Webhook</th><td>{{if .Config.Webhook}}<span class="badge status-active">on</span>{{if .Config.WebhookSigned}} signed{{else}} <span class="muted">unsigned: set <code>ESEC_SERVER_ALERT_WEBHOOK_SECRET</code></span>{{end}}{{else}}<span class="badge">off</span> <span class="muted">set <code>ESEC_SERVER_ALERT_WEBHOOK_URL</code></span>{{end}}</td></tr>
+  <tr><th>Last 7 days</th><td>{{.Alerts.Sent}} sent{{if .Alerts.Waiting}} · {{.Alerts.Waiting}} waiting{{end}}{{if .Alerts.Failed}} · <span class="event tone-bad">{{.Alerts.Failed}} failed</span>{{end}}</td></tr>
+  {{if .Alerts.LastError}}<tr><th>Last error</th><td><code>{{.Alerts.LastError}}</code> <span class="muted">(alert from {{ago .Alerts.LastFailure}})</span></td></tr>{{end}}
+</table>
+{{if or .Config.EmailAlerts .Config.Webhook}}<p class="muted">Check delivery with {{template "cmd" "esec-vault-server -test-alert"}}</p>{{end}}
+
 <h2>People</h2>
 <input type="search" class="filter" placeholder="Filter people" aria-label="Filter people" data-filter="#people" hidden>
 <div class="scroll">

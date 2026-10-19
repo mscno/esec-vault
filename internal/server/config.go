@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/mail"
 	"net/url"
 	"os"
 	"slices"
@@ -42,7 +43,42 @@ type Config struct {
 	GitHub   GitHubConfig   `toml:"github"`
 	Access   AccessConfig   `toml:"access"`
 	Sessions SessionsConfig `toml:"sessions"`
+	Alerts   AlertsConfig   `toml:"alerts"`
 }
+
+// AlertsConfig configures security alerts: an email (sent through
+// Lettermint) to each account that confirmed an address and to the operator,
+// and a webhook post to the operator. Both are optional.
+type AlertsConfig struct {
+	// EmailFrom is the sender, such as "esec vault <vault@example.com>". Its
+	// domain must be verified in Lettermint.
+	EmailFrom string `toml:"email_from"`
+	// EmailTo are the operator's addresses: they receive every account's
+	// alerts.
+	EmailTo []string `toml:"email_to"`
+	// LettermintRoute picks a Lettermint route; empty uses the project's
+	// default.
+	LettermintRoute string `toml:"lettermint_route"`
+	// LettermintAPIURL defaults to https://api.lettermint.co/v1; tests point
+	// it elsewhere.
+	LettermintAPIURL string `toml:"lettermint_api_url"`
+	// LettermintToken is a Lettermint project token, read from
+	// ESEC_SERVER_LETTERMINT_TOKEN only.
+	LettermintToken string `toml:"-"`
+	// WebhookURL receives every alert as a JSON post (Slack-compatible). It
+	// is read from ESEC_SERVER_ALERT_WEBHOOK_URL only: chat webhook URLs are
+	// secrets.
+	WebhookURL string `toml:"-"`
+	// WebhookSecret, from ESEC_SERVER_ALERT_WEBHOOK_SECRET, signs each post
+	// (HMAC-SHA256, see the X-Esec-Vault-Signature header).
+	WebhookSecret string `toml:"-"`
+}
+
+// Email reports whether email alerts are configured.
+func (a AlertsConfig) Email() bool { return a.LettermintToken != "" && a.EmailFrom != "" }
+
+// Webhook reports whether webhook alerts are configured.
+func (a AlertsConfig) Webhook() bool { return a.WebhookURL != "" }
 
 // GitHubConfig configures the GitHub OAuth app.
 type GitHubConfig struct {
@@ -178,11 +214,63 @@ func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent
 		errs = append(errs, errors.New("sessions: idle must be at least 1h and absolute between idle and 366 days"))
 	}
 	for _, raw := range []string{c.GitHub.WebURL, c.GitHub.APIURL} {
-		if gu, err := url.Parse(raw); err != nil || gu.Host == "" || (gu.Scheme != "https" && (gu.Scheme != "http" || !isLoopback(gu.Hostname()))) {
+		if !webURL(raw) {
 			errs = append(errs, fmt.Errorf("invalid GitHub URL %q", raw))
 		}
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, c.Alerts.validate()...)...)
+}
+
+func (a AlertsConfig) validate() []error {
+	var errs []error
+	if a.EmailFrom != "" || len(a.EmailTo) > 0 || a.LettermintToken != "" {
+		if a.LettermintToken == "" {
+			errs = append(errs, errors.New("email alerts need ESEC_SERVER_LETTERMINT_TOKEN"))
+		}
+		if a.EmailFrom == "" {
+			errs = append(errs, errors.New("email alerts need alerts.email_from"))
+		} else if _, err := mail.ParseAddress(a.EmailFrom); err != nil {
+			errs = append(errs, fmt.Errorf("alerts.email_from %q: %w", a.EmailFrom, err))
+		}
+	}
+	for _, to := range a.EmailTo {
+		if _, err := parseEmail(to); err != nil {
+			errs = append(errs, fmt.Errorf("alerts.email_to %q: %w", to, err))
+		}
+	}
+	if a.LettermintAPIURL != "" && !webURL(a.LettermintAPIURL) {
+		errs = append(errs, fmt.Errorf("invalid alerts.lettermint_api_url %q", a.LettermintAPIURL))
+	}
+	if a.WebhookURL != "" && !webURL(a.WebhookURL) {
+		// The URL itself is a secret: do not print it.
+		errs = append(errs, errors.New("ESEC_SERVER_ALERT_WEBHOOK_URL must be an https URL"))
+	}
+	if a.WebhookSecret != "" && a.WebhookURL == "" {
+		errs = append(errs, errors.New("ESEC_SERVER_ALERT_WEBHOOK_SECRET is set without ESEC_SERVER_ALERT_WEBHOOK_URL"))
+	}
+	return errs
+}
+
+// webURL reports whether raw is an https URL (http only for localhost).
+func webURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Host != "" && u.User == nil && (u.Scheme == "https" || (u.Scheme == "http" && isLoopback(u.Hostname())))
+}
+
+// parseEmail checks a bare address such as "ops@example.com" and returns it
+// in canonical form.
+func parseEmail(s string) (string, error) {
+	if len(s) > 254 {
+		return "", errors.New("address too long")
+	}
+	a, err := mail.ParseAddress(s)
+	if err != nil {
+		return "", err
+	}
+	if a.Name != "" || a.Address != strings.TrimSpace(s) {
+		return "", errors.New("give a bare address such as name@example.com")
+	}
+	return a.Address, nil
 }
 
 // UserBootstrapToken derives the account creation token of one GitHub user
@@ -239,6 +327,19 @@ func (c *Config) applyEnv() error {
 	set("ESEC_SERVER_GITHUB_API_URL", &c.GitHub.APIURL)
 	c.GitHub.ClientSecret = os.Getenv("ESEC_SERVER_GITHUB_CLIENT_SECRET")
 	c.BootstrapToken = os.Getenv("ESEC_SERVER_BOOTSTRAP_TOKEN")
+	set("ESEC_SERVER_ALERT_EMAIL_FROM", &c.Alerts.EmailFrom)
+	set("ESEC_SERVER_LETTERMINT_ROUTE", &c.Alerts.LettermintRoute)
+	c.Alerts.LettermintToken = os.Getenv("ESEC_SERVER_LETTERMINT_TOKEN")
+	c.Alerts.WebhookURL = os.Getenv("ESEC_SERVER_ALERT_WEBHOOK_URL")
+	c.Alerts.WebhookSecret = os.Getenv("ESEC_SERVER_ALERT_WEBHOOK_SECRET")
+	if v := os.Getenv("ESEC_SERVER_ALERT_EMAIL_TO"); v != "" {
+		c.Alerts.EmailTo = nil
+		for _, a := range strings.Split(v, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				c.Alerts.EmailTo = append(c.Alerts.EmailTo, a)
+			}
+		}
+	}
 	if v := os.Getenv("ESEC_SERVER_ALLOWED_GITHUB_IDS"); v != "" {
 		ids, err := parseIDs(v)
 		if err != nil {
