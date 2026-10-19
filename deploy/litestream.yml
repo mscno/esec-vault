@@ -1,13 +1,15 @@
 # Continuous replication of the server database to an S3-compatible bucket
-# (Cloudflare R2, S3, B2). Credentials come from the environment:
-# LITESTREAM_ACCESS_KEY_ID and LITESTREAM_SECRET_ACCESS_KEY.
+# (Tigris on Fly, Cloudflare R2, S3, B2), with Litestream 0.5. Credentials
+# come from the environment: LITESTREAM_ACCESS_KEY_ID and
+# LITESTREAM_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY). For Tigris, set LITESTREAM_ENDPOINT to
+# fly.storage.tigris.dev and LITESTREAM_REGION to auto; do not set
+# AWS_ENDPOINT_URL_S3, which bypasses Litestream's Tigris detection.
 dbs:
   - path: ${ESEC_SERVER_DB_PATH}
-    replicas:
-      - type: s3
-        bucket: ${LITESTREAM_BUCKET}
-        path: esec-vault-server
-        endpoint: ${LITESTREAM_ENDPOINT}
-        region: ${LITESTREAM_REGION}
-        sync-interval: 1s
-        retention: 720h
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: esec-vault-server
+      endpoint: ${LITESTREAM_ENDPOINT}
+      region: ${LITESTREAM_REGION}

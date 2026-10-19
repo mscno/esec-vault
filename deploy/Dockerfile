@@ -9,7 +9,7 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/esec-vault-server ./cmd/esec-vault-server
 
-FROM litestream/litestream:0.3.13 AS litestream
+FROM litestream/litestream:0.5.17 AS litestream
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata \

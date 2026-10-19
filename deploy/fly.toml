@@ -31,4 +31,5 @@ primary_region = "arn"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  # Request bodies in memory are capped at 256 MiB in the worst case.
+  memory = "512mb"

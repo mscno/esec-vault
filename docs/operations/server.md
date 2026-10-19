@@ -78,22 +78,31 @@ in `fly.toml` first.
 ```sh
 fly launch --no-deploy --copy-config --config deploy/fly.toml
 fly volumes create esec_vault_data --size 1 --config deploy/fly.toml
+fly storage create -a <app>   # a Tigris bucket; sets AWS_* and BUCKET_NAME on the app
+fly secrets unset AWS_ENDPOINT_URL_S3 --stage -a <app>
 fly secrets set --config deploy/fly.toml \
   ESEC_SERVER_GITHUB_CLIENT_ID=Iv23li... \
   ESEC_SERVER_GITHUB_CLIENT_SECRET=... \
   ESEC_SERVER_BOOTSTRAP_TOKEN="$(openssl rand -base64 24)" \
-  LITESTREAM_BUCKET=esec-vault-server \
-  LITESTREAM_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
-  LITESTREAM_REGION=auto \
-  LITESTREAM_ACCESS_KEY_ID=... \
-  LITESTREAM_SECRET_ACCESS_KEY=...
+  LITESTREAM_BUCKET=<the BUCKET_NAME it printed> \
+  LITESTREAM_ENDPOINT=fly.storage.tigris.dev \
+  LITESTREAM_REGION=auto
 fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
 ```
+
+Litestream reads the Tigris credentials from `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`. `AWS_ENDPOINT_URL_S3` is removed because it bypasses
+Litestream's Tigris detection, which turns on Tigris's strong consistency.
+Any other S3-compatible bucket works too: set `LITESTREAM_ENDPOINT`,
+`LITESTREAM_REGION`, `LITESTREAM_ACCESS_KEY_ID` and
+`LITESTREAM_SECRET_ACCESS_KEY` for it.
 
 Run a single machine. The database is SQLite on the volume.
 
 Use a dedicated bucket for Litestream, with credentials limited to it. Keep
 those credentials outside the vault: you need them to restore the server.
+A Tigris bucket belongs to the same Fly account as the app; the
+full-loss procedure below covers losing both.
 
 The server is built from this repository alone; it depends on esec v0.9.0
 or later from the module proxy.
@@ -181,6 +190,11 @@ by hand:
 ```sh
 litestream restore -config deploy/litestream.yml -o restored.db /data/esec-vault.db
 ```
+
+Replication runs about a second behind, so a restore can miss the last
+writes. A client that saw them refuses the restored, older chain as a
+rollback, which is the intended protection. Sign such a device in again with
+`esec vault logout --forget-device` and `esec vault login`.
 
 If the server and its backups are both lost:
 - Every signed-in machine still has its keyrings and identity.
