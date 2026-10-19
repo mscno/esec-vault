@@ -1,3 +1,11 @@
+# v0.4.3
+
+- Fix every web form failing with "The form expired" in real browsers. The
+  pages used `Referrer-Policy: no-referrer`, under which browsers send
+  `Origin: null` with same-origin form posts, and the CSRF origin check
+  refused them. Pages now use `same-origin`, which still sends no referrer
+  to other sites. The test browser now sends `Origin` the way browsers do.
+
 # v0.4.2
 
 Security fixes from an independent review.

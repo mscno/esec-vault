@@ -204,8 +204,10 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		// Device codes appear in URLs; never leak them through Referer.
-		h.Set("Referrer-Policy", "no-referrer")
+		// Never send a Referer to other sites. Not "no-referrer": under it
+		// browsers send "Origin: null" on this site's own form posts, which
+		// the CSRF origin check must refuse.
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Cache-Control", "no-store")
 		if s.cfg.Secure() {

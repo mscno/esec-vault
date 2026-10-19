@@ -188,6 +188,9 @@ type Browser struct {
 	h      *Harness
 	login  string
 	client *http.Client
+	// policy is the referrer policy of the last page, which decides the
+	// Origin header the browser sends with a form on it.
+	policy string
 }
 
 // Browser returns a browser that signs in as login.
@@ -212,6 +215,7 @@ func (b *Browser) Get(path string) (int, string, error) {
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
+	b.notePolicy(resp, body)
 	return resp.StatusCode, string(body), err
 }
 
@@ -223,12 +227,19 @@ func (b *Browser) Post(path, csrf string, form url.Values) (int, string, error) 
 	if csrf != "" {
 		form.Set("csrf", csrf)
 	}
-	resp, err := b.client.PostForm(b.h.URL+path, form)
+	req, err := http.NewRequest(http.MethodPost, b.h.URL+path, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", b.origin())
+	resp, err := b.client.Do(req)
 	if err != nil {
 		return 0, "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
+	b.notePolicy(resp, body)
 	return resp.StatusCode, string(body), err
 }
 
@@ -270,6 +281,27 @@ func (b *Browser) Confirm(code string, approve bool) error {
 		return fmt.Errorf("confirm: HTTP %d: %s", status, page)
 	}
 	return nil
+}
+
+var metaReferrer = regexp.MustCompile(`<meta name="referrer" content="([^"]+)">`)
+
+// notePolicy records a page's referrer policy: the meta tag wins over the
+// header, as in browsers.
+func (b *Browser) notePolicy(resp *http.Response, body []byte) {
+	b.policy = resp.Header.Get("Referrer-Policy")
+	if m := metaReferrer.FindSubmatch(body); m != nil {
+		b.policy = string(m[1])
+	}
+}
+
+// origin is the Origin header a browser sends with a same-origin form post:
+// under "no-referrer" it sends "null" (Fetch, "serializing a request
+// origin").
+func (b *Browser) origin() string {
+	if b.policy == "no-referrer" {
+		return "null"
+	}
+	return b.h.URL
 }
 
 func pkceOK(challenge, verifier string) bool {
