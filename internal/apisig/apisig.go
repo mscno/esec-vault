@@ -26,7 +26,19 @@ const (
 	HeaderTimestamp = "Esec-Timestamp"
 	HeaderNonce     = "Esec-Nonce"
 	HeaderSignature = "Esec-Signature"
+	// HeaderBodyHash carries the hex SHA-256 of the body the signature
+	// covers, so a server can check the signature before reading the body.
+	HeaderBodyHash = "Esec-Body-Sha256"
 )
+
+// EmptyBodyHash is the hex SHA-256 of an empty body.
+var EmptyBodyHash = BodyHash(nil)
+
+// BodyHash returns the hex SHA-256 of body.
+func BodyHash(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
 
 // MaxSkew is the accepted clock difference between client and server.
 const MaxSkew = 60 * time.Second
@@ -34,18 +46,24 @@ const MaxSkew = 60 * time.Second
 // ErrInvalid is returned for any missing or invalid signature header.
 var ErrInvalid = errors.New("request signature missing or invalid")
 
-var noncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{22,64}$`)
+var (
+	noncePattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{22,64}$`)
+	bodyHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
 
 // Message returns the bytes a request signature covers.
 func Message(method, requestURI string, body []byte, timestamp int64, nonce, deviceID string) []byte {
-	sum := sha256.Sum256(body)
+	return messageForHash(method, requestURI, BodyHash(body), timestamp, nonce, deviceID)
+}
+
+func messageForHash(method, requestURI, bodyHash string, timestamp int64, nonce, deviceID string) []byte {
 	var b bytes.Buffer
 	b.WriteString("esec-vault-request/v1\n")
 	b.WriteString(method)
 	b.WriteByte('\n')
 	b.WriteString(requestURI)
 	b.WriteByte('\n')
-	b.WriteString(hex.EncodeToString(sum[:]))
+	b.WriteString(bodyHash)
 	b.WriteByte('\n')
 	b.WriteString(strconv.FormatInt(timestamp, 10))
 	b.WriteByte('\n')
@@ -68,6 +86,7 @@ func Sign(req *http.Request, body []byte, deviceID string, key ed25519.PrivateKe
 	req.Header.Set(HeaderTimestamp, strconv.FormatInt(ts, 10))
 	req.Header.Set(HeaderNonce, nonce)
 	req.Header.Set(HeaderSignature, base64.StdEncoding.EncodeToString(sig))
+	req.Header.Set(HeaderBodyHash, BodyHash(body))
 	return nil
 }
 
@@ -76,7 +95,10 @@ type Signed struct {
 	DeviceID  string
 	Timestamp time.Time
 	Nonce     string
-	sig       []byte
+	// BodyHash is the declared body hash, or "" when the client sent none
+	// (clients before v0.4.2).
+	BodyHash string
+	sig      []byte
 }
 
 // Parse reads the signature headers without verifying them.
@@ -99,19 +121,29 @@ func Parse(r *http.Request) (*Signed, error) {
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return nil, ErrInvalid
 	}
-	return &Signed{DeviceID: dev, Timestamp: time.Unix(ts, 0), Nonce: nonce, sig: sig}, nil
+	bodyHash := r.Header.Get(HeaderBodyHash)
+	if bodyHash != "" && !bodyHashPattern.MatchString(bodyHash) {
+		return nil, ErrInvalid
+	}
+	return &Signed{DeviceID: dev, Timestamp: time.Unix(ts, 0), Nonce: nonce, BodyHash: bodyHash, sig: sig}, nil
 }
 
 // Verify checks the signature against pub, the body and the clock. Nonce
 // uniqueness is the caller's job.
 func (s *Signed) Verify(r *http.Request, body []byte, pub ed25519.PublicKey, now time.Time) error {
+	return s.VerifyHash(r, BodyHash(body), pub, now)
+}
+
+// VerifyHash is Verify for a body known only by its hex SHA-256. The caller
+// must check that the body it then reads has that hash.
+func (s *Signed) VerifyHash(r *http.Request, bodyHash string, pub ed25519.PublicKey, now time.Time) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return ErrInvalid
 	}
 	if d := now.Sub(s.Timestamp); d > MaxSkew || d < -MaxSkew {
 		return fmt.Errorf("%w: clock skew of %s exceeds %s; check this machine's clock", ErrInvalid, d.Round(time.Second), MaxSkew)
 	}
-	msg := Message(r.Method, r.URL.RequestURI(), body, s.Timestamp.Unix(), s.Nonce, s.DeviceID)
+	msg := messageForHash(r.Method, r.URL.RequestURI(), bodyHash, s.Timestamp.Unix(), s.Nonce, s.DeviceID)
 	if !ed25519.Verify(pub, msg, s.sig) {
 		return ErrInvalid
 	}

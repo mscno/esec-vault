@@ -60,6 +60,9 @@ var registrationNonce = regexp.MustCompile(`^[A-Za-z0-9_-]{22,64}$`)
 // errReplay marks a request whose nonce was already used.
 var errReplay = errors.New("request replayed")
 
+// errOldClient marks a request with a body but no declared body hash.
+var errOldClient = fmt.Errorf("%w: this client is too old for the server; upgrade esec-vault to v0.4.2 or later", apisig.ErrInvalid)
+
 // signatureFailure maps verifySignature errors to a response: client errors
 // are 401 with our own message, anything else is an internal error.
 func (s *Server) signatureFailure(w http.ResponseWriter, r *http.Request, err error) {
@@ -192,20 +195,12 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 			writeErr(w, http.StatusUnauthorized, wire.ErrUnauthorized, "device is not registered")
 			return
 		}
-		limit := int64(maxSmallBody)
-		if r.URL.Path == "/v1/commit" || r.URL.Path == "/v1/vault" {
-			limit = maxLargeBody
-		}
-		body, err := readBody(w, r, limit)
-		if err != nil {
-			writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large")
-			return
-		}
-		// Order: verify the signature (CPU only), then count the request
-		// against the device's limit, then record the nonce. Only requests
-		// signed with the device key count, so a stolen token cannot use up
-		// the device's limit, and the nonce writes stay bounded.
-		signed, err := s.checkSignature(r, body, dev, now)
+		// Order: verify the signature over the declared body hash (CPU
+		// only), count the request against the device's limit, record the
+		// nonce, and only then reserve memory for and read the body. A
+		// session token without the device key gets nothing past the first
+		// step, and the nonce writes stay bounded.
+		signed, err := s.checkSignedHash(r, dev, now)
 		if err != nil {
 			s.signatureFailure(w, r, err)
 			return
@@ -222,6 +217,11 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 			s.signatureFailure(w, r, err)
 			return
 		}
+		body, release, ok := s.readSignedBody(w, r, dev, signed.BodyHash)
+		if !ok {
+			return
+		}
+		defer release()
 		ip := s.clientIP(r)
 		if now.Sub(fromUnix(lastUsed)) > time.Minute || now.Sub(dev.LastSeen) > time.Minute || dev.LastIP != ip {
 			_, err1 := s.db.sql.ExecContext(ctx, `UPDATE sessions SET last_used_at = ? WHERE token_hash = ?`, now.Unix(), hashHex(token))
@@ -233,6 +233,92 @@ func (s *Server) api(allowPending bool, h apiHandler) http.Handler { //nolint:go
 		}
 		h(w, r, &reqCtx{user: user, device: dev, session: hashHex(token), body: body, ip: ip, expires: fromUnix(expires)})
 	})
+}
+
+// checkSignedHash verifies a request signature against the body hash the
+// request declares, before the body is read. A request without a declared
+// hash (from a client before v0.4.2) may only have an empty body.
+func (s *Server) checkSignedHash(r *http.Request, dev *deviceRow, now time.Time) (*apisig.Signed, error) {
+	signed, err := apisig.Parse(r)
+	if err != nil {
+		return nil, err
+	}
+	if signed.BodyHash == "" {
+		if r.ContentLength != 0 {
+			return nil, errOldClient
+		}
+		signed.BodyHash = apisig.EmptyBodyHash
+	}
+	if signed.DeviceID != dev.ID {
+		return nil, apisig.ErrInvalid
+	}
+	pub, err := chain.ParseSignKey(dev.SignPub)
+	if err != nil {
+		return nil, apisig.ErrInvalid
+	}
+	if err := signed.VerifyHash(r, signed.BodyHash, pub, now); err != nil {
+		return nil, err
+	}
+	return signed, nil
+}
+
+// readSignedBody reserves memory for the body of a verified request, reads
+// it and checks it against the signed hash. It writes the error response
+// itself when it fails.
+func (s *Server) readSignedBody(w http.ResponseWriter, r *http.Request, dev *deviceRow, bodyHash string) (body []byte, release func(), ok bool) {
+	limit, err := s.bodyLimit(r.Context(), r, dev)
+	if err != nil {
+		s.internalError(w, r, err)
+		return nil, nil, false
+	}
+	size, err := bodySize(r, limit)
+	if err != nil {
+		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large")
+		return nil, nil, false
+	}
+	pool, key := s.bodies, dev.UserID
+	switch {
+	case dev.Status != wire.DevicePending:
+	case size > maxSmallBody:
+		pool = s.pendingLarge
+	default:
+		pool, key = s.pendingSmall, dev.ID
+	}
+	release, ok = pool.take(key, size)
+	if !ok {
+		w.Header().Set("Retry-After", "5")
+		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many uploads in progress; try again shortly")
+		return nil, nil, false
+	}
+	body, err = readReserved(w, r, limit)
+	if err != nil {
+		release()
+		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large or incomplete")
+		return nil, nil, false
+	}
+	if apisig.BodyHash(body) != bodyHash {
+		release()
+		writeErr(w, http.StatusUnauthorized, wire.ErrUnauthorized, "request signature does not match the body")
+		return nil, nil, false
+	}
+	return body, release, true
+}
+
+// bodyLimit is the largest body a device may send to r's endpoint. Only
+// commits and vault uploads are large, and a pending device's only large
+// request is the commit that creates its account.
+func (s *Server) bodyLimit(ctx context.Context, r *http.Request, dev *deviceRow) (int64, error) {
+	switch {
+	case r.URL.Path != "/v1/commit" && r.URL.Path != "/v1/vault":
+		return maxSmallBody, nil
+	case dev.Status != wire.DevicePending:
+		return maxLargeBody, nil
+	}
+	seq, err := s.db.chainSeq(ctx, s.db.sql, dev.UserID)
+	if err != nil || seq > 0 {
+		return maxSmallBody, err
+	}
+	return maxLargeBody, nil
 }
 
 // verifySignature checks the device signature and records the nonce so the
@@ -365,6 +451,14 @@ func (s *Server) apiDeviceRegister(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo,maintidx // RFC 8628 state machine plus device matching, kept in order for review
 	now := s.now()
 	ctx := r.Context()
+	// Polls are cheap to send, so they are limited per address and network
+	// before anything is read, and every check that needs no write runs
+	// before the signature check (which records a nonce) and the last-poll
+	// update.
+	if !s.allowAnon("poll", s.clientIP(r), 60, 600, time.Minute) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrSlowDown, "polling too fast")
+		return
+	}
 	body, err := readBody(w, r, maxSmallBody)
 	if err != nil {
 		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large")
@@ -373,13 +467,6 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) { //nolint:goc
 	var req wire.TokenRequest
 	if err := decodeStrict(body, &req); err != nil || req.DeviceCode == "" {
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
-		return
-	}
-	// Polls are cheap to send, so they are limited per address and network,
-	// and every check that needs no write runs before the signature check
-	// (which records a nonce) and the last-poll update.
-	if !s.allowAnon("poll", s.clientIP(r), 60, 600, time.Minute) {
-		writeErr(w, http.StatusTooManyRequests, wire.ErrSlowDown, "polling too fast")
 		return
 	}
 	var deviceID, status, confirmedUser string
@@ -551,6 +638,10 @@ func (s *Server) apiMe(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		return
 	}
 	me := wire.Me{User: c.user.wire(), Device: c.device.wire(false), ChainSeq: seq, SessionExpires: c.expires}
+	if c.device.Status == wire.DevicePending {
+		// A pending device learns only whether the account exists.
+		me.ChainSeq = min(seq, 1)
+	}
 	if seq > 0 {
 		// The recovery keys live in the first link; verifying that one link
 		// is enough and keeps this cheap for polling devices.

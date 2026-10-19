@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -251,5 +253,38 @@ func TestAuditTrimUsesTheIndex(t *testing.T) {
 	defer db.Close()
 	if plan := queryPlan(t, db, `EXPLAIN QUERY PLAN SELECT id FROM audit WHERE user_id = 'gh:1' ORDER BY id DESC LIMIT 1 OFFSET 10000`); !strings.Contains(plan, "audit_user") {
 		t.Fatalf("audit trim does not use the index:\n%s", plan)
+	}
+}
+
+func TestBodyBudget(t *testing.T) {
+	b := newBodyBudget(30, 20)
+	r1, ok := b.take("a", 15)
+	if !ok {
+		t.Fatal("first body refused")
+	}
+	if _, ok := b.take("a", 10); ok {
+		t.Fatal("key went over its share")
+	}
+	r2, ok := b.take("b", 15)
+	if !ok {
+		t.Fatal("second key refused")
+	}
+	if _, ok := b.take("c", 1); ok {
+		t.Fatal("pool went over its total")
+	}
+	r1()
+	r2()
+	if _, ok := b.take("a", 20); !ok || len(b.perKey) != 1 || b.total != 20 {
+		t.Fatalf("release did not return the reservation: %+v", b)
+	}
+}
+
+func TestClientIPUsesLastHeaderLine(t *testing.T) {
+	s := &Server{cfg: &Config{ClientIPHeader: "X-Forwarded-For"}}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Add("X-Forwarded-For", "6.6.6.6")
+	r.Header.Add("X-Forwarded-For", "203.0.113.7")
+	if ip := s.clientIP(r); ip != "203.0.113.7" {
+		t.Fatalf("client IP %s", ip)
 	}
 }

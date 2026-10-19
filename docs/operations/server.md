@@ -165,8 +165,10 @@ WantedBy=multi-user.target
 ```
 
 Set `client_ip_header` only when the proxy overwrites that header on every
-request. Otherwise clients could choose the address recorded in the audit
-log and used for rate limits.
+request, or appends to it. The server takes the last address across all
+lines of the header, so a proxy that adds its own line is fine. Otherwise
+clients could choose the address recorded in the audit log and used for rate
+limits.
 
 ## Back up and restore
 

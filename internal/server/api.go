@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -534,6 +535,10 @@ func (s *Server) apiCommit(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "commit too large")
 		return
 	}
+	if slices.Contains(req.Links, nil) {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
+		return
+	}
 	var result wire.CommitResult
 	ctx := r.Context()
 	err := s.db.tx(ctx, func(tx *sql.Tx) error {
@@ -592,7 +597,9 @@ func (s *Server) commit(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.Co
 		}
 		next, err := state.Next(e)
 		if err != nil {
-			if l, derr := peekLink(e); derr == nil && l.Seq != state.Seq+1 {
+			// A pending device gets no hint, so it cannot probe the
+			// chain's length one seq at a time.
+			if l, derr := peekLink(e); derr == nil && l.Seq != state.Seq+1 && c.device.Status != wire.DevicePending {
 				return nil, clientErr(http.StatusConflict, wire.ErrConflict, "chain changed on the server; refresh and retry")
 			}
 			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "chain link rejected: %v", err)
@@ -755,6 +762,9 @@ func rotated(req *wire.Commit, _ *chain.State) bool {
 // checks (account creation, rotation, pending devices) and the chain always
 // agree on a link's type.
 func peekLink(e *envelope.Envelope) (*chain.Link, error) {
+	if err := e.Check(); err != nil {
+		return nil, err
+	}
 	var l chain.Link
 	if err := e.Decode(&l); err != nil {
 		return nil, err

@@ -144,7 +144,7 @@ func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*
 			return nil, errors.New("the server lists this device as active but the verified chain does not include this machine's device key")
 		}
 		if a.State.Chain.Root == "" {
-			if err := a.confirmAccount(chainState, opts); err != nil {
+			if err := a.trustActive(ctx, chainState, tok.Device, opts); err != nil {
 				return nil, err
 			}
 		}
@@ -173,6 +173,46 @@ func Login(ctx context.Context, kr keyring.Keyring, ui UI, opts LoginOptions) (*
 }
 
 var userCodePattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$`)
+
+// trustActive decides whether to trust the account of a device the server
+// says is already active, on a machine that never pinned it. The server's
+// word proves nothing, so this takes the same proof a pending device would
+// give: the recovery phrase or SSH key the user asked to log in with, and
+// otherwise the account key words. A machine with an identity also refuses
+// an account made with a different recovery phrase.
+func (a *Account) trustActive(ctx context.Context, st *chain.State, info wire.DeviceInfo, opts LoginOptions) error {
+	err := a.checkSameRecoveryKey(st, opts)
+	if err == nil {
+		switch opts.Method {
+		case LoginRecover:
+			err = a.phraseMatches(st, opts)
+		case LoginSSHAgent:
+			var proved *chain.State
+			if _, proved, _, err = a.fromAgent(ctx, a.self(info), opts); err == nil && proved.Head() != st.Head() {
+				err = errors.New("the server returned two different device chains")
+			}
+		default:
+			return a.confirmAccount(st, opts)
+		}
+	}
+	if err != nil {
+		return errors.Join(err, a.forget())
+	}
+	return nil
+}
+
+// phraseMatches checks that the account's root was authorized by the
+// recovery phrase.
+func (a *Account) phraseMatches(st *chain.State, opts LoginOptions) error {
+	keys, err := a.phraseKeys(opts)
+	if err != nil {
+		return err
+	}
+	if keys.Public != st.MasterPub || !keys.SignPublic().Equal(st.MasterSignPub) {
+		return errors.New("that recovery phrase (and passphrase) does not belong to this account, or the server's account was not created with it; nothing was installed")
+	}
+	return nil
+}
 
 // confirmAccount makes the user check the account key words before this
 // machine trusts an account it has never seen.
@@ -481,18 +521,7 @@ func (a *Account) selfAdd(ctx context.Context, st *chain.State, d chain.Device, 
 // fromPhrase proves the recovery phrase to the server, which then returns
 // the chain and the master-wrapped identity, and recovers the user key.
 func (a *Account) fromPhrase(ctx context.Context, d chain.Device, opts LoginOptions) (*identity.Identity, *chain.State, error) {
-	mnemonic := opts.Mnemonic
-	pass := opts.Passphrase
-	var err error
-	if mnemonic == "" {
-		if mnemonic, err = a.UI.Secret("Recovery phrase (24 words): "); err != nil {
-			return nil, nil, err
-		}
-		if pass, err = a.UI.Secret("Recovery passphrase (press Enter if you set none): "); err != nil && !errors.Is(err, io.EOF) {
-			return nil, nil, err
-		}
-	}
-	keys, err := identity.DeriveMasterKeys(normalizeMnemonic(mnemonic), pass)
+	keys, err := a.phraseKeys(opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -528,6 +557,22 @@ func (a *Account) fromPhrase(ctx context.Context, d chain.Device, opts LoginOpti
 	}
 	id, err = m.Check(st)
 	return id, st, err
+}
+
+// phraseKeys asks for the recovery phrase and passphrase unless given, and
+// derives the master keys.
+func (a *Account) phraseKeys(opts LoginOptions) (*identity.MasterKeys, error) {
+	mnemonic, pass := opts.Mnemonic, opts.Passphrase
+	var err error
+	if mnemonic == "" {
+		if mnemonic, err = a.UI.Secret("Recovery phrase (24 words): "); err != nil {
+			return nil, err
+		}
+		if pass, err = a.UI.Secret("Recovery passphrase (press Enter if you set none): "); err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+	}
+	return identity.DeriveMasterKeys(normalizeMnemonic(mnemonic), pass)
 }
 
 // verifyLinks verifies a full chain returned by the server and checks it

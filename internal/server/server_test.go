@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -341,8 +343,13 @@ func TestRequestAuthentication(t *testing.T) {
 	}
 	req.Header.Set("Authorization", "Bearer "+d.c.Token)
 	replay := req.Clone(context.Background())
-	tampered := req.Clone(context.Background())
-	tampered.Body = http.NoBody
+	// A tampered request carries its own signature: the nonce is spent once
+	// the signature verifies, before the body is read.
+	tampered, _ := http.NewRequest(http.MethodPost, h.URL+"/v1/auth/logout", bytes.NewReader([]byte(`{]`)))
+	if err := apisig.Sign(tampered, body, d.info.ID, d.key.Sign, h.Now()); err != nil {
+		t.Fatal(err)
+	}
+	tampered.Header.Set("Authorization", "Bearer "+d.c.Token)
 	if st := statusOf(t, tampered); st != http.StatusUnauthorized {
 		t.Fatalf("tampered body accepted: %d", st)
 	}
@@ -1158,5 +1165,172 @@ func TestEmergencySwitchHoldsAcrossAccounts(t *testing.T) {
 	}
 	if _, err := c.PollToken(context.Background(), reg.DeviceCode); code(err) != wire.ErrAccessDenied {
 		t.Fatalf("closed server added a device to another account: %v", err)
+	}
+}
+
+// rawPost sends a commit body, signed by d when d is not nil and with only
+// the session token otherwise, as someone who copied the token but not the
+// device key would. signedBody is what the signature covers.
+func rawPost(h *servertest.Harness, token string, d *dev, signedBody []byte, body io.Reader, size int64) int {
+	req, err := http.NewRequest(http.MethodPost, h.URL+"/v1/commit", body)
+	if err != nil {
+		return 0
+	}
+	req.ContentLength = size
+	req.Header.Set("Authorization", "Bearer "+token)
+	if d != nil {
+		if err := apisig.Sign(req, signedBody, d.info.ID, d.key.Sign, h.Now()); err != nil {
+			return 0
+		}
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+type countingReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// TestBodiesNeedASignatureFirst covers request bodies: a session token
+// without the device key is refused before its body is read, a body must
+// match the signed hash, a pending device may not send large bodies, and
+// pending devices cannot use up the memory trusted devices upload with.
+func TestBodiesNeedASignatureFirst(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	vm := signIn(t, h, nil, "vm")
+	const size = 16<<20 - 1
+	var read atomic.Int64
+	if st := rawPost(h, vm.c.Token, nil, nil, countingReader{bytes.NewReader(make([]byte, size)), &read}, size); st != http.StatusUnauthorized {
+		t.Fatalf("unsigned upload: HTTP %d", st)
+	}
+	if n := read.Load(); n > 1<<20 {
+		t.Fatalf("the server read %d bytes of an unsigned upload", n)
+	}
+	if st := rawPost(h, owner.c.Token, owner, []byte(`{}`), strings.NewReader(`{"x":1}`), 7); st != http.StatusUnauthorized {
+		t.Fatalf("body that does not match the signature: HTTP %d", st)
+	}
+	big := make([]byte, 1<<20)
+	if st := rawPost(h, vm.c.Token, vm, big, bytes.NewReader(big), int64(len(big))); st != http.StatusRequestEntityTooLarge {
+		t.Fatalf("pending device's 1 MiB commit: HTTP %d", st)
+	}
+	// Pending devices stall as many signed uploads as their rate limit
+	// allows; a trusted device's upload, and a new device's own, still get
+	// through.
+	small := make([]byte, 64<<10)
+	writers := make([]*io.PipeWriter, 0, 300)
+	defer func() {
+		for _, w := range writers {
+			_ = w.CloseWithError(errors.New("done"))
+		}
+	}()
+	var wg sync.WaitGroup
+	for i := range 5 {
+		p := signIn(t, h, nil, fmt.Sprintf("p%d", i))
+		for range 60 {
+			pr, pw := io.Pipe()
+			writers = append(writers, pw)
+			wg.Go(func() { rawPost(h, p.c.Token, p, small, pr, int64(len(small))) })
+			_, _ = pw.Write([]byte("x"))
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	if st := rawPost(h, owner.c.Token, owner, []byte(`{}`), strings.NewReader(`{}`), 2); st == http.StatusTooManyRequests {
+		t.Fatal("pending devices blocked a trusted device's upload")
+	}
+	fresh := signIn(t, h, nil, "new-laptop")
+	if st := rawPost(h, fresh.c.Token, fresh, small, bytes.NewReader(small), int64(len(small))); st == http.StatusTooManyRequests {
+		t.Fatal("other pending devices blocked a new device's request")
+	}
+	for _, w := range writers {
+		_ = w.CloseWithError(errors.New("done"))
+	}
+	wg.Wait()
+}
+
+// TestOldClientsKeepReading checks that a request signed without a body
+// hash, as clients before v0.4.2 sign, still works when it has no body and
+// is refused with an upgrade hint when it has one.
+func TestOldClientsKeepReading(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	do := func(method string, body []byte) (int, string) {
+		req, _ := http.NewRequest(method, h.URL+"/v1/commit", bytes.NewReader(body))
+		if method == http.MethodGet {
+			req, _ = http.NewRequest(method, h.URL+"/v1/me", nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+owner.c.Token)
+		if err := apisig.Sign(req, body, owner.info.ID, owner.key.Sign, h.Now()); err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Del(apisig.HeaderBodyHash)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(out)
+	}
+	if st, out := do(http.MethodGet, nil); st != http.StatusOK {
+		t.Fatalf("old client GET: HTTP %d %s", st, out)
+	}
+	if st, out := do(http.MethodPost, []byte(`{}`)); st != http.StatusUnauthorized || !strings.Contains(out, "upgrade") {
+		t.Fatalf("old client POST: HTTP %d %s", st, out)
+	}
+}
+
+func TestCommitRejectsNullLinks(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	vm := signIn(t, h, nil, "vm")
+	_, err := vm.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{nil}})
+	if !client.IsCode(err, wire.ErrInvalidRequest) {
+		t.Fatalf("commit with a null link: %v", err)
+	}
+	if _, err := owner.c.Me(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPendingDeviceLearnsOnlyThatAccountExists checks /v1/me hides the
+// chain length from unapproved devices.
+func TestPendingDeviceLearnsOnlyThatAccountExists(t *testing.T) {
+	h := harness(t)
+	owner := signIn(t, h, nil, "laptop")
+	create(t, owner)
+	vm := signIn(t, h, nil, "vm")
+	me, err := vm.c.Me(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if me.ChainSeq != 1 {
+		t.Fatalf("pending device sees chain_seq %d", me.ChainSeq)
+	}
+	// A link with the wrong seq gets the same answer as any bad link.
+	u, _ := identity.NewRandom()
+	for _, st := range []*chain.State{chain.New(user), {User: user, Seq: 5}} {
+		l, err := st.NewLink(chain.TypeDeviceAdd, chain.DeviceAddBody{Device: vm.chainDevice(), Method: chain.MethodRecovery}, h.Now(), u.Sign)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = vm.c.Commit(context.Background(), &wire.Commit{Links: []*envelope.Envelope{l}})
+		if client.IsCode(err, wire.ErrConflict) || err == nil {
+			t.Fatalf("pending device's link at seq %d: %v", st.Seq+1, err)
+		}
 	}
 }

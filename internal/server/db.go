@@ -199,6 +199,13 @@ func (d *DB) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if err != nil {
 		return err
 	}
+	// A panic must not leave the only connection inside a transaction.
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
 	if err := fn(tx); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}

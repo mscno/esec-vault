@@ -320,3 +320,29 @@ func TestUnconfirmedAccountIsNotUsed(t *testing.T) {
 		t.Fatalf("unconfirmed account listed devices: %v", err)
 	}
 }
+
+// TestActiveDeviceRecoversWithPhrase covers a trusted device that lost its
+// pin: 'login --recover' proves the account with the phrase, without the
+// account-key prompt, and a wrong passphrase is refused.
+func TestActiveDeviceRecoversWithPhrase(t *testing.T) {
+	h, a := setup(t)
+	a.State.Chain = account.ChainPin{}
+	if err := a.State.Save(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ui := &testUI{t: t, h: h}
+	_, err := account.Login(ctx, a.KR, ui, account.LoginOptions{Server: h.URL, Name: "laptop", Method: account.LoginRecover, Mnemonic: lastMnemonic, Passphrase: "wrong", Poll: 50 * time.Millisecond})
+	if err == nil || !strings.Contains(err.Error(), "does not belong to this account") {
+		t.Fatalf("a wrong passphrase was accepted: %v", err)
+	}
+	ui = &testUI{t: t, h: h}
+	again, err := account.Login(ctx, a.KR, ui, account.LoginOptions{Server: h.URL, Name: "laptop", Method: account.LoginRecover, Mnemonic: lastMnemonic, Poll: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("login --recover of a trusted device: %v\n%s", err, ui.out.String())
+	}
+	if again.State.Chain.Root == "" {
+		t.Fatal("the account was not pinned")
+	}
+}

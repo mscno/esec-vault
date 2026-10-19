@@ -1,3 +1,23 @@
+# v0.4.2
+
+Security fixes from an independent review.
+
+- `login --recover` and `login --ssh-agent` now always require the phrase or
+  SSH key, even when the server says the device is already trusted. Before,
+  a malicious server could skip that check and reduce it to the account-key
+  prompt. A machine that holds an identity also refuses an account made with
+  a different recovery phrase on this path.
+- Requests now declare their body hash in a signed header, and the server
+  checks the signature before reading the body. A copied session token could
+  otherwise make the server buffer many 16 MiB uploads. Bodies held in memory
+  are also capped per account and in total. Devices waiting for approval use
+  separate pools, capped per device, and may send only small requests. Clients before v0.4.2
+  can still read, but must upgrade to write.
+- `client_ip_header` now reads every line of the header, so a proxy that adds
+  its own line cannot be bypassed by a client-sent one.
+- A pending device learns only whether the account exists, not its chain
+  length, from either `/v1/me` or commit errors. Commits with null links are rejected cleanly.
+
 # v0.4.1
 
 - While the server is closed to new devices (`new_devices = "closed"`), no

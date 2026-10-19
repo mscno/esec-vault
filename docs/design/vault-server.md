@@ -639,7 +639,26 @@ more.
 An address is an IPv4 address or an IPv6 /64; a network is an IPv4 /24 or an
 IPv6 /48. Anonymous and signed-in counters are kept apart, so a flood of
 anonymous requests cannot evict signed-in counters. A full counter table
-evicts its oldest entries; it never refuses new keys.
+(100,000 keys) evicts its oldest counters that have not reached their limit,
+so a flood cannot reset a limit that was reached. Only if an attacker
+exhausts a million counters does the table refuse new keys; that takes
+hundreds of networks, and the emergency switch below covers it.
+
+Requests declare the SHA-256 of their body in `Esec-Body-Sha256`, which the
+signature covers. The server checks the signature and the device's rate
+limit, and records the nonce, before it reads any body; a session token used
+without the device key gets nothing more. Only then does it reserve memory
+for the body and check the body against the signed hash. Bodies held in
+memory are capped per account (32 MiB) and in total (128 MiB). Devices
+waiting for approval have their own pools and may send at most 64 KiB
+except the commit that creates their account: 256 KiB in flight per device
+(64 MiB in all), and one account-creating commit per account (64 MiB in
+all). So phished or takeover devices block neither trusted devices' uploads
+nor the owner's own new device; filling the shared pending pool would take
+hundreds of pending devices, each needing a confirmed sign-in. Requests
+without a session read their small bodies as data arrives, after their
+address limits, so stalled connections hold almost no memory. Clients before v0.4.2 send no body hash; their requests without a
+body still work, and those with one are refused with an upgrade hint.
 
 ## 11. CLI changes
 
@@ -727,6 +746,9 @@ server (`httptest`) with a memory secret store.
 | Devices waiting for approval read the chain, identity and slots | They read nothing until approved or until they prove the phrase or an SSH key | A phished sign-in learns nothing about the account (found in review). |
 | — | `new_devices = "closed"` emergency switch | Lets the operator refuse all brand-new devices and browsers during an attack while trusted ones keep working. |
 | Link with the code prefilled | Code always typed; `?code=` ignored | Removes one-click code phishing (RFC 8628 §5.4). |
+| `login --recover`/`--ssh-agent` on a device the server calls active fell back to the account-key prompt | The same proof as for a pending device: the phrase must match the chain's master keys, or the SSH-agent slot must open; an identity on the machine must match the account's recovery keys | A server could otherwise skip the requested proof by lying about the device's status (found in security review). |
+| Bodies read whole before the signature check | The signature covers a declared body hash and is checked first; small bodies for pending devices; per-account and total caps on bodies in memory, with a separate pool for pending devices | A copied session token could make the server buffer many 16 MiB uploads, and a first fix let pending devices block every account's uploads (found in security review). |
+| Pending devices told when a link's seq was stale | The same error as any rejected link | The 409 let a pending device probe the chain length (found in security review). |
 | Rate limits on all code entries | Limits on wrong codes, on both forms, per address (IPv6 /64) and per user; caps on open registrations, OAuth states and pending devices | Found in security review. |
 
 ## Later phases (sketch)
