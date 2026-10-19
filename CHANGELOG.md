@@ -1,3 +1,53 @@
+# v0.7.0
+
+Shared projects and machine identities.
+
+- **Shared projects.** `esec vault team create` shares a project with you as
+  its admin; `team add LOGIN --env dev` adds a colleague on the same server
+  and sends them the keys of the environments they may read, sealed to their
+  own key. Who may read what is kept in a project chain signed by the
+  admins and checked by every device: the server can neither add anyone nor
+  swap a key. `team set`, `team remove` and `team leave` change access;
+  `team show` and `team` list members, keys and what needs doing.
+- New members prove their account with an SSH key on their GitHub account
+  (`team prove`, checked against `github.com/LOGIN.keys`), or the admin types
+  their account key words.
+- A device asks before it first takes in a project's keys (`team sync`;
+  the daemon notifies), then takes in new keys on its own. A key it holds is
+  replaced only by a newer key of the same project, and kept under its
+  public key so older files still decrypt.
+- Admins' daemons send keys members and machines are missing, for example
+  after a member's user key changed. `team sync` does it by hand.
+- Removing someone, or their access to an environment, marks it to rotate:
+  shown by `team remove`, `team show`, the project's web page and the admins'
+  daemons, and alerted to every remaining member. In a shared project,
+  `env rotate` and `env add` (admins only) send the new key to everyone who
+  reads the environment.
+- **Machines.** `esec vault machine create deploy --env prod` gives a CI job
+  or app its own key (`ESEC_VAULT_MACHINE_KEY`); `esec-vault machine run --
+  CMD` runs a command with its keys, `machine env --format github` exports
+  them masked in GitHub Actions. With `--github-repo` (and `--github-ref`,
+  `--github-environment`, `--github-repo-id`) the server hands the keys only
+  to GitHub Actions jobs of that repository that prove it with an OIDC
+  token. `machine list` and `machine remove` manage them; every use is
+  logged.
+- **Web.** `/teams/ORG/REPO` shows a shared project's members, what each
+  reads and whether their devices have the keys, its machines with their
+  last use, keys to rotate, its history and key deliveries. Projects lists
+  your shared projects; the overview shows keys to rotate or still to send;
+  the Admin page lists every shared project. Alerts cover members added and
+  removed and machines added and removed.
+- User chains now expose each user key version and the chain position that
+  introduced it, so signatures by other parties are checked against the
+  version current at the position they name.
+- A device points out changes your account made to a shared project from
+  another device: after revoking a device, that is how a misused old key
+  would show.
+- The database gains eight tables (`projects`, `project_links`,
+  `project_members`, `project_machines`, `project_grants`,
+  `project_holdings`, `project_audit`, `account_proofs`). All are additive:
+  v0.6.0 still opens the database after a rollback.
+
 # v0.6.0
 
 Security alerts by email and webhook.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/account"
@@ -52,6 +53,9 @@ func (s *Server) serverLoop(ctx context.Context) {
 			}
 		}
 		s.announceChain(ctx, a, before)
+		if time.Since(s.lastTeamSync) > time.Hour {
+			s.teamSync(ctx, a)
+		}
 		if a.State.Events.Last == 0 {
 			// Start from the newest event; old events were handled before.
 			if ev, err := a.Client.Events(ctx, -1, 0); err == nil {
@@ -79,14 +83,7 @@ func (s *Server) serverLoop(ctx context.Context) {
 			}
 			continue
 		}
-		for _, e := range ev.Events {
-			switch {
-			case e.Type == wire.EventDevicePending && !seenPending[e.Detail]:
-				s.announcePending(ctx, a, e.Detail, seenPending)
-			case e.Type == wire.EventDeviceStatus:
-				s.announceSuspended(ctx, a, e.Detail)
-			}
-		}
+		s.handleEvents(ctx, a, ev.Events, seenPending)
 		if ev.Next != a.State.Events.Last {
 			next := ev.Next
 			if err := a.Locked(func() error { a.State.Events.Last = next; return a.State.Save() }); err != nil {
@@ -113,6 +110,114 @@ func (s *Server) serverSync(ctx context.Context, a *account.Account) error {
 		s.Logger.Info("vault server: installed a rotated user key", "version", a.State.Chain.UKeyVersion)
 	}
 	return nil
+}
+
+// stillWaiting reports, once, that something waiting for this device was
+// first seen at least ten minutes ago.
+func (s *Server) stillWaiting(key string) bool {
+	if s.teamSeen == nil {
+		s.teamSeen = map[string]time.Time{}
+	}
+	first, ok := s.teamSeen[key]
+	if !ok {
+		s.teamSeen[key] = time.Now()
+		return false
+	}
+	if s.teamNoted[key] || time.Since(first) < 10*time.Minute {
+		return false
+	}
+	s.teamNoted[key] = true
+	return true
+}
+
+// handleEvents notifies about devices and syncs shared projects after the
+// server reported changes.
+func (s *Server) handleEvents(ctx context.Context, a *account.Account, events []wire.Event, seenPending map[string]bool) {
+	teamChanged := false
+	for _, e := range events {
+		switch {
+		case e.Type == wire.EventDevicePending && !seenPending[e.Detail]:
+			s.announcePending(ctx, a, e.Detail, seenPending)
+		case e.Type == wire.EventDeviceStatus:
+			s.announceSuspended(ctx, a, e.Detail)
+		case e.Type == wire.EventProject || e.Type == wire.EventGrant:
+			teamChanged = true
+		}
+	}
+	if teamChanged {
+		s.teamSync(ctx, a)
+	}
+}
+
+// teamSync receives keys sent to this account and, as an admin, sends
+// keys members and machines are missing. It notifies once about keys
+// received, keys left alone, and keys to rotate.
+func (s *Server) teamSync(ctx context.Context, a *account.Account) {
+	s.lastTeamSync = time.Now()
+	if s.teamNoted == nil {
+		s.teamNoted = map[string]bool{}
+	}
+	tctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	res, err := a.TeamSync(tctx, account.TeamSyncOptions{})
+	if err != nil {
+		if ctx.Err() == nil {
+			s.Logger.Warn("shared projects sync pending; will retry", "error", err)
+		}
+		return
+	}
+	if len(res.Imported) > 0 {
+		s.Logger.Info("shared projects: received keys", "keys", strings.Join(res.Imported, "; "))
+		Notifier("esec vault: keys received", "Received "+strings.Join(res.Imported, ", ")+".")
+		s.refreshBroker()
+		if err := s.serverSync(ctx, a); err != nil {
+			s.Logger.Warn("vault server sync pending; will retry", "error", err)
+		}
+	}
+	if len(res.Sent) > 0 {
+		s.Logger.Info("shared projects: sent keys", "to", strings.Join(res.Sent, "; "))
+	}
+	for _, c := range res.Conflicts {
+		if s.stillWaiting("conflict " + c) {
+			Notifier("esec vault: key not replaced", c+": the team sent a key, but this device holds another. Run: esec vault team sync")
+		}
+	}
+	for _, d := range res.Dropped {
+		s.Logger.Warn("shared projects: dropped an out-of-date grant", "grant", d)
+	}
+	for _, e := range res.Elsewhere {
+		msg := "Your account " + e + " from another device. If that was not you, a revoked device may still hold your old user key: check the project's page."
+		s.Logger.Warn("shared projects: " + msg)
+		Notifier("esec vault: project changed", msg)
+	}
+	for _, p := range res.Problems {
+		s.Logger.Warn("shared projects: " + p)
+		if s.stillWaiting("problem " + p) {
+			Notifier("esec vault: shared project problem", p)
+		}
+	}
+	for _, inv := range res.Invites {
+		if s.stillWaiting("invite " + inv.Project) {
+			msg := fmt.Sprintf("%s added you to the shared project %s. To take in its keys, run: esec vault team sync", inv.AddedBy, inv.Project)
+			s.Logger.Info("shared projects: " + msg)
+			Notifier("esec vault: added to a project", msg)
+		}
+	}
+	for project, envs := range res.Rotations {
+		for _, env := range envs {
+			key := "rotate " + project + " " + env
+			if s.teamNoted[key] {
+				continue
+			}
+			s.teamNoted[key] = true
+			msg := fmt.Sprintf("%s %s needs a new key: someone who could read it left. In the repository run: esec vault env rotate %s", project, env, env)
+			if !res.Admin[project] {
+				msg = fmt.Sprintf("%s %s needs a new key: someone who could read it left. Until an admin replaces it, treat its secrets as known to them.", project, env)
+			}
+			s.Logger.Warn("shared projects: " + msg)
+			Notifier("esec vault: rotate a key", msg)
+		}
+	}
 }
 
 // announceChain notifies about devices added since seq by recovery phrase or

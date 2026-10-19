@@ -222,6 +222,73 @@ func (c *Client) Audit(ctx context.Context, limit int) ([]wire.AuditEntry, error
 	return out.Entries, err
 }
 
+// Person returns another account's user chain and account proof by GitHub
+// login.
+func (c *Client) Person(ctx context.Context, login string) (*wire.Person, error) {
+	var out wire.Person
+	return &out, c.do(ctx, http.MethodGet, "/v1/users?login="+url.QueryEscape(login), authenticated, nil, &out)
+}
+
+// PersonByID returns another account's user chain and account proof.
+func (c *Client) PersonByID(ctx context.Context, id string) (*wire.Person, error) {
+	var out wire.Person
+	return &out, c.do(ctx, http.MethodGet, "/v1/users/"+url.PathEscape(id), authenticated, nil, &out)
+}
+
+// PutProof publishes this account's GitHub SSH proof.
+func (c *Client) PutProof(ctx context.Context, p wire.AccountProof) error {
+	return c.do(ctx, http.MethodPut, "/v1/account/proof", authenticated, p, nil)
+}
+
+// Projects lists this account's shared projects.
+func (c *Client) Projects(ctx context.Context) ([]wire.ProjectSummary, error) {
+	var out wire.Projects
+	err := c.do(ctx, http.MethodGet, "/v1/projects", authenticated, nil, &out)
+	return out.Projects, err
+}
+
+func projectPath(project string) string {
+	org, repo, _ := strings.Cut(project, "/")
+	return "/v1/projects/" + url.PathEscape(org) + "/" + url.PathEscape(repo)
+}
+
+// ProjectChain returns a project chain with its signers' user chains.
+func (c *Client) ProjectChain(ctx context.Context, project string) (*wire.ProjectChain, error) {
+	var out wire.ProjectChain
+	return &out, c.do(ctx, http.MethodGet, projectPath(project)+"/chain", authenticated, nil, &out)
+}
+
+// ProjectStatus returns key delivery for a project's members and machines.
+func (c *Client) ProjectStatus(ctx context.Context, project string) (*wire.ProjectStatus, error) {
+	var out wire.ProjectStatus
+	return &out, c.do(ctx, http.MethodGet, projectPath(project)+"/status", authenticated, nil, &out)
+}
+
+// ProjectCommit appends links and stores grants.
+func (c *Client) ProjectCommit(ctx context.Context, project string, cm *wire.ProjectCommit) (*wire.ProjectCommitResult, error) {
+	var out wire.ProjectCommitResult
+	return &out, c.do(ctx, http.MethodPost, projectPath(project)+"/commit", authenticated, cm, &out)
+}
+
+// Grants lists grants waiting for this account.
+func (c *Client) Grants(ctx context.Context) ([]wire.GrantItem, error) {
+	var out wire.Grants
+	err := c.do(ctx, http.MethodGet, "/v1/grants", authenticated, nil, &out)
+	return out.Grants, err
+}
+
+// AckGrants removes handled grants and records the keys now held.
+func (c *Client) AckGrants(ctx context.Context, ack wire.GrantAck) error {
+	return c.do(ctx, http.MethodPost, "/v1/grants/ack", authenticated, ack, nil)
+}
+
+// MachineKeys fetches a machine's sealed keys. The request is signed by the
+// machine key in the body, not by a device.
+func (c *Client) MachineKeys(ctx context.Context, req wire.MachineKeysRequest) (*wire.MachineKeys, error) {
+	var out wire.MachineKeys
+	return &out, c.do(ctx, http.MethodPost, "/v1/machines/keys", unsigned, req, &out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, m mode, in, out any) error {
 	var body []byte
 	if in != nil {

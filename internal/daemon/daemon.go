@@ -95,6 +95,14 @@ type Server struct {
 	// noteWindow and notes rate-limit pending-device notifications.
 	noteWindow time.Time
 	notes      int
+	// lastTeamSync is when shared projects were last synced; teamNoted
+	// holds what was already notified about them.
+	lastTeamSync time.Time
+	teamNoted    map[string]bool
+	// teamSeen is when a key waiting for this device was first seen.
+	// Another device of the account usually takes it in at once, so the
+	// daemon notifies only when one is still waiting later.
+	teamSeen map[string]time.Time
 }
 
 // New constructs a locked daemon. Tests inject an in-memory keyring.

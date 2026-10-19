@@ -71,6 +71,26 @@
   <p class="muted">The web pages never show creation tokens: with one, whoever controls a person's GitHub account could create that person's vault account before they do.</p>
 </details>
 
+<h2 id="projects">Shared projects</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Project</th><th>Members</th><th>Machines</th><th>Needs</th><th>Last change</th></tr></thead>
+  <tbody>
+  {{range .Teams}}
+  <tr>
+    <td><a href="/teams/{{.ID}}"><strong>{{.ID}}</strong></a></td>
+    <td>{{.Members}}</td>
+    <td>{{.Machines}}</td>
+    <td>{{if .Rotations}}<span class="badge status-pending">{{plural .Rotations "key"}} to rotate</span> {{end}}{{if .Missing}}<span class="badge">{{.Missing}} not sent</span>{{end}}{{if and (not .Rotations) (not .Missing)}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{when .Updated}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No shared projects yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
 <h2 id="events">{{if .AllEvents}}All events{{else}}Security events{{end}}</h2>
 <nav class="filters" aria-label="Events">
   <a href="/admin#events"{{if not .AllEvents}} aria-current="true"{{end}}>Security events</a>

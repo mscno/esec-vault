@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -52,28 +53,9 @@ func Statement(login, pubkeyHex string) []byte {
 // frequently passphrase-protected or agent-held; shelling out keeps key
 // handling in OpenSSH.
 func Prove(login, pubkeyHex, sshKeyPath string) (*Proof, error) {
-	if _, err := exec.LookPath("ssh-keygen"); err != nil {
-		return nil, fmt.Errorf("ssh-keygen not found: %w", err)
-	}
-	dir, err := os.MkdirTemp("", "esec-proof-")
+	sig, err := SignWithKeyFile(sshKeyPath, ProofNamespace, Statement(login, pubkeyHex))
 	if err != nil {
 		return nil, err
-	}
-	defer os.RemoveAll(dir)
-
-	stmtPath := filepath.Join(dir, "statement")
-	if err := os.WriteFile(stmtPath, Statement(login, pubkeyHex), 0600); err != nil {
-		return nil, err
-	}
-	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-n", ProofNamespace, "-f", sshKeyPath, stmtPath)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ssh-keygen sign failed: %v: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	sig, err := os.ReadFile(stmtPath + ".sig") //nolint:gosec // stmtPath is our own temp file
-	if err != nil {
-		return nil, fmt.Errorf("signature not produced: %w", err)
 	}
 	return &Proof{
 		Version:    ProofVersion,
@@ -213,27 +195,42 @@ func writeSSHString(buf *bytes.Buffer, b []byte) {
 // binds the login and esec pubkey, so a valid proof proves GitHub-account
 // control over the claimed identity key.
 func VerifyProof(p *Proof, githubKeys []ssh.PublicKey) error {
-	sig, err := parseSSHSIG([]byte(p.Signature))
+	if err := VerifySSHSIG([]byte(p.Signature), ProofNamespace, Statement(p.Login, p.EsecPubkey), githubKeys); err != nil {
+		if errors.Is(err, ErrUnknownSigner) {
+			return fmt.Errorf("signing key is not registered on GitHub for %s", p.Login)
+		}
+		return err
+	}
+	return nil
+}
+
+// ErrUnknownSigner is returned when an SSH signature is valid in form but
+// made by none of the expected keys.
+var ErrUnknownSigner = errors.New("the signing key is not one of the expected keys")
+
+// VerifySSHSIG checks that armored is an SSHSIG over message in namespace,
+// made by one of keys.
+func VerifySSHSIG(armored []byte, namespace string, message []byte, keys []ssh.PublicKey) error {
+	sig, err := parseSSHSIG(armored)
 	if err != nil {
 		return fmt.Errorf("invalid signature: %w", err)
 	}
-	if sig.ns != ProofNamespace {
+	if sig.ns != namespace {
 		return fmt.Errorf("unexpected signature namespace %q", sig.ns)
 	}
-
 	signer, err := ssh.ParsePublicKey(sig.pubkey)
 	if err != nil {
 		return fmt.Errorf("invalid signer key: %w", err)
 	}
 	found := false
-	for _, k := range githubKeys {
+	for _, k := range keys {
 		if bytes.Equal(k.Marshal(), signer.Marshal()) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		return fmt.Errorf("signing key is not registered on GitHub for %s", p.Login)
+		return ErrUnknownSigner
 	}
 
 	// The signature blob is SSH wire format: string algorithm, string sig.
@@ -246,7 +243,7 @@ func VerifyProof(p *Proof, githubKeys []ssh.PublicKey) error {
 		return fmt.Errorf("invalid signature blob: %w", err)
 	}
 	parsed := &ssh.Signature{Format: string(alg), Blob: sigBlob}
-	signedData, err := sig.signedData(Statement(p.Login, p.EsecPubkey))
+	signedData, err := sig.signedData(message)
 	if err != nil {
 		return err
 	}
@@ -256,14 +253,89 @@ func VerifyProof(p *Proof, githubKeys []ssh.PublicKey) error {
 	return nil
 }
 
+// ArmorSSHSIG encodes a signature over the SHA-512 SSHSIG data of a message
+// in namespace (as an SSH agent makes it) as an armored SSHSIG, the format
+// of 'ssh-keygen -Y sign'.
+func ArmorSSHSIG(pub ssh.PublicKey, namespace string, sig *ssh.Signature) []byte {
+	var blob bytes.Buffer
+	writeSSHString(&blob, []byte(sig.Format))
+	writeSSHString(&blob, sig.Blob)
+	var raw bytes.Buffer
+	raw.WriteString(sshsigMagic)
+	raw.Write([]byte{0, 0, 0, 1})
+	writeSSHString(&raw, pub.Marshal())
+	writeSSHString(&raw, []byte(namespace))
+	writeSSHString(&raw, nil)
+	writeSSHString(&raw, []byte("sha512"))
+	writeSSHString(&raw, blob.Bytes())
+	enc := base64.StdEncoding.EncodeToString(raw.Bytes())
+	var out bytes.Buffer
+	out.WriteString("-----BEGIN SSH SIGNATURE-----\n")
+	for len(enc) > 70 {
+		out.WriteString(enc[:70] + "\n")
+		enc = enc[70:]
+	}
+	out.WriteString(enc + "\n-----END SSH SIGNATURE-----\n")
+	return out.Bytes()
+}
+
+// SignWithKeyFile signs message in namespace with an SSH key file (or the
+// agent key it names) through ssh-keygen, and returns the armored SSHSIG.
+func SignWithKeyFile(sshKeyPath, namespace string, message []byte) ([]byte, error) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		return nil, fmt.Errorf("ssh-keygen not found: %w", err)
+	}
+	dir, err := os.MkdirTemp("", "esec-proof-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	msgPath := filepath.Join(dir, "statement")
+	if err := os.WriteFile(msgPath, message, 0600); err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-n", namespace, "-f", sshKeyPath, msgPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ssh-keygen sign failed: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	sig, err := os.ReadFile(msgPath + ".sig") //nolint:gosec // our own temp file
+	if err != nil {
+		return nil, fmt.Errorf("signature not produced: %w", err)
+	}
+	return sig, nil
+}
+
+var githubLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+
+// GitHubURL is the GitHub web origin keys are fetched from:
+// ESEC_VAULT_GITHUB_URL (for GitHub Enterprise and tests), else github.com.
+func GitHubURL() string {
+	if u := strings.TrimRight(os.Getenv("ESEC_VAULT_GITHUB_URL"), "/"); u != "" {
+		return u
+	}
+	return "https://github.com"
+}
+
 // FetchGitHubKeys retrieves the SSH public keys registered on a GitHub
 // account. baseURL is injectable for testing (pass "" for the default).
 func FetchGitHubKeys(login string, client *http.Client, baseURL string) ([]ssh.PublicKey, error) {
+	// The login goes into the URL, and may come from a server or a file in
+	// a repository: anything but a GitHub login could point the request at
+	// another page.
+	if !githubLogin.MatchString(login) || strings.Contains(login, "--") || strings.HasSuffix(login, "-") {
+		return nil, fmt.Errorf("invalid GitHub login %q", login)
+	}
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	// github.com/LOGIN.keys never redirects; refuse a redirect elsewhere.
+	c := *client
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client = &c
 	if baseURL == "" {
-		baseURL = "https://github.com"
+		baseURL = GitHubURL()
 	}
 	resp, err := client.Get(baseURL + "/" + login + ".keys")
 	if err != nil {

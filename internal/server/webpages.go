@@ -171,7 +171,12 @@ func (s *Server) webAccount(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	data["Notices"] = append(s.notices(devices, slots, len(links) > 0, enabledSlots, now), alertNotice...)
+	teamNotices, err := s.teamNotices(ctx, ws.user.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	data["Notices"] = append(append(s.notices(devices, slots, len(links) > 0, enabledSlots, now), teamNotices...), alertNotice...)
 	s.render(w, http.StatusOK, "account.html", data)
 }
 
@@ -402,6 +407,12 @@ func (s *Server) webProjects(w http.ResponseWriter, r *http.Request) {
 			data["PushedBy"] = d.Name
 		}
 	}
+	teams, err := s.teamSummaries(ctx, ws.user.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	data["Teams"] = teams
 	s.render(w, http.StatusOK, "projects.html", data)
 }
 
@@ -559,6 +570,12 @@ func (s *Server) webAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data["Alerts"] = alerts
+	teams, err := s.teamSummaries(ctx, "")
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	data["Teams"] = teams
 	s.render(w, http.StatusOK, "admin.html", data)
 }
 

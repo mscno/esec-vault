@@ -111,6 +111,21 @@ func Run(client *broker.Client, env, format string, command []string) error {
 		}
 	}()
 
+	return wait(cmd)
+}
+
+// Exec runs command with env and the terminal, forwarding signals, and
+// returns an *ExitError for a non-zero exit.
+func Exec(command, env []string) error {
+	if len(command) == 0 {
+		return errors.New("no command given")
+	}
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Env = env
+	return wait(cmd)
+}
+
+func wait(cmd *exec.Cmd) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

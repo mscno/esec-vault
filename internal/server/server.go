@@ -55,6 +55,8 @@ type Server struct {
 	// alertKick wakes the alert worker; alertHTTP delivers alerts.
 	alertKick chan struct{}
 	alertHTTP *http.Client
+	// oidc checks machines' OIDC tokens.
+	oidc *oidcVerifier
 }
 
 // Option customizes a Server, mainly for tests.
@@ -87,6 +89,7 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 	s := &Server{cfg: cfg, db: db, log: log, now: time.Now, version: "dev", anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), bodies: newBodyBudget(maxBodyActive, maxBodyPerAccount), pendingSmall: newBodyBudget(maxPendingSmall, maxPendingPerDevice), pendingLarge: newBodyBudget(maxPendingLarge, maxLargeBody), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates, regPerAddr: 10, regPerNet: 100}
 	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
 	s.alertKick, s.alertHTTP = make(chan struct{}, 1), newAlertClient()
+	s.oidc = newOIDCVerifier(githubIssuer, githubJWKS, nil)
 	for _, o := range opts {
 		o(s)
 	}
@@ -104,14 +107,16 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 			}
 			return t.UTC().Format("2006-01-02 15:04 UTC")
 		},
-		"when":    func(t time.Time) template.HTML { return whenHTML(s.now(), t) },
-		"ago":     func(t time.Time) string { return relTime(s.now(), t) },
-		"bytes":   byteSize,
-		"plural":  plural,
-		"method":  methodLabel,
-		"browser": browserSummary,
-		"dur":     durationText,
-		"int":     func(n uint64) int { return int(n) }, //nolint:gosec // chain lengths are small
+		"when":       func(t time.Time) template.HTML { return whenHTML(s.now(), t) },
+		"ago":        func(t time.Time) string { return relTime(s.now(), t) },
+		"bytes":      byteSize,
+		"plural":     plural,
+		"method":     methodLabel,
+		"browser":    browserSummary,
+		"dur":        durationText,
+		"key":        keyBadge,
+		"trimPrefix": strings.TrimPrefix,
+		"int":        func(n uint64) int { return int(n) }, //nolint:gosec // chain lengths are small
 	}).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -201,6 +206,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /alerts/confirm", s.webAlertConfirm)
 	m.HandleFunc("GET /admin", s.webAdmin)
 	m.HandleFunc("GET /admin/users/{id}", s.webAdminUser)
+	m.HandleFunc("GET /teams/{org}/{repo}", s.webTeam)
 
 	// API: device authorization grant.
 	m.HandleFunc("POST /v1/auth/device", s.apiDeviceRegister)
@@ -227,6 +233,18 @@ func (s *Server) routes() {
 	m.Handle("DELETE /v1/agent-slots/{id}", s.api(false, s.apiDisableSlot))
 	m.Handle("GET /v1/events", s.api(false, s.apiEvents))
 	m.Handle("GET /v1/audit", s.api(false, s.apiAudit))
+
+	// API: shared projects and machines.
+	m.Handle("GET /v1/users", s.api(false, s.apiPerson))
+	m.Handle("GET /v1/users/{id}", s.api(false, s.apiPerson))
+	m.Handle("PUT /v1/account/proof", s.api(false, s.apiPutProof))
+	m.Handle("GET /v1/projects", s.api(false, s.apiProjects))
+	m.Handle("GET /v1/projects/{org}/{repo}/chain", s.api(false, s.apiProjectChain))
+	m.Handle("GET /v1/projects/{org}/{repo}/status", s.api(false, s.apiProjectStatus))
+	m.Handle("POST /v1/projects/{org}/{repo}/commit", s.api(false, s.apiProjectCommit))
+	m.Handle("GET /v1/grants", s.api(false, s.apiGrants))
+	m.Handle("POST /v1/grants/ack", s.api(false, s.apiGrantAck))
+	m.HandleFunc("POST /v1/machines/keys", s.apiMachineKeys)
 	s.mux = m
 }
 

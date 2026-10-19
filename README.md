@@ -14,7 +14,9 @@ Both forms run the same program.
 - [Add environments and keys](#add-environments-and-keys).
 - [Use keys in subfolders](#use-keys-in-subfolders).
 - [Import existing project keys](#import-existing-project-keys).
-- [Share keys with a teammate](#share-project-keys-with-a-teammate).
+- [Share a project with your team through the server](#share-a-project-with-your-team).
+- [Give CI jobs and apps their own key](#give-ci-jobs-and-apps-their-own-key).
+- [Share keys with a teammate without a server](#share-project-keys-with-a-teammate).
 - [Run an application through the broker](#run-applications-through-the-broker).
 - [Set up a remote backup](#remote-configuration-file--wizard).
 - [Operate the daemon](#automatic-backups).
@@ -199,9 +201,12 @@ Sign in at your server with GitHub. The pages never decrypt anything.
   activity.
 - **Activity**: everything the server recorded for your account, filtered by
   sign-ins, devices, vault or slots, or by one device.
-- **Projects**: project ids, environment names and public keys, never private
-  keys or values. Search by a public key to find which project and
-  environment an encrypted file belongs to.
+- **Projects**: your shared projects, then your own project ids, environment
+  names and public keys, never private keys or values. Search by a public
+  key to find which project and environment an encrypted file belongs to.
+  Each shared project has a page with its members, what each reads and
+  whether their devices have the keys yet, its machines and when they were
+  last used, keys to rotate, and its history.
 - **Vault**: the stored versions of your vault, with who pushed each.
 - **Enter a code**: confirm a device sign-in.
 - **Alerts** (on the overview, when the server sends email): get an email
@@ -667,7 +672,130 @@ exists only in an environment variable or an external secret store must first
 be saved or imported into the global store. esec-vault does not scan SSH keys
 or other tools' credential stores for project keys.
 
+## Share a project with your team
+
+With a vault server, a project can have members: who may read which
+environment is kept in a list signed by the project's admins, and each
+member's devices receive the keys they may read, sealed to that member's
+own key. The server passes them on but cannot read them, and cannot add
+anyone. Everyone who shares a project needs an account on the same server.
+
+### Step 1: Members prove their account
+
+Each new member signs in to the server, then proves with an SSH key
+registered on their GitHub account that the vault account is theirs:
+
+```sh
+esec vault login https://vault.example.com
+esec vault team prove                     # uses your SSH agent
+esec vault team prove --ssh-key ~/.ssh/id_ed25519
+```
+
+Without a GitHub SSH key, the member reads out the account key words that
+`esec vault status` shows instead, and the admin types them in step 3.
+
+### Step 2: Share the project
+
+On a device that holds the project's keys, in its repository:
+
+```sh
+esec vault team create                    # you become its first admin
+```
+
+### Step 3: Add people
+
+```sh
+esec vault team add alice --env dev,staging
+esec vault team add bob --admin           # reads everything, manages the project
+esec vault team add carol --env dev --account-key "word word word …"
+```
+
+`add` checks the person's GitHub proof against `github.com/LOGIN.keys`, and
+sends them the keys of the environments they may read. The first time, the
+member's device asks before it takes in a project's keys:
+
+```sh
+esec vault team sync                      # on Alice's machine
+```
+
+After that, the background service takes in new keys on its own, and
+Alice's other devices get them through her vault.
+
+### Change access, remove people, rotate keys
+
+```sh
+esec vault team                           # your shared projects
+esec vault team show                      # members, keys, what needs doing
+esec vault team set alice --env dev,staging,prod
+esec vault team remove alice
+esec vault team leave
+```
+
+Someone who loses access may still hold the keys they had. `remove` and
+`set` list the environments that need a new key, the project page shows
+them, and the other members get an alert. In the repository, an admin runs:
+
+```sh
+esec vault env rotate prod
+```
+
+It re-encrypts the files, and sends the new key to everyone who still
+reads `prod`. Commit the re-encrypted files, and change the secret values
+themselves where they may have been seen. Only admins rotate or add keys of
+a shared project; `env add` and `env rotate` send them to the team.
+
+Admins' devices send keys that members are missing on their own, for
+example after a member's user key changed. `esec vault team sync` does the
+same by hand.
+
+## Give CI jobs and apps their own key
+
+A machine is a key for one CI job or app, instead of a copy of an
+environment key: it reads only the environments you give it, every use
+is recorded, and removing it stops it at once. An admin creates it:
+
+```sh
+esec vault machine create deploy --env prod
+esec vault machine create deploy --env prod --out - | gh secret set ESEC_VAULT_MACHINE_KEY
+```
+
+Store the key it prints as the secret `ESEC_VAULT_MACHINE_KEY`. In the job,
+`esec-vault` fetches the machine's keys and runs your command with them:
+
+```sh
+esec-vault machine run -- esec run prod -- ./deploy.sh
+esec-vault machine env --format github    # GitHub Actions: masked, into $GITHUB_ENV
+```
+
+For GitHub Actions, bind the machine to a repository, so the server hands
+its keys only to that repository's jobs. A leaked secret is then useless
+anywhere else:
+
+```sh
+esec vault machine create deploy --env prod \
+  --github-repo acme/store --github-ref refs/heads/main --github-environment production
+```
+
+```yaml
+permissions:
+  id-token: write   # lets the job prove where it runs
+steps:
+  - run: esec-vault machine run -- esec run prod -- ./deploy.sh
+    env:
+      ESEC_VAULT_MACHINE_KEY: ${{ secrets.ESEC_VAULT_MACHINE_KEY }}
+```
+
+On Fly.io or another host, set the secret the same way
+(`fly secrets set ESEC_VAULT_MACHINE_KEY=…`) and start the app with
+`esec-vault machine run -- ./app`. List and remove machines with
+`esec vault machine list` and `esec vault machine remove deploy`; removing
+one lists the environments to rotate.
+
 ## Share project keys with a teammate
+
+This section shares keys without a vault server, through files committed to
+the repository. With a server, [share the project with your team](#share-a-project-with-your-team)
+instead.
 
 Sharing is different from cloud backup. A backup protects your copy of the keys.
 A share gives another person's vault identity a copy of selected project keys.
@@ -1178,6 +1306,10 @@ Migration is explicit; installing the binary does not alter live keys.
 | List stored projects | `esec vault keyring list` |
 | List this project's named keys and public keys | `esec vault env list` |
 | List another project's named keys | `esec vault env list --project acme/store` |
+| List shared projects | `esec vault team` |
+| See who reads what, and what needs doing | `esec vault team show` |
+| Receive and send team keys now | `esec vault team sync` |
+| List a project's machines | `esec vault machine list` |
 | List proofs in the current project | `esec vault members list` |
 | Import a share after `git pull` | `esec vault sync` |
 | Reload policy after editing it | `esec vault daemon reload` |

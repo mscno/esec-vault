@@ -224,7 +224,7 @@ everyone who checks them.
 | Task | How |
 |---|---|
 | Add a person | Add their numeric id to `allowed_github_ids` and redeploy. Print their token with `esec-vault-server -bootstrap-token-for <id>` and send it to them. They sign in and create their own account. The Admin page shows when they have. |
-| Remove a person | Remove the id and redeploy. Their sessions fail on the next request. Their data stays until you delete it. |
+| Remove a person | Remove the id and redeploy. Their sessions fail on the next request. Their data stays until you delete it. Shared projects still list them (their pages mark them "removed from the server"): an admin of each project removes them with `esec vault team remove LOGIN` and rotates the keys they could read. |
 | Rotate the GitHub client secret | Generate a new secret in the OAuth app, run `fly secrets set ESEC_SERVER_GITHUB_CLIENT_SECRET=...`, then delete the old secret. |
 
 ## Respond to incidents
@@ -236,6 +236,8 @@ everyone who checks them.
 | Unknown device added via SSH agent | Revoke it. Disable the slot (`esec vault agent-unlock disable`). Treat the SSH key as exposed. |
 | Server compromised | The attacker gets metadata and can deny service. They cannot decrypt anything or add devices: clients verify the chain and refuse rollbacks. Redeploy from a clean image, rotate the GitHub client secret and Litestream credentials, and review the audit log. |
 | GitHub account taken over | The attacker can create pending devices but cannot decrypt anything without approval, the recovery phrase, or an SSH-agent slot. Secure the GitHub account, then suspend any unknown devices. |
+| Someone leaves a team | An admin runs `esec vault team remove LOGIN`, then `esec vault env rotate ENV` in the repository for each environment it lists, and changes the secret values they may have seen. The project page shows what is left. |
+| Machine key leaked | `esec vault machine remove NAME`: the server stops handing it keys at once. Rotate the environments it could read. A machine bound to GitHub Actions is useless outside its repository and refs even before that. |
 
 ## Close the server to new devices during an attack
 
@@ -258,7 +260,11 @@ The server can tell people about security events on their account:
 - a device was approved (or the account was created);
 - a device was suspended or revoked;
 - someone signed in on the web from a browser the account never used, or
-  one that signed out since.
+  one that signed out since;
+- in a shared project: someone was added (to them), someone was removed
+  or left (to every remaining member, since the keys they could read need
+  replacing), and a machine was added or removed (to the project's
+  admins).
 
 Alerts go by email, through [Lettermint](https://lettermint.co), and to a
 webhook. Both are optional, and the server runs without either.
@@ -298,7 +304,9 @@ Each post is JSON:
 ```
 
 `type` is `device.registered`, `device.added`, `device.suspended`,
-`device.revoked` or `web.new_browser`. `text` is the whole message, so a
+`device.revoked`, `web.new_browser`, `project.member_added`,
+`project.member_removed`, `project.machine_added` or
+`project.machine_removed`; project alerts also carry `project`. `text` is the whole message, so a
 Slack incoming webhook shows it as is. The headers are
 `X-Esec-Vault-Event` (the type), `X-Esec-Vault-Delivery` (the id),
 `X-Esec-Vault-Timestamp` (Unix seconds) and, with a secret,
@@ -328,6 +336,26 @@ Alerts carry metadata the server already holds: logins, device names and
 platforms, addresses, times. Lettermint and the webhook's receiver see it.
 They never carry keys or the words a new device shows.
 
+## Shared projects and machines
+
+Shared projects need nothing to set up: any account on the server can
+share a project and add other accounts. The server stores each project's
+signed chain and the grants that carry keys, sealed to their recipients,
+and checks them with the same rules clients use; it cannot read the keys or
+change who may read them.
+
+Machines fetch their keys from `POST /v1/machines/keys` without a session:
+the machine's own key signs each request, and a nonce stops replays. For a
+machine bound to GitHub Actions, the server also checks the job's OIDC
+token: its signature against the keys at
+`https://token.actions.githubusercontent.com/.well-known/jwks` (fetched on
+first use and cached for a day, so the server needs outbound HTTPS), the
+issuer, the audience (the server's `base_url`), its lifetime, and the
+repository, its id, the ref and the deployment environment the machine
+allows. Requests are limited to 600 an hour per machine and per address.
+Each use is in the project's log on its page, with the repository, ref and
+run of an OIDC job; refused tokens are logged too.
+
 ## Monitor
 
 - `GET /healthz` returns `ok`.
@@ -347,4 +375,7 @@ They never carry keys or the words a new device shows.
   fingerprint words or account creation tokens, and it cannot change
   anything: only the account owner suspends devices or ends sessions.
   It also shows whether email and webhook alerts are on, and their delivery
-  in the last 7 days.
+  in the last 7 days, and every shared project with its members, machines,
+  keys still to send and keys to rotate. Each project's page (read-only for
+  admins) shows who reads which environment, whether their devices have the
+  keys, the machines with their last use, and the project's history.

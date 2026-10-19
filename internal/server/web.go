@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/team"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
@@ -151,6 +152,9 @@ func safeNext(next string) string {
 		if id, ok := strings.CutPrefix(u.Path, prefix); ok && validID(id) {
 			return u.Path
 		}
+	}
+	if id, ok := strings.CutPrefix(u.Path, "/teams/"); ok && team.ValidProject(id) == nil {
+		return u.Path
 	}
 	return "/account"
 }

@@ -201,9 +201,15 @@ var codePattern = `enter ([0-9A-Z]{4}-[0-9A-Z]{4})`
 // login signs m in and confirms the code in the browser as login.
 func login(t *testing.T, h *servertest.Harness, m *machine, stdin string, args ...string) *background {
 	t.Helper()
+	return loginAs(t, h, "mscno", m, stdin, args...)
+}
+
+// loginAs signs m in as the GitHub user gh.
+func loginAs(t *testing.T, h *servertest.Harness, gh string, m *machine, stdin string, args ...string) *background {
+	t.Helper()
 	p := m.start(stdin, append([]string{"login", h.URL, "--no-browser", "--name", m.name}, args...)...)
 	code := p.waitFor(codePattern)
-	if err := h.Browser("mscno").Confirm(code, true); err != nil {
+	if err := h.Browser(gh).Confirm(code, true); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -211,6 +217,13 @@ func login(t *testing.T, h *servertest.Harness, m *machine, stdin string, args .
 
 // testAgent serves an in-memory SSH agent holding one Ed25519 key.
 func testAgent(t *testing.T) (string, string) {
+	t.Helper()
+	sock, fp, _ := testAgentKey(t)
+	return sock, fp
+}
+
+// testAgentKey is testAgent that also returns the key's authorized_keys line.
+func testAgentKey(t *testing.T) (string, string, string) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "esa") //nolint:usetesting // unix socket paths must stay short
 	if err != nil {
@@ -238,7 +251,7 @@ func testAgent(t *testing.T) (string, string) {
 			go func() { _ = agent.ServeAgent(kr, c); c.Close() }()
 		}
 	}()
-	return sock, ssh.FingerprintSHA256(pub)
+	return sock, ssh.FingerprintSHA256(pub), string(ssh.MarshalAuthorizedKey(pub))
 }
 
 // decryptsTo checks that m can decrypt the test project's dev file.

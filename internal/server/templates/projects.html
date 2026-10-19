@@ -1,5 +1,26 @@
 {{template "head" .}}
 <h1>Projects</h1>
+{{if .Teams}}
+<h2 id="shared">Shared with your team</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Project</th><th>You</th><th>Members</th><th>Machines</th><th>Needs</th><th>Last change</th></tr></thead>
+  <tbody>
+  {{range .Teams}}
+  <tr>
+    <td><a href="/teams/{{.ID}}"><strong>{{.ID}}</strong></a></td>
+    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .Access}}read {{range $i, $e := .Access}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">no environments</span>{{end}}</td>
+    <td>{{.Members}}</td>
+    <td>{{.Machines}}</td>
+    <td>{{if .Rotations}}<span class="badge status-pending">{{plural .Rotations "key"}} to rotate</span> {{end}}{{if .Missing}}<span class="badge">{{.Missing}} not sent</span>{{end}}{{if and (not .Rotations) (not .Missing)}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{when .Updated}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<h2>Your vault</h2>
+{{end}}
 {{if .Index}}
 <p class="muted">As of vault version {{.Vault.Version}}, pushed {{when .Vault.CreatedAt}}{{with .PushedBy}} by {{.}}{{end}}. Only names and public keys are shown; private keys and secret values stay encrypted on your devices.</p>
 <form method="get" action="/projects" class="search" role="search">
@@ -30,6 +51,15 @@
 </table>
 </div>
 <p class="muted">Search by a public key to find which project and environment an encrypted file belongs to: it is the <code>ESEC_PUBLIC_KEY</code> line of a <code>.env</code> file, or <code>_ESEC_PUBLIC_KEY</code> in <code>.ejson</code>.</p>
+{{if not .Teams}}
+<details class="help">
+  <summary>Share a project with your team</summary>
+  <p>In the project's repository, on a device that holds its keys:</p>
+  {{template "cmd" "esec vault team create"}}
+  {{template "cmd" "esec vault team add LOGIN --env dev"}}
+  <p class="muted">Members get the keys of the environments they may read, sealed to their own key, on their devices. The project's page then shows who reads what, and what to rotate when someone leaves.</p>
+</details>
+{{end}}
 {{else if .Vault}}
 <p>Your devices do not publish a project index. Turn it on from any device:</p>
 {{template "cmd" "esec vault index on"}}

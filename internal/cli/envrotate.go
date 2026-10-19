@@ -29,6 +29,10 @@ func (c *EnvRotateCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
+	shared, err := sharedProject(ctx, project)
+	if err != nil {
+		return err
+	}
 	if !c.Yes && !confirm(fmt.Sprintf("Replace the %s key of %s and re-encrypt its files under %s?", c.Env, project, root)) {
 		return errors.New("rotation cancelled")
 	}
@@ -37,6 +41,9 @@ func (c *EnvRotateCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	markDirty("env rotate")
+	if shared {
+		publishShared(ctx, project, c.Env, "rotated")
+	}
 	fmt.Printf("✓ Rotated %s %s: new public key %s\n", project, c.Env, res.NewPublic)
 	if len(res.Files) == 0 {
 		fmt.Println("! No file under", root, "used the old key. Rotate files elsewhere with the new key yourself.")

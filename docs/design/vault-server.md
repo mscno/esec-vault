@@ -1,9 +1,9 @@
 # Design: esec vault server, device sync, and encrypted key cache
 
-Status: phases 1–2 implemented (branch `feat/vault-server`; core esec branch
-`feat/sealed-keyring`). Phases 3–4 are sketched at the end. The section
-"Changes made during implementation" lists where the code differs from the
-first draft.
+Status: phases 1–4 implemented: devices and sync (§1–§13), shared projects
+(§14) and machines (§15). Passkey approval is sketched at the end. The
+section "Changes made during implementation" lists where the code differs
+from the first draft.
 
 ## Goal
 
@@ -586,6 +586,14 @@ audit(id, user_id, device_id, ip, action, detail_json, created_at)
 alert_outbox(id, user_id, kind, channel[email|webhook], recipient, payload, created_at,
              attempts, next_at, sent_at, failed_at, last_error)
 users.alert_email, alert_email_pending, alert_email_token (hash), alert_email_expires
+projects(id, created_by, created_at, seq, updated_at)
+project_links(project, seq, hash, envelope, signer, created_at)   PRIMARY KEY(project, seq)
+project_members(project, user_id, login, admin, envs, active)     -- mirror of the verified chain
+project_machines(id, project, name, sign_pub, active, created_at, last_used_at, last_ip, uses)
+project_grants(id, project, to_id, to_ukey_version, envs, envelope, created_by, created_at)
+project_holdings(project, holder, env, public_key, updated_at)    -- keys a member confirmed
+project_audit(id, project, actor, ip, action, detail, created_at)
+account_proofs(user_id, login, root, signature, created_at)
 ```
 
 ### API
@@ -610,6 +618,11 @@ and a request signed with `D.sign`.
 | `GET agent-slots`, `DELETE agent-slots/{id}` | §8 (approved devices) |
 | `GET events?after=&wait=` | Long poll for the daemon |
 | `GET audit` | Audit log |
+| `GET users?login=`, `GET users/{id}` | Another account's user chain and GitHub proof (§14) |
+| `PUT account/proof` | Publish this account's GitHub SSH proof |
+| `GET projects`, `GET projects/{org}/{repo}/chain`, `…/status`, `POST …/commit` | Shared projects: list, signed chain with its signers' user chains, key delivery, append links and grants (§14) |
+| `GET grants`, `POST grants/ack` | Keys waiting for this account; acknowledge and record what is now held |
+| `POST machines/keys` | A machine's sealed keys; no session, signed by the machine key, with an OIDC token when its policy asks (§15) |
 
 ### Web pages
 
@@ -624,6 +637,7 @@ and a request signed with `D.sign`.
 | `/vault` | Stored vault versions: size, hash, pushing device |
 | `/admin`, `/admin/users/{id}` | Read-only, for `admin_github_ids`: server status, alert delivery, accounts, server-wide security events. No keys, fingerprints or creation tokens |
 | `/alerts/confirm` | Confirms an alert address from the emailed link. Opening the link changes nothing (mail scanners open links); the button does |
+| `/teams/{org}/{repo}` | A shared project: members and what each reads, key delivery per environment, machines and their last use, keys to rotate, the chain's history and key deliveries. Members, and admins read-only |
 
 The pages use secure cookies (`SameSite=Lax` for OAuth), CSRF tokens, a strict
 CSP, and no third-party scripts. One first-party script adds copy buttons,
@@ -639,7 +653,10 @@ JSON post to the operator's webhook. Retries back off for about 11 hours;
 4xx answers are final. An address gets alerts only after its owner opens the
 emailed link and presses Confirm; a change or removal is told to the old
 address, so someone in the browser cannot silently redirect alerts. Alerts
-carry only metadata the server already holds.
+carry only metadata the server already holds. In shared projects, adding
+someone alerts them; removing someone or someone leaving alerts every
+remaining member, since the keys they could read need replacing; adding or
+removing a machine alerts the admins.
 
 ### Rate limits
 
@@ -691,8 +708,11 @@ esec vault sync --server                   # interactive pull, merge and push
 esec vault index [on|off]                  # publish the secret-free project index
 esec vault agent-unlock [enable --key K [--expires D]|list|disable ID]
 esec vault keyring [seal [--all]|unseal]
-esec vault env rotate ENV                  # phase 2
+esec vault env rotate ENV                  # phase 2; in a shared project, also sends the new key
 esec vault status                          # + server, session, device, secret store, chain head, sync state
+esec vault team [show|create|add LOGIN --env E|set LOGIN --env E|remove LOGIN|leave|sync|publish ENV|prove]
+esec vault machine [create NAME --env E [--github-repo R --github-ref REF]|list|remove NAME]
+esec-vault machine [run -- CMD|env]        # in a CI job or app, with ESEC_VAULT_MACHINE_KEY
 ```
 
 Account state lives in `~/.config/esec/account.toml`: server URL, user id,
@@ -715,6 +735,13 @@ secret store.
 | Stolen session token | Useless without `D.sign`. |
 | Stolen VM disk | With macOS Keychain or a TPM-bound secret store, sealed keyrings are useless without C. With the 0600 file store, everything is exposed: revoke and rotate. |
 | Live compromise of an active device | Everything that device can decrypt. Response: revoke, rotate U, rotate env keys, rotate values. |
+| Server compromise, for shared projects | The same as above: it sees who reads which environment, and can withhold links and grants. It cannot add a member or machine, change access, or swap an environment key: links are signed by admins' user keys, checked against their own chains from the roots the project recorded, and grants carry keys the chain names. Members pin project chains and colleagues' chains, so it cannot roll either back for a device that saw them. |
+| A colleague on the same server | They can create a shared project under any name (even one you use) and add you. Your device takes in nothing from a project until you accept it the first time, and never replaces a key you hold with one that project merely claims was earlier: such a key is kept and you are asked. |
+| A removed member, or an admin's device that was revoked | They keep the keys they had: the project page, `team show`, an alert to the remaining members, and the admins' daemons list every environment to rotate. A revoked device holds its owner's old user key: it cannot sign as of a chain position after the rotation, nor before a position its owner has signed at since. A grant signed with it can only carry the chain's current keys to people who may read them. |
+| A revoked admin device together with a compromised server | Until the admin signs anything in the project with the new key, the old key can sign a link as of the time before the rotation, which the server (if compromised) can accept, for example adding someone. Every device of the admin's account points such a change out ("your account added X from another device"), the project page and alerts show it, and the admin's next link makes any further one impossible. After revoking a device, admins of shared projects should check them. |
+| A compromised server that withholds a member's key rotation | Admins' devices keep sealing keys to the member's last key they saw. If the member rotated because a device was revoked, that device and the server together can open those grants. The member's own devices drop grants sealed to an old key and report it, and the project page shows their keys as waiting; the member then signs in from a fresh device or asks an admin to check. |
+| Machine key leaked | Removing the machine stops the server from handing its keys out at once. A machine bound to GitHub Actions is useless outside its repository, ref and environment even before that: its keys are released only with a valid OIDC token for this server. The leak is visible in the project's log (each use, with address, and refused tokens). |
+| GitHub OIDC issuer or a workflow in the bound repository compromised | Someone who can run a workflow on an allowed ref of the repository, and who has the machine key, gets that machine's keys. Bind machines to protected branches or deployment environments. |
 
 ## 13. Milestones
 
@@ -773,23 +800,169 @@ server (`httptest`) with a memory secret store.
 | Bodies read whole before the signature check | The signature covers a declared body hash and is checked first; small bodies for pending devices; per-account and total caps on bodies in memory, with a separate pool for pending devices | A copied session token could make the server buffer many 16 MiB uploads, and a first fix let pending devices block every account's uploads (found in security review). |
 | Pending devices told when a link's seq was stale | The same error as any rejected link | The 409 let a pending device probe the chain length (found in security review). |
 | Rate limits on all code entries | Limits on wrong codes, on both forms, per address (IPv6 /64) and per user; caps on open registrations, OAuth states and pending devices | Found in security review. |
+| Teams: grants encrypted to a member's current U, imported by their device | The same, plus holdings: members report the keys they hold, and admins' devices send whatever is missing | U rotates, members are added by admins who lack a key, and machines need new keys after a rotation; nobody should have to remember to resend. |
+| Teams: member keys checked with SSHSIG proofs against `github.com/<login>.keys` | The proof signs the account root, not a key | The root never changes, so one proof survives user key rotations; every key since is verified from it. |
+| Teams: project chain signed by admins | Signed by each admin's own user key at a named version and user chain position; positions never go back per signer | A revoked device holds its owner's old user key. A first version compared times, which a backdated rotation could use to break a project for good (found in review). |
+| — | Grants supersede older grants to the same member; at most 50 wait per project and member | A global cap let anyone block a member's grants everywhere (found in review). |
+| — | A device accepts a project before taking in its keys, and replaces only keys it got from that project | Anyone on the server can name a project after any repository (found in review). |
+| Machines: a keypair whose private key is a CI secret | The same, optionally bound to GitHub Actions OIDC: the server releases the sealed keys only to matching jobs | A leaked secret alone is then not enough. |
+
+## 14. Shared projects
+
+A shared project gives a team the keys of a project's environments without
+committing anything to the repository, and without trusting the server with
+who may read what.
+
+### The project chain
+
+Each project (`org/repo`) has a chain like a user's: an append-only,
+hash-linked list of signed links, envelope kind `project-link`:
+
+```json
+{"project":"acme/store","seq":4,"prev":"<sha256 of link 3>","ctime":"…","type":"member_add",
+ "signer":"gh:53101343","signer_ukey_version":2,"signer_seq":9,"body":{…}}
+```
+
+| Type | Signed by | Body |
+|---|---|---|
+| `init` | its creator, who becomes the first admin | creator (GitHub id, login, account root), environments with public keys |
+| `member_add` | an admin | the member's GitHub id, login and account root; admin, or the environments they read; how the admin checked the account |
+| `member_update` | an admin | new role and environments |
+| `member_remove` | an admin, or the member leaving | member, reason |
+| `env_set` | an admin | an environment and its (new) public key |
+| `machine_add` / `machine_remove` | an admin | a machine's id, name and public keys, its environments and OIDC policy (§15) |
+
+Each link names the signer's user key version and the length of the
+signer's user chain when they signed (`signer_seq`). A verifier checks the
+signature against the signer's own user chain, verified from the account
+root the project recorded when the signer was added, and requires the named
+version to be the key current at that chain position. The account root is
+the hash of the first link of a user chain (the account key words come from
+it), so it never changes. Positions, unlike times, cannot be skewed: a
+rotation dated before a link (a wrong clock, or a member trying to break the
+project) changes nothing. A signer's position never goes back within a
+project chain, so once its owner has signed with a new key, an old key held
+by a revoked device cannot sign as of the time before the rotation.
+
+Rules every verifier applies: admins read every environment; others read
+the environments listed, which must exist; a project keeps at least one
+admin; an environment's keys are never reused. When someone loses access to
+an environment (removed, left, access changed, a machine removed), the
+environment records them as **exposed**: they may still hold its current
+key. A new key for the environment (`env_set`) clears the list. Exposures
+are the project's rotation to-dos.
+
+Clients pin each project chain's head in `teams.toml`, and the heads of
+colleagues' user chains, and refuse a chain shorter than the pin or forked
+from it. The server verifies everything too, but only to reject bad data
+early; it also requires links and grants to be signed by the caller's
+current user key, and a new member to be that person's account on this
+server.
+
+### Adding someone
+
+1. The new member proves their account: `team prove` signs
+   `"esec-vault account v1\n" + user id + "\n" + login + "\n" + account root`
+   as an SSHSIG (namespace `esec-vault-account`) with an SSH key registered
+   on their GitHub account, from the agent or a key file, and publishes it.
+2. The admin's device fetches the person's user chain and proof, verifies
+   the chain, and checks the proof against `https://github.com/LOGIN.keys`,
+   fetched from GitHub, not the server. Without a proof, the admin types the
+   account key words the person reads out from `esec vault status`. Either
+   way, the server cannot pass off an account of its own as the colleague's.
+3. The admin's device appends `member_add` and, in the same commit, a grant.
+
+### Grants
+
+A grant (envelope kind `project-grant`) carries environment keys to one
+member or machine. It is signed by an admin's user key and names the
+project, the chain length the admin verified, the recipient, the user key
+version and public key it is sealed to, and each environment with its public
+key; the keys themselves are in a sealed box to the recipient's current
+user key (or the machine's key), whose content names the project and the
+recipient again. The recipient checks that the grant is from an admin, that
+every environment is one it may read, and that every key matches the public
+key the chain names now. A grant made before a key changed, or sealed to a
+user key the recipient has since replaced, is out of date and dropped.
+
+A member's device acknowledges the grants it took in and reports the keys it
+now holds; the server keeps those as **holdings** and shows, for every
+member and environment, whether the keys are held, waiting for the member's
+device, or not sent yet. Admins' devices (their daemons, or `team sync`)
+send whatever is not sent: after a member's user key rotated, to a member
+added by an admin who lacked a key, to a machine after a rotation. The
+server only says who is missing what; the admin's device checks it against
+the verified chain before sealing anything.
+
+The first time a device sees keys from a project, it asks before taking them
+in (`team sync`; the daemon notifies instead), and it does not do so at all
+for a project it never accepted. Anyone on the server can create a shared
+project under any name, so without this a colleague could hand you keys for a
+project you have, or will create. A project this account created or changed
+is accepted. After that, keys are taken in automatically. A granted key
+replaces a key the device holds only if that key is an earlier key of the
+same environment that this device got from or gave to the project;
+otherwise the device's key is kept and the person is asked. A replaced key
+stays in the keyring under its public key, so older files still decrypt.
+Received keys reach the member's other devices through their vault.
+
+### Removing someone, rotating keys
+
+Removing a member (or a machine, or an environment from a member's access)
+leaves those environments exposed. `team remove` and `team set` list them,
+the project page and `team show` show them, every remaining member gets an
+alert, and admins' daemons notify. `env rotate` in a shared project (admins
+only) re-encrypts the files, appends `env_set` with the new public key, and
+sends the new key to everyone who reads the environment, machines included.
+`env add` adds an environment the same way. `team publish ENV` does it for a
+key changed by other means.
+
+The git-committed shares of `esec vault share` stay for people without a
+server.
+
+## 15. Machines
+
+A machine is a non-person identity, for a CI job or a deployed app: an
+X25519 key that receives environment keys and an Ed25519 key that signs its
+requests. An admin creates one (`machine create`), which appends
+`machine_add` with the machine's public keys, environments and optional OIDC
+policy, and seals the keys to it in a grant. The machine's secret is one
+token, `esecm1_…`, holding the server, project, the hash of the project
+chain's first link, the machine id and both private keys.
+
+In the job, `esec-vault machine run -- CMD` (or `machine env`) signs a
+request to `POST /v1/machines/keys` over the machine id, project, time, a
+nonce and the hash of an OIDC token. There is no session: the server checks
+the signature against the machine's key in the verified chain, refuses
+replays, and returns the project chain, the user chains of its signers and
+the machine's latest grant. The machine verifies the chain from the root in
+its token, trusting nothing else the server says, checks that it is still an
+active machine of the project and that the grant comes from an admin with
+the chain's current keys, and opens it. `machine run` sets
+`ESEC_PRIVATE_KEY_<ENV>` for the command, which core esec reads.
+
+**OIDC.** A machine bound to GitHub Actions (`--github-repo`, optionally
+`--github-repo-id`, `--github-ref`, `--github-environment`) gets its keys
+only with a GitHub Actions OIDC token: in a job with
+`permissions: id-token: write`, `machine run` requests one with the server's
+origin as audience. The server checks the RS256 signature against GitHub's
+published keys, the issuer, audience and lifetime, and the policy:
+repository (and its id, which survives renames), ref (exact, or a prefix
+ending in `*`) and deployment environment. The policy is in the signed
+chain, so the server cannot loosen it unnoticed, and the keys stay sealed to
+the machine key, so the server cannot read them either. A leaked machine key
+alone is useless outside the allowed repository and refs; a valid OIDC token
+alone opens nothing.
+
+Every fetch is logged in the project's log with the address and, for OIDC
+jobs, the repository, ref, run and actor; refused tokens are logged too. A
+machine keeps exactly one grant with all its environments; admins' devices
+send a new one after a rotation. Removing a machine stops the server from
+handing it keys and leaves its environments exposed.
 
 ## Later phases (sketch)
 
-- **Phase 3, teams:**
-  - Each project has members and per-environment grants, recorded in a project
-    chain signed by admins.
-  - A grant encrypts environment keys to the member's current U and puts them
-    in a server inbox. The member's device imports them into its vault.
-  - Member keys are also checked with the existing SSHSIG proofs against
-    `github.com/<login>.keys`, so the server isn't trusted to map a login to a
-    key.
-  - Git-committed `.esec/vault/*.esec` shares stay as an option for people
-    without a server.
-- **Phase 4, machines:**
-  - Service identities: a keypair whose private key is a CI secret, with
-    environment keys encrypted to it.
-  - Downloads authorized by GitHub Actions OIDC tokens, without a stored server
-    credential.
-  - Passkey-PRF approval in the browser (requires trusting the JavaScript the
-    server sends).
+- Passkey-PRF approval in the browser (requires trusting the JavaScript the
+  server sends).
+- OIDC tokens of other platforms (Fly.io machines, GitLab, cloud workload
+  identity) for machines.

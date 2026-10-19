@@ -77,6 +77,16 @@ type FakeGitHub struct {
 	// Challenges records PKCE challenges by state, to check the exchange.
 	challenges map[string]string
 	verifiers  map[string]string
+	// keys are the SSH keys GitHub lists for a login (LOGIN.keys).
+	keys map[string][]string
+}
+
+// AddKey registers an SSH public key (authorized_keys line) on login, as
+// https://github.com/LOGIN.keys lists it.
+func (g *FakeGitHub) AddKey(login, authorizedKey string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.keys[login] = append(g.keys[login], strings.TrimSpace(authorizedKey))
 }
 
 // AddUser registers a GitHub account.
@@ -87,8 +97,21 @@ func (g *FakeGitHub) AddUser(id int64, login string) {
 }
 
 func newFakeGitHub(t *testing.T) *FakeGitHub {
-	g := &FakeGitHub{users: map[string]server.GitHubUser{}, codes: map[string]string{}, challenges: map[string]string{}, verifiers: map[string]string{}}
+	g := &FakeGitHub{users: map[string]server.GitHubUser{}, codes: map[string]string{}, challenges: map[string]string{}, verifiers: map[string]string{}, keys: map[string][]string{}}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{file}", func(w http.ResponseWriter, r *http.Request) {
+		login, ok := strings.CutSuffix(r.PathValue("file"), ".keys")
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		g.mu.Lock()
+		keys := g.keys[login]
+		g.mu.Unlock()
+		for _, k := range keys {
+			fmt.Fprintln(w, k)
+		}
+	})
 	mux.HandleFunc("GET /login/oauth/authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		g.mu.Lock()

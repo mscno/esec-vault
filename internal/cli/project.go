@@ -296,6 +296,11 @@ func (c *EnvAddCmd) Run(ctx *cliCtx) error {
 	}
 	markDirty("env add")
 	fmt.Printf("ESEC_PUBLIC_KEY=%s\n", pub)
+	if shared, err := sharedProject(ctx, project); err != nil {
+		fmt.Fprintln(os.Stderr, "! "+err.Error())
+	} else if shared {
+		publishShared(ctx, project, c.Env, "added")
+	}
 	return nil
 }
 

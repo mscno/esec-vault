@@ -1,0 +1,120 @@
+{{template "head" .}}
+<p class="crumbs">{{if .Member}}<a href="/projects#shared">Projects</a>{{else}}<a href="/admin#projects">Admin</a>{{end}} › Shared project</p>
+<h1>{{.Project}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .Member}}<span class="badge">member</span>{{else}}<span class="badge">read-only</span>{{end}}</h1>
+<p class="muted">Created by {{.Creator}} {{when .Created}}. Who may read which environment is recorded in a chain signed by the project's admins; the server stores it but cannot change it. Keys reach each member sealed to their own key.</p>
+
+{{if .Rotations}}
+<section class="notices" aria-label="Needs attention">
+  {{range .Rotations}}
+  <div class="notice notice-warn">
+    <p><strong>{{.Name}}</strong> needs a new key: {{range $i, $e := .Exposed}}{{if $i}}, {{end}}{{$e.Name}} ({{$e.Reason}} {{ago $e.Time}}){{end}} may still hold the current one.{{if $.MyAdmin}} In the project's repository, run:{{else}} An admin of the project runs, in its repository:{{end}}</p>
+    {{template "cmd" (printf "esec vault env rotate %s --project %s" .Name $.Project)}}
+    <p class="muted">That re-encrypts the files and sends the new key to everyone who reads {{.Name}}. Change the secret values themselves where they may have been seen.</p>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+<section class="tiles" aria-label="Summary">
+  <a class="tile" href="#members"><span class="tile-label">Members</span><span class="tile-value">{{len .Members}}</span><span class="tile-note">{{if .Member}}you read {{if .MyAccess}}{{range $i, $e := .MyAccess}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}nothing{{end}}{{end}}</span></a>
+  <a class="tile" href="#machines"><span class="tile-label">Machines</span><span class="tile-value">{{len .Machines}}</span><span class="tile-note">CI jobs and apps</span></a>
+  <a class="tile" href="#envs"><span class="tile-label">Environments</span><span class="tile-value">{{len .Envs}}</span><span class="tile-note">{{plural (len .Rotations) "key"}} to rotate</span></a>
+  <a class="tile" href="#history"><span class="tile-label">Last change</span><span class="tile-value">{{ago .State.LastTime}}</span><span class="tile-note">{{plural (int .State.Seq) "signed change"}}</span></a>
+</section>
+
+<h2 id="members">Members</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Member</th><th>Reads</th><th>Keys</th><th>Added</th></tr></thead>
+  <tbody>
+  {{range .Members}}
+  <tr>
+    <td><strong>{{.Login}}</strong>{{if .Admin}} <span class="badge status-active">admin</span>{{end}}{{if not .Allowed}} <span class="badge status-revoked">removed from the server</span>{{end}}<br><span class="muted">GitHub {{trimPrefix .User "gh:"}}</span></td>
+    <td>{{if .Admin}}every environment{{else if .Access}}{{range $i, $e := .Access}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{range $env, $state := .Keys}}{{key $env $state}} {{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{when .AddedAt}}<br><span class="muted">{{if .Verified}}by {{.AddedBy}}, checked by {{.Verified}}{{else}}created the project{{end}}</span></td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<details class="help">
+  <summary>Add, change or remove a member</summary>
+  <p>An admin runs these in the project's repository. The new member signs in to this server first and publishes their GitHub SSH proof with <code>esec vault team prove</code>; otherwise pass <code>--account-key</code> with the words their <code>esec vault status</code> shows.</p>
+  {{template "cmd" "esec vault team add LOGIN --env dev"}}
+  {{template "cmd" "esec vault team set LOGIN --env dev,prod"}}
+  {{template "cmd" "esec vault team remove LOGIN"}}
+  <p class="muted">Keys show <span class="badge status-active">held</span> when the member's devices have them, <span class="badge">waiting</span> while they wait for the member's device to pick them up, and <span class="badge status-pending">not sent</span> until an admin's device sends them (any admin's background service does this on its own).</p>
+</details>
+
+<h2 id="machines">Machines</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Machine</th><th>Reads</th><th>Allowed from</th><th>Last used</th><th>Added</th></tr></thead>
+  <tbody>
+  {{range .Machines}}
+  <tr>
+    <td><strong>{{.Name}}</strong><br><span class="muted">{{.ID}}</span></td>
+    <td>{{range $env, $state := .Keys}}{{key $env $state}} {{end}}</td>
+    <td>{{with .Policy}}{{.}}{{else}}<span class="muted">anywhere with its secret</span>{{end}}</td>
+    <td>{{when .LastUsed}}{{if .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "use"}}</span>{{end}}</td>
+    <td>{{when .AddedAt}}<br><span class="muted">by {{.AddedBy}}</span></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No machines. Give a CI job or app its own key instead of a copy of an environment key:</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<details class="help">
+  <summary>Add a machine</summary>
+  <p>An admin creates the machine and stores the key it prints as the job's or app's secret <code>ESEC_VAULT_MACHINE_KEY</code>:</p>
+  {{template "cmd" (printf "esec vault machine create deploy --env prod --github-repo %s --github-ref refs/heads/main" .Project)}}
+  <p>The job then runs its command with the keys in its environment:</p>
+  {{template "cmd" "esec-vault machine run -- esec run prod -- ./deploy.sh"}}
+  <p class="muted">With <code>--github-repo</code>, the server hands the sealed keys only to GitHub Actions jobs of that repository (and ref) that prove it with an OIDC token, so a leaked secret alone is not enough. Remove a machine with <code>esec vault machine remove NAME</code>.</p>
+</details>
+
+<h2 id="envs">Environments</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Environment</th><th>Public key</th><th>Key since</th><th>Readers</th></tr></thead>
+  <tbody>
+  {{range .Envs}}
+  <tr>
+    <td><strong>{{.Name}}</strong>{{if .Exposed}} <span class="badge status-pending">rotate</span>{{end}}</td>
+    <td><code title="{{.PublicKey}}">{{short .PublicKey}}</code> <button type="button" class="copy" data-copy="{{.PublicKey}}" hidden>Copy</button>{{if .Retired}}<br><span class="muted">{{plural (len .Retired) "earlier key"}}</span>{{end}}</td>
+    <td>{{when .Since}}</td>
+    <td>{{.Readers}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2 id="history">History</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Who</th><th>Change</th></tr></thead>
+  <tbody>
+  {{range .History}}
+  <tr><td class="nowrap">{{when .Time}}</td><td>{{.Actor}}</td><td><span class="event{{with .Tone}} tone-{{.}}{{end}}">{{.Text}}</span></td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2>Key deliveries and machine use</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Event</th><th>By</th><th>Detail</th><th>Address</th></tr></thead>
+  <tbody>
+  {{range .Activity}}
+  <tr><td class="nowrap">{{when .Time}}</td><td><span class="event{{if eq .Action "machine_refused"}} tone-bad{{end}}">{{.Label}}</span></td><td>{{or .ActorName .Actor}}</td><td>{{.Detail}}</td><td class="muted">{{.IP}}</td></tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No entries.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{template "foot" .}}

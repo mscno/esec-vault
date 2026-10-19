@@ -21,6 +21,7 @@ import (
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
+	"github.com/mscno/esec-vault/internal/server"
 	"github.com/mscno/esec-vault/internal/servertest"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/wire"
@@ -57,7 +58,12 @@ var lastMnemonic string
 
 func setup(t *testing.T) (*servertest.Harness, *account.Account) {
 	t.Helper()
-	h := servertest.Start(t, 53101343)
+	return setupWith(t, nil)
+}
+
+func setupWith(t *testing.T, opts []server.Option) (*servertest.Harness, *account.Account) {
+	t.Helper()
+	h := servertest.StartWith(t, opts, 53101343)
 	h.GitHub.AddUser(53101343, "mscno")
 	home := t.TempDir()
 	t.Setenv("ESEC_VAULT_HOME", home)

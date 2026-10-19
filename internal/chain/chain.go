@@ -205,8 +205,43 @@ type State struct {
 	MasterSignPub ed25519.PublicKey
 	Devices       map[string]*DeviceState
 	Slots         map[string]*SlotState
+	// Epochs lists every user key the chain has had, oldest first.
+	Epochs []KeyEpoch
 	// Links holds the decoded links, in order.
 	Links []Link
+}
+
+// KeyEpoch is one version of the user key and the chain position that
+// introduced it. Signatures by other parties (project chains, grants) name
+// the version and the signer's chain position they were made at.
+type KeyEpoch struct {
+	Version uint64
+	EncPub  [32]byte
+	SignPub ed25519.PublicKey
+	Seq     uint64
+	Since   time.Time
+}
+
+// EpochAt returns the user key that was current once the chain had seq
+// links.
+func (s *State) EpochAt(seq uint64) (*KeyEpoch, bool) {
+	if seq == 0 || seq > s.Seq {
+		return nil, false
+	}
+	for i := len(s.Epochs) - 1; i >= 0; i-- {
+		if s.Epochs[i].Seq <= seq {
+			return &s.Epochs[i], true
+		}
+	}
+	return nil, false
+}
+
+// Epoch returns user key version v.
+func (s *State) Epoch(v uint64) (*KeyEpoch, bool) {
+	if v == 0 || v > uint64(len(s.Epochs)) {
+		return nil, false
+	}
+	return &s.Epochs[v-1], true
 }
 
 var (
@@ -555,6 +590,7 @@ func (s *State) applyInit(e *envelope.Envelope, l Link) error {
 		return err
 	}
 	s.UKeyVersion, s.EncPub, s.SignPub, s.MasterPub, s.MasterSignPub = 1, enc, sign, master, masterSign
+	s.Epochs = []KeyEpoch{{Version: 1, EncPub: enc, SignPub: sign, Seq: l.Seq, Since: l.CTime}}
 	return nil
 }
 
@@ -721,6 +757,7 @@ func (s *State) applyRotate(e *envelope.Envelope, l Link) error {
 		sl.Active = false
 	}
 	s.UKeyVersion, s.EncPub, s.SignPub = l.UKeyVersion, enc, sign
+	s.Epochs = append(s.Epochs, KeyEpoch{Version: l.UKeyVersion, EncPub: enc, SignPub: sign, Seq: l.Seq, Since: l.CTime})
 	return nil
 }
 
@@ -740,6 +777,7 @@ func (s *State) clone() *State {
 	n.Hashes = append([]string(nil), s.Hashes...)
 	n.Links = append([]Link(nil), s.Links...)
 	n.SignPub = append(ed25519.PublicKey(nil), s.SignPub...)
+	n.Epochs = append([]KeyEpoch(nil), s.Epochs...)
 	n.Devices = make(map[string]*DeviceState, len(s.Devices))
 	for k, v := range s.Devices {
 		c := *v

@@ -156,6 +156,75 @@ var schema = []string{
 		failed_at INTEGER NOT NULL DEFAULT 0,
 		last_error TEXT NOT NULL DEFAULT '')`,
 	`CREATE INDEX IF NOT EXISTS alert_outbox_due ON alert_outbox(sent_at, failed_at, next_at)`,
+	// Shared projects; see teamapi.go. project_links is the signed chain;
+	// members and machines mirror its verified state for queries.
+	`CREATE TABLE IF NOT EXISTS projects (
+		id TEXT PRIMARY KEY,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		seq INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS project_links (
+		project TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		hash TEXT NOT NULL,
+		envelope BLOB NOT NULL,
+		signer TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (project, seq))`,
+	`CREATE TABLE IF NOT EXISTS project_members (
+		project TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		login TEXT NOT NULL,
+		admin INTEGER NOT NULL,
+		envs TEXT NOT NULL,
+		active INTEGER NOT NULL,
+		PRIMARY KEY (project, user_id))`,
+	`CREATE INDEX IF NOT EXISTS project_members_user ON project_members(user_id)`,
+	`CREATE TABLE IF NOT EXISTS project_machines (
+		id TEXT PRIMARY KEY,
+		project TEXT NOT NULL,
+		name TEXT NOT NULL,
+		sign_pub TEXT NOT NULL,
+		active INTEGER NOT NULL,
+		created_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		last_ip TEXT NOT NULL DEFAULT '',
+		uses INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE INDEX IF NOT EXISTS project_machines_project ON project_machines(project)`,
+	`CREATE TABLE IF NOT EXISTS project_grants (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project TEXT NOT NULL,
+		to_id TEXT NOT NULL,
+		to_ukey_version INTEGER NOT NULL,
+		envs TEXT NOT NULL,
+		envelope BLOB NOT NULL,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS project_grants_to ON project_grants(to_id, id)`,
+	`CREATE INDEX IF NOT EXISTS project_grants_project ON project_grants(project)`,
+	`CREATE TABLE IF NOT EXISTS project_holdings (
+		project TEXT NOT NULL,
+		holder TEXT NOT NULL,
+		env TEXT NOT NULL,
+		public_key TEXT NOT NULL,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (project, holder, env))`,
+	`CREATE TABLE IF NOT EXISTS project_audit (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project TEXT NOT NULL,
+		actor TEXT NOT NULL DEFAULT '',
+		ip TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL,
+		detail TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS project_audit_project ON project_audit(project, id)`,
+	`CREATE TABLE IF NOT EXISTS account_proofs (
+		user_id TEXT PRIMARY KEY,
+		login TEXT NOT NULL,
+		root TEXT NOT NULL,
+		signature TEXT NOT NULL,
+		created_at INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 
@@ -509,6 +578,7 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
 		{`DELETE FROM alert_outbox WHERE (sent_at > 0 OR failed_at > 0) AND created_at < ?`, []any{unix(now.Add(-alertKeep))}},
 		{`UPDATE users SET alert_email_pending = '', alert_email_token = '', alert_email_expires = 0 WHERE alert_email_expires > 0 AND alert_email_expires < ?`, []any{unix(now)}},
+		{`DELETE FROM project_audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
 	}
 	for _, s := range stmts {
 		if _, err := d.sql.ExecContext(ctx, s.q, s.args...); err != nil {

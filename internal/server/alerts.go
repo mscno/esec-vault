@@ -41,6 +41,10 @@ const (
 	alertDeviceSuspended  = "device.suspended"
 	alertDeviceRevoked    = "device.revoked"
 	alertNewBrowser       = "web.new_browser"
+	alertMemberAdded      = "project.member_added"
+	alertMemberRemoved    = "project.member_removed"
+	alertMachineAdded     = "project.machine_added"
+	alertMachineRemoved   = "project.machine_removed"
 	alertEmailConfirm     = "email.confirm"
 	alertEmailChanged     = "email.changed"
 	alertTest             = "test"
@@ -72,9 +76,11 @@ type alert struct {
 	Device  *alertDevice `json:"device,omitempty"`
 	IP      string       `json:"ip,omitempty"`
 	Browser string       `json:"browser,omitempty"`
-	Title   string       `json:"title"`
-	Text    string       `json:"text"`
-	URL     string       `json:"url"`
+	// Project is the shared project of a project.* alert.
+	Project string `json:"project,omitempty"`
+	Title   string `json:"title"`
+	Text    string `json:"text"`
+	URL     string `json:"url"`
 	// Advice says what to do if the event was not expected; email only.
 	Advice string `json:"-"`
 	// Link is an email confirmation link. Only email.confirm alerts carry
