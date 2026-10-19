@@ -1,8 +1,8 @@
 # v0.4.4
 
-- Build with esec v0.10.0, which adds `esec export` (the decrypted variables
-  as `NAME=value` lines, without the public key) and keeps the public key out
-  of `esec run`.
+- Build with esec v0.10.1, which adds `esec export` (the decrypted
+  variables as `NAME=value` lines, without the public key) and keeps the
+  public key out of `esec run`.
 - Update dependencies (`golang.org/x/crypto` v0.58.0, `x/sys` v0.49.0,
   `x/term` v0.47.0). `modernc.org/libc` stays at v1.77.1, the version
   `modernc.org/sqlite` v1.60.1 requires.
