@@ -50,9 +50,26 @@ func TestSafeNext(t *testing.T) {
 		"/\\evil.example":        "/account",
 		"/auth/logout":           "/account",
 		"javascript:alert(1)":    "/account",
+		"/activity?before=9":     "/activity",
+		"/devices/d_abc-2":       "/devices/d_abc-2",
+		"/devices/../auth":       "/account",
+		"/devices/":              "/account",
+		"/admin/users/gh:1":      "/admin/users/gh:1",
+		"/admin/users/a/b":       "/account",
 	} {
 		if got := safeNext(in); got != want {
 			t.Errorf("safeNext(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"":                  "/account",
+		"/devices/d_abc":    "/devices/d_abc",
+		"/devices/a/b":      "/account",
+		"//evil.example":    "/account",
+		"/admin/users/gh:1": "/account",
+	} {
+		if got := backTo(in); got != want {
+			t.Errorf("backTo(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -93,6 +110,15 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatalf("closed switch: %v", err)
 	}
 	t.Setenv("ESEC_SERVER_NEW_DEVICES", "")
+	t.Setenv("ESEC_SERVER_ADMIN_GITHUB_IDS", "53101343")
+	if c, err := LoadConfig(""); err != nil || !c.Admin(53101343) || c.Admin(1) {
+		t.Fatalf("admin ids: %v", err)
+	}
+	t.Setenv("ESEC_SERVER_ADMIN_GITHUB_IDS", "1")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("an admin outside the allowlist was accepted")
+	}
+	t.Setenv("ESEC_SERVER_ADMIN_GITHUB_IDS", "")
 	t.Setenv("ESEC_SERVER_GITHUB_CLIENT_SECRET", "")
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("missing client secret accepted")

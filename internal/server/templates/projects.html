@@ -1,7 +1,13 @@
 {{template "head" .}}
 <h1>Projects</h1>
 {{if .Index}}
-<p class="muted">As of vault version {{.Vault.Version}}, pushed {{ts .Vault.CreatedAt}}{{with .PushedBy}} by {{.}}{{end}}. Only names and public keys are shown; private keys and secret values stay encrypted on your devices.</p>
+<p class="muted">As of vault version {{.Vault.Version}}, pushed {{when .Vault.CreatedAt}}{{with .PushedBy}} by {{.}}{{end}}. Only names and public keys are shown; private keys and secret values stay encrypted on your devices.</p>
+<form method="get" action="/projects" class="search" role="search">
+  <input type="search" name="q" value="{{.Query}}" placeholder="Project, environment or public key" aria-label="Search projects">
+  <button type="submit" class="secondary">Search</button>
+  {{if .Query}}<a href="/projects">Clear</a>{{end}}
+</form>
+{{if .Query}}<p class="muted">{{plural (len .Index.Projects) "project"}} of {{.Total}} match “{{.Query}}”.</p>{{end}}
 <div class="scroll">
 <table>
   <thead><tr><th>Project</th><th>Environment</th><th>Public key</th></tr></thead>
@@ -12,20 +18,23 @@
     <tr>
       <td>{{if eq $i 0}}<strong>{{$p.ID}}</strong>{{if $p.OtherKeys}}<br><span class="muted">+{{$p.OtherKeys}} retired or unnamed key(s)</span>{{end}}{{end}}</td>
       <td>{{$e.Name}}</td>
-      <td><code title="{{$e.PublicKey}}">{{short $e.PublicKey}}</code></td>
+      <td><code title="{{$e.PublicKey}}">{{short $e.PublicKey}}</code> <button type="button" class="copy" data-copy="{{$e.PublicKey}}" hidden>Copy</button></td>
     </tr>
     {{else}}
     <tr><td><strong>{{$p.ID}}</strong></td><td class="muted">no named environments</td><td>{{if $p.OtherKeys}}{{$p.OtherKeys}} key(s){{end}}</td></tr>
     {{end}}
   {{else}}
-  <tr><td colspan="3" class="muted">No projects yet.</td></tr>
+  <tr><td colspan="3" class="muted">{{if .Query}}Nothing matches.{{else}}No projects yet.{{end}}</td></tr>
   {{end}}
   </tbody>
 </table>
 </div>
+<p class="muted">Search by a public key to find which project and environment an encrypted file belongs to: it is the <code>ESEC_PUBLIC_KEY</code> line of a <code>.env</code> file, or <code>_ESEC_PUBLIC_KEY</code> in <code>.ejson</code>.</p>
 {{else if .Vault}}
-<p>Your devices do not publish a project index. Turn it on with <code>esec vault index on</code>.</p>
+<p>Your devices do not publish a project index. Turn it on from any device:</p>
+{{template "cmd" "esec vault index on"}}
 {{else}}
 <p>No vault yet. Run <code>esec vault login</code> on a machine with your keys.</p>
+{{template "cmd" (printf "esec vault login %s" .BaseURL)}}
 {{end}}
 {{template "foot" .}}

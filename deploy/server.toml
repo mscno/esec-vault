@@ -21,6 +21,11 @@ client_id = "REPLACE_WITH_OAUTH_APP_CLIENT_ID"
 allowed_github_ids = [
   53101343, # mscno (owner)
 ]
+# Who may open the read-only admin pages (/admin): every account's devices,
+# activity and storage, and the server's status. Each must also be allowed.
+admin_github_ids = [
+  53101343, # mscno (owner)
+]
 
 [sessions]
 idle = "720h"      # 30 days

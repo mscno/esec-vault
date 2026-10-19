@@ -1,6 +1,14 @@
 {{template "head" .}}
-<h1>Sign in</h1>
-<p>Sign in with GitHub to confirm a device code or manage your devices.</p>
+<h1>esec vault</h1>
+<p>This server moves your esec keys between your machines. It stores only ciphertext: signing in never decrypts anything.</p>
 <p><a class="button" href="/auth/github">Sign in with GitHub</a></p>
-<p class="muted">Signing in never decrypts anything. A new device still needs approval from one of your existing devices, your recovery phrase, or an SSH-agent unlock slot.</p>
+<p class="muted">Sign in to confirm a device code, review your devices and activity, or browse your projects.</p>
+
+<h2>Connect a machine</h2>
+<ol>
+  <li>Install <a href="https://github.com/mscno/esec">esec</a> and <a href="https://github.com/mscno/esec-vault">esec-vault</a>.</li>
+  <li>Run: {{template "cmd" (printf "esec vault login %s" .BaseURL)}}</li>
+  <li>Open <a href="/device">this server's code page</a> and type the code your terminal shows.</li>
+</ol>
+<p class="muted">Your first machine creates your account; it asks for the account creation token the server operator gave you. Every later machine needs approval from one of your devices, your recovery phrase, or an SSH-agent unlock slot.</p>
 {{template "foot" .}}

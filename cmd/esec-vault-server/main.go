@@ -52,7 +52,7 @@ func run(configPath string, log *slog.Logger) error {
 		return err
 	}
 	defer db.Close()
-	srv, err := server.New(cfg, db, log)
+	srv, err := server.New(cfg, db, log, server.WithVersion(buildVersion()))
 	if err != nil {
 		return err
 	}

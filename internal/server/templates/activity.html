@@ -1,0 +1,24 @@
+{{template "head" .}}
+<h1>Activity</h1>
+<p class="muted">Everything the server recorded for your account: sign-ins, device changes, vault pushes and unlock slots. The server keeps a year of entries, up to the newest 10,000.</p>
+
+<nav class="filters" aria-label="Filter">
+  <a href="/activity{{with .DeviceID}}?device={{.}}{{end}}"{{if not .Category}} aria-current="true"{{end}}>All</a>
+  {{range .Categories}}
+  <a href="/activity?category={{.Key}}{{with $.DeviceID}}&amp;device={{.}}{{end}}"{{if eq $.Category .Key}} aria-current="true"{{end}}>{{.Label}}</a>
+  {{end}}
+</nav>
+{{if .DeviceID}}<p>Showing <a href="/devices/{{.DeviceID}}">{{or .DeviceName .DeviceID}}</a> only. <a href="/activity{{with .Category}}?category={{.}}{{end}}">Show every device</a></p>{{end}}
+
+<input type="search" class="filter" placeholder="Filter this page" aria-label="Filter this page" data-filter="#activity" hidden>
+<div class="scroll">
+<table id="activity">
+  <thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Device</th><th>Address</th></tr></thead>
+  <tbody>{{template "auditRows" .Entries}}</tbody>
+</table>
+</div>
+<p class="pager">
+  {{with .Newest}}<a href="{{.}}">Newest</a>{{end}}
+  {{with .Older}}<a href="{{.}}">Older entries</a>{{end}}
+</p>
+{{template "foot" .}}

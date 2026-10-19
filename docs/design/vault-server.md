@@ -614,11 +614,16 @@ and a request signed with `D.sign`.
 |---|---|
 | `/` | GitHub sign-in |
 | `/device` | Code entry and confirm |
-| `/account` | Devices (status, method, last seen, suspend), sessions (end), agent slots (disable), audit log, account-key fingerprint |
-| `/projects` | The published project index: projects, environments, public keys |
+| `/account` | Overview: what needs attention, devices (status, method, last seen, suspend), sessions (end), agent slots (disable), signed-in browsers (sign out), recent activity, account-key fingerprint |
+| `/devices/{id}` | One device: fingerprint (never for a waiting device), sessions, activity |
+| `/activity` | The account's audit log, filtered by kind or device, paged |
+| `/projects` | The published project index: projects, environments, public keys; search |
+| `/vault` | Stored vault versions: size, hash, pushing device |
+| `/admin`, `/admin/users/{id}` | Read-only, for `admin_github_ids`: server status, accounts, server-wide security events. No keys, fingerprints or creation tokens |
 
 The pages use secure cookies (`SameSite=Lax` for OAuth), CSRF tokens, a strict
-CSP, and no third-party scripts.
+CSP, and no third-party scripts. One first-party script adds copy buttons,
+confirmations, local times and table filters; every page works without it.
 
 ### Rate limits
 
@@ -684,6 +689,7 @@ secret store.
 |---|---|
 | Full server and database compromise | Metadata (devices, times, IPs, and project/env names if the index is on); refuse service; delete data (local cache plus offline remotes are the fallback); hold back updates (heads pinned). **Cannot** decrypt, add devices, or plant keys: chain links, vault blobs and the index are signed by U. Cannot inject a fake U into existing devices. A brand-new device is protected by the account-key words (§4). |
 | GitHub account takeover | Can create pending devices. Cannot decrypt without an approval, the phrase, or the agent. Shows up as pending devices and notifications. At most 50 devices wait for approval at once; beyond that the oldest is dropped, so the owner's new device always gets in. Before the user's first login, the attacker could create the account with their own keys. A machine holding the user's identity refuses to join it (different master key), and a new device sees unknown account-key words. |
+| An admin's GitHub account taken over | The admin pages are read-only: the attacker sees every account's metadata (logins, device names, addresses, activity, storage) and which allowed ids have no account yet, but cannot change anything, see keys or fingerprint words, or get account creation tokens. Keep `admin_github_ids` short, and secure admins' GitHub accounts as you would the server. |
 | Takeover before the first login | Creating an account needs the server's bootstrap token, which the operator hands out separately; a GitHub session alone cannot create one. If the token also leaked: a machine with the user's identity refuses the foreign account, and a new device warns that the account already exists and asks for the account key, which a user who never set up esec vault must reject. |
 | Flooding sign-ins from thousands of networks | Availability only: new devices and new browsers may have to wait for the flood to pass. Devices and browsers that signed in before keep working, and nothing is disclosed. The operator can also close the server to new devices (`new_devices = "closed"`) until it passes. Floods of that size are otherwise a job for upstream protection (a proxy or WAF), as for any internet service. |
 | Flooding devices that wait for approval | They see nothing and cannot be approved without their own fingerprint words. There is no per-account cap to fill (registrations are limited per address and network instead), so a flood cannot keep the owner's new device out or evict it. Desktop notifications are limited to 5 an hour, then one warning. |

@@ -46,10 +46,16 @@ client_id = "Iv23li..."
 allowed_github_ids = [
   53101343, # mscno (owner)
 ]
+admin_github_ids = [
+  53101343, # may open the admin page
+]
 ```
 
 List numeric GitHub user ids, never usernames. Find an id with
 `gh api users/<login> --jq .id`.
+
+`admin_github_ids` is optional. Each admin must also be allowed. Admins get
+a read-only **Admin** page; see [Monitor](#monitor).
 
 Every setting can be overridden from the environment:
 
@@ -63,6 +69,7 @@ Every setting can be overridden from the environment:
 | `ESEC_SERVER_GITHUB_CLIENT_SECRET` | The client secret (environment only) |
 | `ESEC_SERVER_BOOTSTRAP_TOKEN` | Bootstrap secret, 16+ characters, from which each person's account creation token is derived (environment only, required) |
 | `ESEC_SERVER_ALLOWED_GITHUB_IDS` | Comma-separated numeric ids |
+| `ESEC_SERVER_ADMIN_GITHUB_IDS` | `access.admin_github_ids`, comma-separated |
 | `ESEC_SERVER_CLIENT_IP_HEADER` | `client_ip_header`; set only behind a proxy that sets it |
 | `ESEC_SERVER_VAULT_HISTORY` | `vault_history` (default 50) |
 | `ESEC_SERVER_NEW_DEVICES` | `new_devices`: `open` (default) or `closed`, the emergency switch below |
@@ -210,7 +217,7 @@ everyone who checks them.
 
 | Task | How |
 |---|---|
-| Add a person | Add their numeric id to `allowed_github_ids` and redeploy. Print their token with `esec-vault-server -bootstrap-token-for <id>` and send it to them. They sign in and create their own account. |
+| Add a person | Add their numeric id to `allowed_github_ids` and redeploy. Print their token with `esec-vault-server -bootstrap-token-for <id>` and send it to them. They sign in and create their own account. The Admin page shows when they have. |
 | Remove a person | Remove the id and redeploy. Their sessions fail on the next request. Their data stays until you delete it. |
 | Rotate the GitHub client secret | Generate a new secret in the OAuth app, run `fly secrets set ESEC_SERVER_GITHUB_CLIENT_SECRET=...`, then delete the old secret. |
 
@@ -218,8 +225,8 @@ everyone who checks them.
 
 | Event | Response |
 |---|---|
-| Lost or stolen device | On a trusted device: `esec vault devices revoke <id>`. Or suspend it at once on the web account page, then revoke. Rotate the environment keys it could read (`esec vault env rotate`) and the secret values at their providers. |
-| Unknown pending device | Do not approve it. Suspend it on the account page. Check the audit log, and secure your GitHub account. |
+| Lost or stolen device | On a trusted device: `esec vault devices revoke <id>`. Or suspend it at once on the web overview or the device's page, then revoke. Rotate the environment keys it could read (`esec vault env rotate`) and the secret values at their providers. |
+| Unknown pending device | Do not approve it. Suspend it on the web overview. Check the **Activity** page, and secure your GitHub account. |
 | Unknown device added via SSH agent | Revoke it. Disable the slot (`esec vault agent-unlock disable`). Treat the SSH key as exposed. |
 | Server compromised | The attacker gets metadata and can deny service. They cannot decrypt anything or add devices: clients verify the chain and refuse rollbacks. Redeploy from a clean image, rotate the GitHub client secret and Litestream credentials, and review the audit log. |
 | GitHub account taken over | The attacker can create pending devices but cannot decrypt anything without approval, the recovery phrase, or an SSH-agent slot. Secure the GitHub account, then suspend any unknown devices. |
@@ -241,5 +248,17 @@ Set it back to `open` when the attack is over; nothing else changes.
 
 - `GET /healthz` returns `ok`.
 - Logs are JSON on stderr. A `request failed` line is a server error.
-- The web account page shows each device's last address and time, the slots,
-  and the last 100 audit entries.
+- Each person's **Overview** page shows their devices with last address and
+  time, unlock slots, signed-in browsers, and what needs attention: devices
+  waiting for approval, suspended devices not yet revoked, devices unseen
+  for 90 days, slots about to expire, and an account only one device can
+  open. **Activity** lists their audit log with filters, and **Vault** the
+  stored versions.
+- The read-only **Admin** page, for `admin_github_ids`, shows the server's
+  version and settings, totals of accounts, devices, sessions and storage,
+  every allowed id with its state (never signed in, no account yet, active,
+  removed from the allowlist), and server-wide security events: refused
+  sign-ins, new devices, suspensions, revocations and key rotations. Each
+  account has a page with its devices and activity. It never shows keys,
+  fingerprint words or account creation tokens, and it cannot change
+  anything: only the account owner suspends devices or ends sessions.

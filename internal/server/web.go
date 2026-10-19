@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mscno/esec-vault/internal/chain"
-	"github.com/mscno/esec-vault/internal/devicekey"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
@@ -43,6 +41,8 @@ func (s *Server) knownBrowser(r *http.Request) bool {
 type webSession struct {
 	user *userRow
 	csrf string
+	// idHash identifies this browser's session among the account's.
+	idHash string
 }
 
 func (s *Server) cookieName(base string) string {
@@ -52,11 +52,11 @@ func (s *Server) cookieName(base string) string {
 	return base
 }
 
-func (s *Server) setCookie(w http.ResponseWriter, name, value, path string, maxAge time.Duration) {
+func (s *Server) setCookie(w http.ResponseWriter, name, value string, maxAge time.Duration) {
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is set whenever the server runs on https; plain http is allowed only on localhost
 		Name:     s.cookieName(name),
 		Value:    value,
-		Path:     path,
+		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
 		HttpOnly: true,
 		Secure:   s.cfg.Secure(),
@@ -64,8 +64,8 @@ func (s *Server) setCookie(w http.ResponseWriter, name, value, path string, maxA
 	})
 }
 
-func (s *Server) clearCookie(w http.ResponseWriter, name, path string) {
-	s.setCookie(w, name, "", path, -time.Second)
+func (s *Server) clearCookie(w http.ResponseWriter, name string) {
+	s.setCookie(w, name, "", -time.Second)
 }
 
 // webSession returns the signed-in browser session, or nil.
@@ -79,7 +79,8 @@ func (s *Server) webSession(r *http.Request) (*webSession, error) {
 	}
 	var userID, csrf string
 	var expires int64
-	err = s.db.sql.QueryRowContext(r.Context(), `SELECT user_id, csrf, expires_at FROM web_sessions WHERE id_hash = ?`, hashHex(c.Value)).Scan(&userID, &csrf, &expires)
+	idHash := hashHex(c.Value)
+	err = s.db.sql.QueryRowContext(r.Context(), `SELECT user_id, csrf, expires_at FROM web_sessions WHERE id_hash = ?`, idHash).Scan(&userID, &csrf, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -96,7 +97,7 @@ func (s *Server) webSession(r *http.Request) (*webSession, error) {
 	if !s.cfg.Allowed(u.GitHubID) {
 		return nil, nil
 	}
-	return &webSession{user: u, csrf: csrf}, nil
+	return &webSession{user: u, csrf: csrf, idHash: idHash}, nil
 }
 
 // checkForm verifies the CSRF token and, when present, the Origin header.
@@ -123,25 +124,31 @@ func (s *Server) webError(w http.ResponseWriter, status int, msg string) {
 	s.render(w, status, "error.html", map[string]any{"Message": msg})
 }
 
-// safeNext accepts only same-site paths the login flow may return to.
+// safeNext accepts only same-site paths the login flow may return to: the
+// signed-in pages, without a query.
 func safeNext(next string) string {
-	if next == "/projects" {
-		return next
-	}
-	if next == "" {
-		return "/account"
-	}
 	u, err := url.Parse(next)
-	if err != nil || u.IsAbs() || u.Host != "" || strings.HasPrefix(next, "//") || strings.Contains(next, "\\") {
+	if next == "" || err != nil || u.IsAbs() || u.Host != "" || strings.HasPrefix(next, "//") || strings.Contains(next, "\\") {
 		return "/account"
 	}
 	switch u.Path {
-	case "/account":
-		return "/account"
-	case "/device":
-		return "/device"
+	case "/account", "/device", "/projects", "/activity", "/vault", "/admin":
+		return u.Path
+	}
+	for _, prefix := range []string{"/devices/", "/admin/users/"} {
+		if id, ok := strings.CutPrefix(u.Path, prefix); ok && validID(id) {
+			return u.Path
+		}
 	}
 	return "/account"
+}
+
+// validID reports whether s can be a device or account id in a path: only
+// letters, digits and "_", "-" and ":".
+func validID(s string) bool {
+	return s != "" && len(s) <= 64 && !strings.ContainsFunc(s, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != ':'
+	})
 }
 
 func (s *Server) requireWeb(w http.ResponseWriter, r *http.Request) *webSession {
@@ -167,7 +174,7 @@ func (s *Server) webIndex(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account", http.StatusSeeOther)
 		return
 	}
-	s.render(w, http.StatusOK, "index.html", map[string]any{})
+	s.render(w, http.StatusOK, "index.html", map[string]any{"BaseURL": s.cfg.BaseURL})
 }
 
 func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +199,7 @@ func (s *Server) webGitHubStart(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	s.setCookie(w, "esec_oauth", state, "/", oauthStateTTL)
+	s.setCookie(w, "esec_oauth", state, oauthStateTTL)
 	http.Redirect(w, r, s.github.AuthorizeURL(s.cfg.BaseURL+"/auth/github/callback", state, pkceChallenge(verifier)), http.StatusSeeOther)
 }
 
@@ -202,7 +209,7 @@ func (s *Server) webGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state, code := q.Get("state"), q.Get("code")
 	cookie, err := r.Cookie(s.cookieName("esec_oauth"))
-	s.clearCookie(w, "esec_oauth", "/")
+	s.clearCookie(w, "esec_oauth")
 	if err != nil || state == "" || code == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
 		s.webError(w, http.StatusBadRequest, "The sign-in link is invalid or was opened in another browser. Start again.")
 		return
@@ -241,8 +248,8 @@ func (s *Server) webGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := randomToken("")
-	if _, err := s.db.sql.ExecContext(ctx, `INSERT INTO web_sessions (id_hash, user_id, csrf, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
-		hashHex(sid), u.ID, randomToken(""), now.Unix(), now.Add(webSessionTTL).Unix()); err != nil {
+	if _, err := s.db.sql.ExecContext(ctx, `INSERT INTO web_sessions (id_hash, user_id, csrf, created_at, expires_at, user_agent, ip) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		hashHex(sid), u.ID, randomToken(""), now.Unix(), now.Add(webSessionTTL).Unix(), truncate(r.UserAgent(), 300), ip); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -250,7 +257,7 @@ func (s *Server) webGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	s.setCookie(w, "esec_session", sid, "/", webSessionTTL)
+	s.setCookie(w, "esec_session", sid, webSessionTTL)
 	// Remember this browser: during a flood of sign-in attempts, browsers
 	// that signed in before skip the server-wide cap.
 	known := randomToken("")
@@ -258,7 +265,7 @@ func (s *Server) webGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	s.setCookie(w, "esec_known", known, "/", knownBrowserTTL)
+	s.setCookie(w, "esec_known", known, knownBrowserTTL)
 	http.Redirect(w, r, safeNext(next), http.StatusSeeOther)
 }
 
@@ -283,8 +290,8 @@ func (s *Server) webLogout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.clearCookie(w, "esec_session", "/")
-	s.clearCookie(w, "esec_known", "/")
+	s.clearCookie(w, "esec_session")
+	s.clearCookie(w, "esec_known")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -296,7 +303,7 @@ func (s *Server) webDevice(w http.ResponseWriter, r *http.Request) {
 	// A code in the link is ignored on purpose: the person must type the
 	// code shown in their own terminal, so a link someone else sends cannot
 	// carry the attacker's code.
-	s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf})
+	s.render(w, http.StatusOK, "device.html", s.page(ws, "device"))
 }
 
 // allowCode reserves one code attempt for the address and the signed-in
@@ -382,17 +389,17 @@ func (s *Server) webDeviceLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pc == nil {
-		s.render(w, http.StatusOK, "device.html", map[string]any{"User": ws.user, "CSRF": ws.csrf, "Error": "That code is not valid or has expired. Check the code in your terminal."})
+		data := s.page(ws, "device")
+		data["Error"] = "That code is not valid or has expired. Check the code in your terminal."
+		s.render(w, http.StatusOK, "device.html", data)
 		return
 	}
 	s.goodCode(r, ws)
-	s.render(w, http.StatusOK, "confirm.html", map[string]any{
-		"User":     ws.user,
-		"CSRF":     ws.csrf,
-		"Code":     pc.code,
-		"Device":   pc.device,
-		"Existing": pc.existing,
-	})
+	data := s.page(ws, "device")
+	data["Code"] = pc.code
+	data["Device"] = pc.device
+	data["Existing"] = pc.existing
+	s.render(w, http.StatusOK, "confirm.html", data)
 }
 
 func (s *Server) webDeviceConfirm(w http.ResponseWriter, r *http.Request) {
@@ -444,69 +451,11 @@ func (s *Server) webDeviceConfirm(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	s.render(w, http.StatusOK, "done.html", map[string]any{"User": ws.user, "Approved": approve, "Existing": pc.existing, "Device": pc.device})
-}
-
-type deviceView struct {
-	*deviceRow
-
-	Sessions int
-	Words    string
-}
-
-func (s *Server) webAccount(w http.ResponseWriter, r *http.Request) {
-	ws := s.requireWeb(w, r)
-	if ws == nil {
-		return
-	}
-	ctx := r.Context()
-	now := s.now()
-	rows, err := s.db.devicesOf(ctx, s.db.sql, ws.user.ID)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	var devices []deviceView
-	for _, d := range rows {
-		if d.Status == wire.DeviceRegistering || (d.Status == wire.DevicePending && !now.Before(d.PendingExpires)) {
-			continue
-		}
-		var n int
-		if err := s.db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE device_id = ? AND revoked_at = 0 AND expires_at > ?`, d.ID, now.Unix()).Scan(&n); err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-		// A waiting device's words are never shown here: approving it needs
-		// them typed from the device's own screen.
-		words := ""
-		if d.Status != wire.DevicePending {
-			words = devicekey.Words(d.EncPub, d.SignPub)
-		}
-		devices = append(devices, deviceView{deviceRow: d, Sessions: n, Words: words})
-	}
-	slots, err := s.slots(ctx, ws.user.ID, now, true)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	audit, err := s.db.auditEntries(ctx, ws.user.ID, 100)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	links, err := s.db.chainLinks(ctx, s.db.sql, ws.user.ID, 0)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	accountWords := ""
-	if st, err := chain.Verify(ws.user.ID, links); err == nil {
-		accountWords = st.AccountWords()
-	}
-	s.render(w, http.StatusOK, "account.html", map[string]any{
-		"User": ws.user, "CSRF": ws.csrf, "Devices": devices, "Slots": slots, "Audit": audit,
-		"AccountWords": accountWords, "Now": now,
-	})
+	data := s.page(ws, "device")
+	data["Approved"] = approve
+	data["Existing"] = pc.existing
+	data["Device"] = pc.device
+	s.render(w, http.StatusOK, "done.html", data)
 }
 
 // webAction runs a CSRF-checked account form action and returns to the
@@ -529,7 +478,16 @@ func (s *Server) webAction(w http.ResponseWriter, r *http.Request, fn func(ctx c
 		s.internalError(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/account", http.StatusSeeOther)
+	http.Redirect(w, r, backTo(r.PostForm.Get("back")), http.StatusSeeOther) //nolint:gosec // backTo allows only this site's own pages
+}
+
+// backTo accepts the pages an account form may return to: the account page
+// and a device's page.
+func backTo(path string) string {
+	if id, ok := strings.CutPrefix(path, "/devices/"); ok && validID(id) {
+		return path
+	}
+	return "/account"
 }
 
 func (s *Server) webSuspendDevice(w http.ResponseWriter, r *http.Request) {
@@ -555,23 +513,4 @@ func (s *Server) webDisableSlot(w http.ResponseWriter, r *http.Request) {
 	s.webAction(w, r, func(ctx context.Context, ws *webSession) error {
 		return s.disableSlot(ctx, ws.user.ID, "", r.PathValue("id"), s.clientIP(r))
 	})
-}
-
-func (s *Server) webProjects(w http.ResponseWriter, r *http.Request) {
-	ws := s.requireWeb(w, r)
-	if ws == nil {
-		return
-	}
-	idx, v, err := s.latestIndex(r.Context(), ws.user.ID)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	data := map[string]any{"User": ws.user, "CSRF": ws.csrf, "Index": idx, "Vault": v}
-	if v != nil {
-		if d, err := s.db.device(r.Context(), s.db.sql, v.PushedBy); err == nil {
-			data["PushedBy"] = d.Name
-		}
-	}
-	s.render(w, http.StatusOK, "projects.html", data)
 }

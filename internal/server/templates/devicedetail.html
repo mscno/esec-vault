@@ -1,0 +1,67 @@
+{{template "head" .}}
+<p class="crumbs"><a href="/account#devices">Overview</a> › Device</p>
+<h1>{{.Device.Name}} {{template "status" .Device.Status}}</h1>
+
+{{if eq .Device.Status "pending"}}
+<div class="notice notice-warn">
+  <p>{{if .Expired}}This device's approval window has passed. It has to sign in again.{{else}}This device is waiting for approval until {{ts .Device.PendingExpires}}. On a trusted device, run the command below and type the words this device's own screen shows. If you did not start this sign-in, suspend it.{{end}}</p>
+  {{if not .Expired}}{{template "cmd" (printf "esec vault devices approve %s" .Device.ID)}}{{end}}
+</div>
+{{else if and (eq .Device.Status "suspended") .Device.Method}}
+<div class="notice notice-warn">
+  <p>This device is blocked. Revoke it from a trusted device to rotate your user key, so it can never read new secrets.</p>
+  {{template "cmd" (printf "esec vault devices revoke %s" .Device.ID)}}
+</div>
+{{else if eq .Device.Status "suspended"}}
+<div class="notice notice-info">
+  <p>This device is blocked. It was suspended before it was approved, so it never had access to your keys. Nothing more to do.</p>
+</div>
+{{end}}
+
+<table class="kv">
+  <tr><th>Device ID</th><td><code>{{.Device.ID}}</code></td></tr>
+  <tr><th>Platform</th><td>{{.Device.Platform}}</td></tr>
+  <tr><th>Fingerprint</th><td>{{if .Words}}<code>{{.Words}}</code>{{else}}<span class="muted">shown only on the device until it is approved</span>{{end}}</td></tr>
+  <tr><th>Added by</th><td>{{if .Device.Method}}{{.MethodLabel}}{{else}}<span class="muted">not approved yet</span>{{end}}</td></tr>
+  <tr><th>Signed in first</th><td>{{when .Device.Created}} <span class="muted">from {{or .Device.RegisterIP "—"}}</span></td></tr>
+  <tr><th>Last seen</th><td>{{when .Device.LastSeen}} <span class="muted">from {{or .Device.LastIP "—"}}</span></td></tr>
+</table>
+
+{{if or (eq .Device.Status "active") (eq .Device.Status "pending")}}
+<div class="buttons">
+  <form method="post" action="/account/devices/{{.Device.ID}}/suspend" data-confirm="Suspend {{.Device.Name}}? It is blocked at once and cannot be resumed.{{if .Device.Method}} Revoke it afterwards from a trusted device.{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="/devices/{{.Device.ID}}"><button type="submit" class="danger">Suspend</button></form>
+  {{if .CLISessions}}<form method="post" action="/account/sessions/{{.Device.ID}}/end" data-confirm="End every session of {{.Device.Name}}? It has to sign in again."><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="/devices/{{.Device.ID}}"><button type="submit" class="secondary">End sessions</button></form>{{end}}
+</div>
+{{end}}
+{{if eq .Device.Status "active"}}
+<details class="help">
+  <summary>Rename or revoke from a terminal</summary>
+  <p>Rename:</p>{{template "cmd" (printf "esec vault devices rename %s NEW-NAME" .Device.ID)}}
+  <p>Revoke (rotates your user key):</p>{{template "cmd" (printf "esec vault devices revoke %s" .Device.ID)}}
+</details>
+{{end}}
+
+<h2>Sessions</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Started</th><th>Last used</th><th>Ends</th></tr></thead>
+  <tbody>
+  {{range .CLISessions}}
+  <tr><td>{{when .Created}}</td><td>{{when .LastUsed}}</td><td>{{when .Expires}}</td></tr>
+  {{else}}
+  <tr><td colspan="3" class="muted">No live sessions.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p class="muted">A session ends at its fixed lifetime, or sooner when it goes unused.</p>
+
+<h2>Activity</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Device</th><th>Address</th></tr></thead>
+  <tbody>{{template "auditRows" .Activity}}</tbody>
+</table>
+</div>
+<p><a href="/activity?device={{.Device.ID}}">All activity of this device</a></p>
+{{template "foot" .}}

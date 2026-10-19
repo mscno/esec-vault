@@ -1,3 +1,46 @@
+# v0.5.0
+
+Web pages for people and for the operator. They still read only metadata:
+nothing on them can decrypt anything.
+
+- **Overview** (`/account`) opens with what needs attention, each with the
+  command that fixes it: a device waiting for approval (first, since it may
+  be a sign-in someone else started), a suspended device to revoke, a device
+  unseen for 90 days, an unlock slot about to expire, an account only one
+  device can open, an account not yet created. Tiles summarize devices, the
+  vault, projects and the last activity. New sections list signed-in
+  browsers, with sign-out for one or all other browsers, and the recent
+  activity.
+- **Device pages** (`/devices/{id}`) show a device's fingerprint, how it was
+  added, where it signed in from, its live sessions with when each ends, and
+  its activity. A device that was never approved, including one suspended
+  while it waited, never shows its words on the web, and is not sent to be
+  revoked: it never had access.
+- **Activity** (`/activity`) lists the audit log in plain words, with device
+  names, filters (sign-ins, devices, vault and keys, slots, or one device)
+  and paging.
+- **Vault** (`/vault`) lists the stored versions with size, hash and the
+  device that pushed each.
+- **Projects** has a search, including by public key, to find which project
+  and environment an encrypted file belongs to.
+- **Admin** (`/admin`), for the new `access.admin_github_ids`
+  (`ESEC_SERVER_ADMIN_GITHUB_IDS`): the server's version and settings, totals,
+  every allowed GitHub id with its state, and server-wide security events,
+  plus a page per account. Read-only, and a 404 for everyone else. It never
+  shows keys, fingerprint words or account creation tokens. The design
+  document's threat table covers a taken-over admin GitHub account.
+- A small first-party script adds copy buttons for commands and keys,
+  confirmations before suspending or disabling, times in the viewer's time
+  zone, table filters, and code formatting on the code page. The CSP allows
+  only this script; every page works without it.
+- Session counts now leave out sessions that went idle past
+  `sessions.idle`.
+- After GitHub sign-in, the browser returns to the page it asked for
+  (activity, vault, a device page, admin) instead of always the overview.
+- The database gains two columns for the browser list (`user_agent`, `ip` in
+  `web_sessions`). They are added on start and have defaults, so v0.4.x
+  servers can still open the database after a rollback.
+
 # v0.4.4
 
 - Build with esec v0.10.1, which adds `esec export` (the decrypted

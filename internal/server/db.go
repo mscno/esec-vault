@@ -114,7 +114,10 @@ var schema = []string{
 		user_id TEXT NOT NULL,
 		csrf TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
-		expires_at INTEGER NOT NULL)`,
+		expires_at INTEGER NOT NULL,
+		user_agent TEXT NOT NULL DEFAULT '',
+		ip TEXT NOT NULL DEFAULT '')`,
+	`CREATE INDEX IF NOT EXISTS web_sessions_user ON web_sessions(user_id)`,
 	`CREATE TABLE IF NOT EXISTS oauth_states (
 		state_hash TEXT PRIMARY KEY,
 		verifier TEXT NOT NULL,
@@ -141,6 +144,24 @@ var schema = []string{
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 
+var addedColumns = []struct{ table, column, def string }{
+	{"web_sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"},
+	{"web_sessions", "ip", "TEXT NOT NULL DEFAULT ''"},
+}
+
+// addColumn adds a column to a table unless it is already there.
+func addColumn(db *sql.DB, table, column, def string) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + def)
+	return err
+}
+
 // DB wraps the SQLite database. One connection serializes all access, which
 // keeps transactions simple and is ample for a personal or small-team server.
 type DB struct {
@@ -157,6 +178,14 @@ func OpenDB(path string) (*DB, error) {
 	db.SetMaxOpenConns(1)
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate: %w", err)
+		}
+	}
+	// Columns added after schema 1. They have defaults, so servers that
+	// predate them can still open the database after a rollback.
+	for _, c := range addedColumns {
+		if err := addColumn(db, c.table, c.column, c.def); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("migrate: %w", err)
 		}

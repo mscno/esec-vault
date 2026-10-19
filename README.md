@@ -187,11 +187,26 @@ and keeps the old key so git history still decrypts. Commit the re-encrypted
 files. If the old key may have leaked, also change the secret values
 themselves.
 
-### Browse projects in the web UI
+### Use the web pages
 
-Sign in at your server and open **Projects**. It shows project ids,
-environment names and public keys, never private keys or values. Each device
-publishes this index with its vault pushes. Turn it off on a device with:
+Sign in at your server with GitHub. The pages never decrypt anything.
+
+- **Overview**: your devices, SSH-agent unlock slots and signed-in browsers,
+  and what needs your attention, with the command to fix each: a device
+  waiting for approval, a suspended device to revoke, a device unseen for 90
+  days, a slot about to expire. Suspend a device or end its sessions here,
+  or sign out other browsers. Each device has a page with its sessions and
+  activity.
+- **Activity**: everything the server recorded for your account, filtered by
+  sign-ins, devices, vault or slots, or by one device.
+- **Projects**: project ids, environment names and public keys, never private
+  keys or values. Search by a public key to find which project and
+  environment an encrypted file belongs to.
+- **Vault**: the stored versions of your vault, with who pushed each.
+- **Enter a code**: confirm a device sign-in.
+
+Each device publishes the project index with its vault pushes. Turn it off on
+a device with:
 
 ```sh
 esec vault index off

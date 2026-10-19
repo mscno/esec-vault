@@ -49,6 +49,9 @@ type Server struct {
 	maxOAuthStates   int
 	// Per-address and per-network registrations per hour.
 	regPerAddr, regPerNet int
+	// version and started are shown on the admin page.
+	version string
+	started time.Time
 }
 
 // Option customizes a Server, mainly for tests.
@@ -70,11 +73,20 @@ func WithRegistrationLimits(perAddr, perNet int) Option {
 	return func(s *Server) { s.regPerAddr, s.regPerNet = perAddr, perNet }
 }
 
+// WithVersion sets the version the admin page shows.
+func WithVersion(v string) Option { return func(s *Server) { s.version = v } }
+
 // WithGitHub overrides the GitHub client.
 func WithGitHub(g GitHub) Option { return func(s *Server) { s.github = g } }
 
 // New builds a server around an open database.
 func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error) {
+	s := &Server{cfg: cfg, db: db, log: log, now: time.Now, version: "dev", anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), bodies: newBodyBudget(maxBodyActive, maxBodyPerAccount), pendingSmall: newBodyBudget(maxPendingSmall, maxPendingPerDevice), pendingLarge: newBodyBudget(maxPendingLarge, maxLargeBody), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates, regPerAddr: 10, regPerNet: 100}
+	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
+	for _, o := range opts {
+		o(s)
+	}
+	s.started = s.now()
 	tmpl, err := template.New("").Funcs(template.FuncMap{
 		"short": func(s string) string {
 			if len(s) > 16 {
@@ -88,15 +100,19 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 			}
 			return t.UTC().Format("2006-01-02 15:04 UTC")
 		},
+		"when":    func(t time.Time) template.HTML { return whenHTML(s.now(), t) },
+		"ago":     func(t time.Time) string { return relTime(s.now(), t) },
+		"bytes":   byteSize,
+		"plural":  plural,
+		"method":  methodLabel,
+		"browser": browserSummary,
+		"dur":     durationText,
+		"int":     func(n uint64) int { return int(n) }, //nolint:gosec // chain lengths are small
 	}).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, db: db, log: log, tmpl: tmpl, now: time.Now, anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), bodies: newBodyBudget(maxBodyActive, maxBodyPerAccount), pendingSmall: newBodyBudget(maxPendingSmall, maxPendingPerDevice), pendingLarge: newBodyBudget(maxPendingLarge, maxLargeBody), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates, regPerAddr: 10, regPerNet: 100}
-	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
-	for _, o := range opts {
-		o(s)
-	}
+	s.tmpl = tmpl
 	s.routes()
 	return s, nil
 }
@@ -165,9 +181,15 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /device/confirm", s.webDeviceConfirm)
 	m.HandleFunc("GET /account", s.webAccount)
 	m.HandleFunc("GET /projects", s.webProjects)
+	m.HandleFunc("GET /activity", s.webActivity)
+	m.HandleFunc("GET /vault", s.webVault)
+	m.HandleFunc("GET /devices/{id}", s.webDevicePage)
 	m.HandleFunc("POST /account/devices/{id}/suspend", s.webSuspendDevice)
 	m.HandleFunc("POST /account/sessions/{device}/end", s.webEndSessions)
 	m.HandleFunc("POST /account/slots/{id}/disable", s.webDisableSlot)
+	m.HandleFunc("POST /account/browsers/{id}/end", s.webEndBrowser)
+	m.HandleFunc("GET /admin", s.webAdmin)
+	m.HandleFunc("GET /admin/users/{id}", s.webAdminUser)
 
 	// API: device authorization grant.
 	m.HandleFunc("POST /v1/auth/device", s.apiDeviceRegister)
@@ -201,7 +223,7 @@ func (s *Server) routes() {
 func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		// Never send a Referer to other sites. Not "no-referrer": under it

@@ -1,0 +1,34 @@
+{{template "head" .}}
+<h1>Vault</h1>
+<p class="muted">Your vault is one encrypted file with your identity and keyrings, signed by your user key. Your devices push a new version when keys change, and the server keeps the last {{.Keep}}. It cannot read them.</p>
+
+{{if .Versions}}
+<table class="kv">
+  <tr><th>Latest</th><td>Version {{(index .Versions 0).Version}}, pushed {{when (index .Versions 0).Created}}</td></tr>
+  <tr><th>Stored</th><td>{{plural (len .Versions) "version"}}, {{bytes .Total}}</td></tr>
+</table>
+
+<h2>Versions</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Version</th><th>Pushed</th><th>By</th><th>Size</th><th>SHA-256</th><th>Project index</th></tr></thead>
+  <tbody>
+  {{range .Versions}}
+  <tr>
+    <td>{{.Version}}</td>
+    <td>{{when .Created}}</td>
+    <td>{{with .PushedBy}}<a href="/devices/{{.}}">{{or (index $.Names .) .}}</a>{{end}}</td>
+    <td>{{bytes .Size}}</td>
+    <td><code title="{{.SHA256}}">{{short .SHA256}}</code></td>
+    <td>{{if .HasIndex}}published{{else}}<span class="muted">off</span>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p class="muted">Each device checks the signature of what it downloads and refuses a vault older than the last one it applied, so the server cannot alter your vault or roll back a device that already synced.</p>
+{{else}}
+<p>No vault yet. Your first <code>esec vault login</code> creates your account and uploads it.</p>
+{{template "cmd" (printf "esec vault login %s" .BaseURL)}}
+{{end}}
+{{template "foot" .}}

@@ -1,0 +1,55 @@
+{{template "head" .}}
+<p class="crumbs"><a href="/admin">Admin</a> › Account</p>
+<h1>{{.Account.Login}} <span class="muted">GitHub {{.Account.GitHubID}}</span></h1>
+<p class="muted">Read-only. Only the account owner can suspend devices or end sessions.</p>
+{{if not .Allowed}}<div class="notice notice-warn"><p>This GitHub id is no longer on the allowlist: it can no longer sign in, and its devices and sessions are refused.</p></div>{{end}}
+
+{{with .Summary}}
+<table class="kv">
+  <tr><th>First signed in</th><td>{{when .Created}}</td></tr>
+  <tr><th>Account</th><td>{{if .ChainSeq}}created, {{plural (int .ChainSeq) "chain link"}}{{else}}<span class="muted">not created yet</span>{{end}}</td></tr>
+  <tr><th>Vault</th><td>{{if .VaultVersion}}version {{.VaultVersion}}, pushed {{when .VaultPushed}}, {{bytes .VaultBytes}} stored{{else}}<span class="muted">none</span>{{end}}</td></tr>
+  <tr><th>Unlock slots</th><td>{{.Slots}} enabled</td></tr>
+</table>
+{{end}}
+
+<h2>Devices</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Name</th><th>Status</th><th>Added by</th><th>Last seen</th><th>Sessions</th></tr></thead>
+  <tbody>
+  {{range .Devices}}
+  <tr>
+    <td><strong>{{.Name}}</strong><br><span class="muted">{{.Platform}} · {{.ID}}</span></td>
+    <td>{{template "status" .Status}}{{if .Stale}}<br><span class="muted">idle</span>{{end}}</td>
+    <td>{{if .Method}}{{method .Method}}{{else}}—{{end}}</td>
+    <td>{{when .LastSeen}}<br><span class="muted">{{.LastIP}}</span></td>
+    <td>{{.Sessions}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No devices.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2>Activity</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Device</th><th>Address</th></tr></thead>
+  <tbody>
+  {{range .Activity}}
+  <tr>
+    <td class="nowrap">{{when .Time}}</td>
+    <td><span class="event{{with .Tone}} tone-{{.}}{{end}}">{{.Label}}</span></td>
+    <td>{{if .Subject}}{{or .SubjectName .Subject}} {{end}}{{.Text}}</td>
+    <td>{{if .DeviceID}}{{or .DeviceName .DeviceID}}{{else}}<span class="muted">web</span>{{end}}</td>
+    <td class="muted">{{.IP}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No entries.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{template "foot" .}}

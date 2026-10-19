@@ -6,11 +6,22 @@
 <meta name="referrer" content="same-origin">
 <title>esec vault</title>
 <link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
 </head>
 <body>
 <header>
   <a class="brand" href="/">esec vault</a>
-  {{with .User}}<nav><a href="/projects">Projects</a> <a href="/account">Devices</a> <span class="who">{{.Login}} <span class="muted">(GitHub {{.GitHubID}})</span></span></nav>{{end}}
+  {{with .User}}
+  <nav aria-label="Main">
+    <a href="/account"{{if eq $.Nav "account"}} aria-current="page"{{end}}>Overview</a>
+    <a href="/activity"{{if eq $.Nav "activity"}} aria-current="page"{{end}}>Activity</a>
+    <a href="/projects"{{if eq $.Nav "projects"}} aria-current="page"{{end}}>Projects</a>
+    <a href="/vault"{{if eq $.Nav "vault"}} aria-current="page"{{end}}>Vault</a>
+    <a href="/device"{{if eq $.Nav "device"}} aria-current="page"{{end}}>Enter a code</a>
+    {{if $.IsAdmin}}<a href="/admin"{{if eq $.Nav "admin"}} aria-current="page"{{end}}>Admin</a>{{end}}
+  </nav>
+  <span class="who">{{.Login}} <span class="muted">GitHub {{.GitHubID}}</span></span>
+  {{end}}
 </header>
 <main>
 {{end}}
@@ -19,4 +30,25 @@
 <footer class="muted">The server stores only ciphertext. Keys never leave your devices unencrypted.</footer>
 </body>
 </html>
+{{end}}
+
+{{/* A shell command with a copy button (shown when scripts run). */}}
+{{define "cmd"}}<div class="cmd"><code>{{.}}</code><button type="button" class="copy" data-copy="{{.}}" hidden>Copy</button></div>{{end}}
+
+{{/* A device status as a badge. */}}
+{{define "status"}}<span class="badge status-{{.}}">{{.}}</span>{{end}}
+
+{{/* Audit rows of one account; devices link to their pages. */}}
+{{define "auditRows"}}
+{{range .}}
+<tr>
+  <td class="nowrap">{{when .Time}}</td>
+  <td><span class="event{{with .Tone}} tone-{{.}}{{end}}">{{.Label}}</span></td>
+  <td>{{if .Subject}}<a href="/devices/{{.Subject}}">{{or .SubjectName .Subject}}</a> {{end}}{{.Text}}</td>
+  <td>{{if .DeviceID}}<a href="/devices/{{.DeviceID}}">{{or .DeviceName .DeviceID}}</a>{{else}}<span class="muted">web</span>{{end}}</td>
+  <td class="muted">{{.IP}}</td>
+</tr>
+{{else}}
+<tr><td colspan="5" class="muted">No entries.</td></tr>
+{{end}}
 {{end}}

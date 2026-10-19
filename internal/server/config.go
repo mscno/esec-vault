@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,10 @@ type AccessConfig struct {
 	// AllowedGitHubIDs are numeric GitHub user IDs. Usernames are never used
 	// for access: they can be renamed and later claimed by someone else.
 	AllowedGitHubIDs []int64 `toml:"allowed_github_ids"`
+	// AdminGitHubIDs may open the read-only admin pages: every account's
+	// devices, activity and storage, and the server's status. Each must also
+	// be allowed.
+	AdminGitHubIDs []int64 `toml:"admin_github_ids"`
 }
 
 // SessionsConfig sets CLI session lifetimes.
@@ -158,6 +163,11 @@ func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent
 			errs = append(errs, fmt.Errorf("invalid GitHub user id %d", id))
 		}
 	}
+	for _, id := range c.Access.AdminGitHubIDs {
+		if !c.Allowed(id) {
+			errs = append(errs, fmt.Errorf("admin GitHub user id %d is not in access.allowed_github_ids", id))
+		}
+	}
 	if c.NewDevices != "" && c.NewDevices != NewDevicesOpen && c.NewDevices != NewDevicesClosed {
 		errs = append(errs, fmt.Errorf("new_devices must be %q or %q", NewDevicesOpen, NewDevicesClosed))
 	}
@@ -204,6 +214,11 @@ func (c *Config) Allowed(githubID int64) bool {
 	return false
 }
 
+// Admin reports whether a GitHub user id may open the admin pages.
+func (c *Config) Admin(githubID int64) bool {
+	return c.Allowed(githubID) && slices.Contains(c.Access.AdminGitHubIDs, githubID)
+}
+
 func isLoopback(host string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
@@ -230,6 +245,13 @@ func (c *Config) applyEnv() error {
 			return fmt.Errorf("ESEC_SERVER_ALLOWED_GITHUB_IDS: %w", err)
 		}
 		c.Access.AllowedGitHubIDs = ids
+	}
+	if v := os.Getenv("ESEC_SERVER_ADMIN_GITHUB_IDS"); v != "" {
+		ids, err := parseIDs(v)
+		if err != nil {
+			return fmt.Errorf("ESEC_SERVER_ADMIN_GITHUB_IDS: %w", err)
+		}
+		c.Access.AdminGitHubIDs = ids
 	}
 	if v := os.Getenv("ESEC_SERVER_VAULT_HISTORY"); v != "" {
 		n, err := strconv.Atoi(v)

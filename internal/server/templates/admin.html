@@ -1,0 +1,93 @@
+{{template "head" .}}
+<h1>Admin</h1>
+<p class="muted">Read-only. The server holds only ciphertext, so this page shows who uses it, from where and how much, never a key or a secret.</p>
+
+{{if .NewDevicesClosed}}
+<div class="notice notice-warn"><p>The server is <strong>closed to new devices</strong>. Devices and browsers that signed in before keep working. Set <code>ESEC_SERVER_NEW_DEVICES=open</code> when the attack is over.</p></div>
+{{end}}
+{{if gt .Stats.DeniedSignIns 0}}
+<div class="notice notice-info"><p>{{plural .Stats.DeniedSignIns "sign-in"}} from GitHub accounts that are not allowed in the last 24 hours. See the events below.</p></div>
+{{end}}
+
+<section class="tiles" aria-label="Server">
+  <div class="tile"><span class="tile-label">Accounts</span><span class="tile-value">{{.Stats.Users}}</span><span class="tile-note">{{plural .Config.Allowed "allowed GitHub id"}}</span></div>
+  <div class="tile"><span class="tile-label">Devices</span><span class="tile-value">{{or (index .Stats.Devices "active") 0}} active</span><span class="tile-note">{{or (index .Stats.Devices "pending") 0}} waiting · {{or (index .Stats.Devices "suspended") 0}} suspended · {{or (index .Stats.Devices "revoked") 0}} revoked</span></div>
+  <div class="tile"><span class="tile-label">Sessions</span><span class="tile-value">{{.Stats.CLISessions}} CLI</span><span class="tile-note">{{plural .Stats.WebSessions "browser"}} · {{.Stats.OpenSignIns}} sign-ins in progress</span></div>
+  <div class="tile"><span class="tile-label">Storage</span><span class="tile-value">{{bytes .Stats.DatabaseBytes}}</span><span class="tile-note">{{plural .Stats.VaultVersions "vault version"}}, {{bytes .Stats.VaultBytes}}</span></div>
+</section>
+
+<h2>Server</h2>
+<table class="kv">
+  <tr><th>Version</th><td>{{.Version}}</td></tr>
+  <tr><th>Address</th><td>{{.Config.BaseURL}}</td></tr>
+  <tr><th>Running since</th><td>{{when .Started}}</td></tr>
+  <tr><th>New devices</th><td>{{if .NewDevicesClosed}}<span class="badge status-suspended">closed</span>{{else}}<span class="badge status-active">open</span>{{end}}</td></tr>
+  <tr><th>CLI sessions</th><td>end after {{dur .Config.Idle}} unused, {{dur .Config.Absolute}} at most</td></tr>
+  <tr><th>Vault history</th><td>{{plural .Config.VaultHistory "version"}} per account</td></tr>
+  <tr><th>Client address</th><td>{{with .Config.ClientIPHeader}}from the <code>{{.}}</code> header{{else}}TCP peer{{end}}</td></tr>
+  <tr><th>Audit log</th><td>{{.Stats.AuditEntries}} entries{{if .Stats.AuditEntries}}, the oldest {{dur .Stats.OldestAuditAge}} old{{end}}</td></tr>
+</table>
+
+<h2>People</h2>
+<input type="search" class="filter" placeholder="Filter people" aria-label="Filter people" data-filter="#people" hidden>
+<div class="scroll">
+<table id="people">
+  <thead><tr><th>Account</th><th>State</th><th>Devices</th><th>Last seen</th><th>Vault</th></tr></thead>
+  <tbody>
+  {{range .Accounts}}
+  <tr>
+    <td>{{if .Known}}<a href="/admin/users/{{.ID}}"><strong>{{.Login}}</strong></a>{{else}}<span class="muted">unknown login</span>{{end}}{{if .Admin}} <span class="badge">admin</span>{{end}}<br><span class="muted">GitHub {{.GitHubID}}</span></td>
+    <td>
+      {{if not .Allowed}}<span class="badge status-revoked">removed from allowlist</span>
+      {{else if not .Known}}<span class="badge">never signed in</span>
+      {{else if eq .ChainSeq 0}}<span class="badge status-pending">signed in, no account yet</span>
+      {{else}}<span class="badge status-active">active</span>{{end}}
+    </td>
+    <td>{{or (index .Devices "active") 0}} active{{with index .Devices "pending"}}, {{.}} waiting{{end}}{{with index .Devices "suspended"}}, {{.}} suspended{{end}}{{if .Slots}}<br><span class="muted">{{plural .Slots "unlock slot"}}</span>{{end}}</td>
+    <td>{{when .LastSeen}}</td>
+    <td>{{if .VaultVersion}}v{{.VaultVersion}}, {{bytes .VaultBytes}}<br><span class="muted">pushed {{ago .VaultPushed}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<details class="help">
+  <summary>Add a person</summary>
+  <ol>
+    <li>Find their numeric GitHub id: <code>gh api users/LOGIN --jq .id</code>.</li>
+    <li>Add it to <code>allowed_github_ids</code> (or <code>ESEC_SERVER_ALLOWED_GITHUB_IDS</code>) and restart the server.</li>
+    <li>On the server, print their account creation token and give it to them over a channel you trust: {{template "cmd" "esec-vault-server -bootstrap-token-for GITHUB-ID"}}</li>
+    <li>They run <code>esec vault login {{.Config.BaseURL}}</code> on the machine with their esec identity.</li>
+  </ol>
+  <p class="muted">The web pages never show creation tokens: with one, whoever controls a person's GitHub account could create that person's vault account before they do.</p>
+</details>
+
+<h2 id="events">{{if .AllEvents}}All events{{else}}Security events{{end}}</h2>
+<nav class="filters" aria-label="Events">
+  <a href="/admin#events"{{if not .AllEvents}} aria-current="true"{{end}}>Security events</a>
+  <a href="/admin?events=all#events"{{if .AllEvents}} aria-current="true"{{end}}>All events</a>
+</nav>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Detail</th><th>Device</th><th>Address</th></tr></thead>
+  <tbody>
+  {{range .Events}}
+  <tr>
+    <td class="nowrap">{{when .Time}}</td>
+    <td>{{if .Login}}<a href="/admin/users/{{.UserID}}">{{.Login}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
+    <td><span class="event{{with .Tone}} tone-{{.}}{{end}}">{{.Label}}</span></td>
+    <td>{{if .Subject}}{{or .SubjectName .Subject}} {{end}}{{.Text}}</td>
+    <td>{{if .DeviceID}}{{or .DeviceName .DeviceID}}{{else}}<span class="muted">web</span>{{end}}</td>
+    <td class="muted">{{.IP}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">No events.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p class="pager">
+  {{if .Paged}}<a href="/admin{{if .AllEvents}}?events=all{{end}}#events">Newest</a>{{end}}
+  {{with .Older}}<a href="{{.}}">Older events</a>{{end}}
+</p>
+{{template "foot" .}}
