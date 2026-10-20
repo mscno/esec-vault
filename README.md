@@ -66,7 +66,7 @@ steps:
   - uses: actions/checkout@v5
   - name: Install esec and esec-vault
     run: |
-      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.10.0/esec-vault_0.10.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
+      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.11.0/esec-vault_0.11.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
       curl -fsSL https://github.com/mscno/esec/releases/download/v0.10.1/esec_0.10.1_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
   - run: esec-vault machine run -- esec run prod -- ./deploy.sh
     env:
@@ -90,7 +90,7 @@ fly secrets set -a store ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/p
 ```dockerfile
 FROM alpine:3.21 AS esec
 RUN apk add --no-cache curl \
- && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.10.0/esec-vault_0.10.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
+ && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.11.0/esec-vault_0.11.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
  && curl -fsSL https://github.com/mscno/esec/releases/download/v0.10.1/esec_0.10.1_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
 
 FROM your-app-image
