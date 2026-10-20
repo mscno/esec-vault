@@ -280,7 +280,9 @@ type DevicesCmd struct {
 }
 
 // DevicesListCmd lists devices.
-type DevicesListCmd struct{}
+type DevicesListCmd struct {
+	JSON bool `help:"Print JSON, for scripts and agents"`
+}
 
 // Run implements devices list.
 func (c *DevicesListCmd) Run(ctx *cliCtx) error {
@@ -293,6 +295,9 @@ func (c *DevicesListCmd) Run(ctx *cliCtx) error {
 	devices, err := a.Devices(bg)
 	if err != nil {
 		return err
+	}
+	if c.JSON {
+		return printJSON(devicesJSON(a, devices))
 	}
 	fmt.Printf("Account: %s  key: %s\n", safetext.Clean(a.State.Login), a.State.Chain.AccountWords)
 	for _, d := range devices {

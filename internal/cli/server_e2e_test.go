@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -110,6 +111,22 @@ func (m *machine) run(stdin string, args ...string) string {
 	out, err := m.cmd(m.home, stdin, "esec-vault", args...).CombinedOutput()
 	if err != nil {
 		m.t.Fatalf("%s: esec-vault %s: %v\n%s", m.name, strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+// runJSON runs a command with --json and decodes its standard output.
+func (m *machine) runJSON(v any, args ...string) string {
+	m.t.Helper()
+	c := m.cmd(m.home, "", "esec-vault", append(args, "--json")...)
+	var stderr strings.Builder
+	c.Stderr = &stderr
+	out, err := c.Output()
+	if err != nil {
+		m.t.Fatalf("%s: esec-vault %s --json: %v\n%s", m.name, strings.Join(args, " "), err, stderr.String())
+	}
+	if err := json.Unmarshal(out, v); err != nil {
+		m.t.Fatalf("%s: esec-vault %s --json printed no JSON (%v):\n%s", m.name, strings.Join(args, " "), err, out)
 	}
 	return string(out)
 }
@@ -401,6 +418,16 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	}
 
 	// --- Devices list shows all four, with methods. ---
+	var devs struct {
+		Account string `json:"account"`
+		Devices []struct {
+			Name       string `json:"name"`
+			ThisDevice bool   `json:"this_device"`
+		} `json:"devices"`
+	}
+	if raw := laptop.runJSON(&devs, "devices", "list"); devs.Account == "" || len(devs.Devices) < 4 {
+		t.Fatalf("devices list --json:\n%s", raw)
+	}
 	out = laptop.run("", "devices")
 	for _, want := range []string{"vm1", "vm2", "vm3b", "approval", "ssh_agent", "recovery", "first"} {
 		if !strings.Contains(out, want) {

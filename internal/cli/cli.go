@@ -31,44 +31,72 @@ type cliCtx struct {
 }
 
 type cli struct {
-	Setup     SetupCmd     `cmd:"" help:"Guided identity, remote and background-service setup."`
-	Daemon    DaemonCmd    `cmd:"" help:"Manage the OS-supervised user daemon."`
-	Unlock    UnlockCmd    `cmd:"" help:"Unlock the broker for a bounded session."`
-	Lock      LockCmd      `cmd:"" help:"Lock the broker while backups continue."`
-	Uninstall UninstallCmd `cmd:"" help:"Remove service; optionally purge local vault data."`
-	Init      InitCmd      `cmd:"" help:"Set up an identity and first backup in one go."`
-	Status    StatusCmd    `cmd:"" help:"Show identity, vault and backup status."`
-	Doctor    DoctorCmd    `cmd:"" help:"Diagnose setup problems (unmigrated keyrings, loose permissions)."`
-	Identity  IdentityCmd  `cmd:"" help:"Manage your identity keypair (mnemonic-backed)."`
-	Keyring   KeyringCmd   `cmd:"" help:"Manage the global keyring store."`
-	Project   ProjectCmd   `cmd:"" help:"Scaffold projects and environments."`
-	Env       EnvCmd       `cmd:"" help:"Manage environment keys."`
-	Backup    BackupCmd    `cmd:"" help:"Seal all keyrings and your identity into the vault blob."`
-	Restore   RestoreCmd   `cmd:"" help:"Restore keyrings from the vault blob."`
-	Recover   RecoverCmd   `cmd:"" help:"Full cold recovery: phrase + backup -> identity -> keyrings."`
-	Agent     AgentCmd     `cmd:"" help:"Run the broker daemon holding keys in memory."`
-	Run       RunCmd       `cmd:"" help:"Run a command with broker-decrypted secrets injected."`
-	Approve   ApproveCmd   `cmd:"" help:"Approve a pending broker request by id."`
-	Members   MembersCmd   `cmd:"" help:"Manage team member identity proofs."`
-	Share     ShareCmd     `cmd:"" help:"Seal project keys to team members (writes committed blobs)."`
-	Sync      SyncCmd      `cmd:"" help:"Open your committed share blobs into the global keyring store."`
-	Remote    RemoteCmd    `cmd:"" help:"Manage cloud backup destinations."`
+	Setup  SetupCmd  `cmd:"" group:"start" help:"Guided identity, remote and background-service setup."`
+	Init   InitCmd   `cmd:"" group:"start" help:"Set up an identity and first backup in one go."`
+	Login  LoginCmd  `cmd:"" group:"start" help:"Sign in to a vault server and get your keys on this machine."`
+	Logout LogoutCmd `cmd:"" group:"start" help:"End this machine's vault server session."`
+	Status StatusCmd `cmd:"" group:"start" help:"Show identity, vault and backup status."`
+	Doctor DoctorCmd `cmd:"" group:"start" help:"Diagnose setup problems (unmigrated keyrings, loose permissions)."`
 
-	Login       LoginCmd       `cmd:"" help:"Sign in to a vault server and get your keys on this machine."`
-	Logout      LogoutCmd      `cmd:"" help:"End this machine's vault server session."`
-	Devices     DevicesCmd     `cmd:"" help:"List, approve, revoke and rename your devices."`
-	AgentUnlock AgentUnlockCmd `cmd:"" name:"agent-unlock" help:"Let an SSH-agent key unlock new devices (optional)."`
-	Index       IndexCmd       `cmd:"" help:"Publish project and environment names (no secrets) for the web UI: on or off."`
-	Team        TeamCmd        `cmd:"" help:"Share projects with your team through the vault server."`
-	Machine     MachineCmd     `cmd:"" help:"Give CI jobs and apps their own keys to a shared project."`
-	Group       GroupCmd       `cmd:"" help:"Machine groups: production or staging machines that read the same environments."`
-	Changes     ChangesCmd     `cmd:"" help:"Sign the changes made on the web pages (members, access, machines)."`
-	Delegate    DelegateCmd    `cmd:"" help:"Passkeys and the server, which may sign some changes for you on the web."`
+	Project ProjectCmd `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
+	Env     EnvCmd     `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate."`
+	Run     RunCmd     `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
+	Keyring KeyringCmd `cmd:"" group:"secrets" help:"Manage the global keyring store."`
+
+	Team        TeamCmd        `cmd:"" group:"team" help:"Share projects with your team through the vault server."`
+	Changes     ChangesCmd     `cmd:"" group:"team" help:"Sign the changes made on the web pages (members, access, machines)."`
+	Delegate    DelegateCmd    `cmd:"" group:"team" help:"Passkeys and the server, which may sign some changes for you on the web."`
+	Devices     DevicesCmd     `cmd:"" group:"team" help:"List, approve, revoke and rename your devices."`
+	Index       IndexCmd       `cmd:"" group:"team" help:"Publish project and environment names (no secrets) for the web UI: on or off."`
+	AgentUnlock AgentUnlockCmd `cmd:"" group:"team" name:"agent-unlock" help:"Let an SSH-agent key unlock new devices (optional)."`
+
+	Machine MachineCmd `cmd:"" group:"machines" help:"Give CI jobs and apps their own keys to a shared project."`
+	Group   GroupCmd   `cmd:"" group:"machines" help:"Machine groups: production or staging machines that read the same environments."`
+
+	Backup   BackupCmd   `cmd:"" group:"backup" help:"Seal all keyrings and your identity into the vault blob."`
+	Restore  RestoreCmd  `cmd:"" group:"backup" help:"Restore keyrings from the vault blob."`
+	Recover  RecoverCmd  `cmd:"" group:"backup" help:"Full cold recovery: phrase + backup -> identity -> keyrings."`
+	Remote   RemoteCmd   `cmd:"" group:"backup" help:"Manage cloud backup destinations."`
+	Identity IdentityCmd `cmd:"" group:"backup" help:"Manage your identity keypair (mnemonic-backed)."`
+
+	Daemon    DaemonCmd    `cmd:"" group:"service" help:"Manage the OS-supervised user daemon."`
+	Unlock    UnlockCmd    `cmd:"" group:"service" help:"Unlock the broker for a bounded session."`
+	Lock      LockCmd      `cmd:"" group:"service" help:"Lock the broker while backups continue."`
+	Agent     AgentCmd     `cmd:"" group:"service" help:"Run the broker daemon holding keys in memory."`
+	Approve   ApproveCmd   `cmd:"" group:"service" help:"Approve a pending broker request by id."`
+	Uninstall UninstallCmd `cmd:"" group:"service" help:"Remove service; optionally purge local vault data."`
+
+	Members MembersCmd `cmd:"" group:"git" help:"Manage team member identity proofs."`
+	Share   ShareCmd   `cmd:"" group:"git" help:"Seal project keys to team members (writes committed blobs)."`
+	Sync    SyncCmd    `cmd:"" group:"git" help:"Open your committed share blobs into the global keyring store."`
 
 	Version kong.VersionFlag `help:"Show version"`
 	Debug   bool             `help:"Enable debug logging" env:"ESEC_DEBUG"`
 	Quiet   bool             `help:"Suppress non-essential output" short:"q"`
 }
+
+// commandGroups titles the sections of the top-level help.
+var commandGroups = []kong.Group{
+	{Key: "start", Title: "Get started:"},
+	{Key: "secrets", Title: "Secrets in a project:"},
+	{Key: "team", Title: "Share with people (vault server):"},
+	{Key: "machines", Title: "Machines, CI jobs and servers:"},
+	{Key: "backup", Title: "Backup and recovery:"},
+	{Key: "service", Title: "Background service:"},
+	{Key: "git", Title: "Sharing through git, without a server:"},
+}
+
+const description = `Identity, backup and team sharing for esec keyrings. Every command also runs as "esec vault ...".
+
+Start here:
+
+    esec vault setup                          # identity, backup and background service
+    esec vault login https://vault.example.com
+    esec vault project init acme/api          # in a repository: project file and env keys
+    esec vault team create                    # share it; you become its admin
+    esec vault team add alice --env dev       # alice's devices get the dev key
+
+Scripts and agents: list and show commands take --json; commands that ask take --yes (or --force); "esec vault help <command>" explains one. Exit codes: 0 done, 1 failed, 80 bad usage; run and machine run return their command's code.`
 
 // Execute runs the CLI.
 func Execute(version string) {
@@ -76,12 +104,26 @@ func Execute(version string) {
 	// detect that a managed service still runs an older executable copy.
 	daemon.BuildVersion = version
 	var c cli
-	ctx := kong.Parse(&c,
+	parser := kong.Must(&c,
 		kong.ShortUsageOnError(),
 		kong.Name("esec-vault"),
-		kong.Description("Identity, backup and team sharing for esec keyrings"),
+		kong.Description(description),
+		kong.ExplicitGroups(commandGroups),
+		kong.ConfigureHelp(kong.HelpOptions{NoExpandSubcommands: true}),
+		kong.Help(func(o kong.HelpOptions, ctx *kong.Context) error {
+			// One line per command at the top; below it, each with its arguments.
+			o.Compact = ctx.Selected() == nil
+			return kong.DefaultHelpPrinter(o, ctx)
+		}),
 		kong.Vars{"version": version},
 	)
+	addDetails(parser.Model)
+	ctx, err := parser.Parse(helpArgs(os.Args[1:]))
+	if err != nil {
+		// Usage goes to stderr with the error, so stdout stays clean.
+		parser.Stdout = os.Stderr
+		parser.FatalIfErrorf(err)
+	}
 
 	level := slog.LevelInfo
 	if c.Debug {
@@ -92,7 +134,7 @@ func Execute(version string) {
 	app := &cliCtx{Logger: logger, Keyring: keyring.NewOS(), Quiet: c.Quiet, Version: version}
 	mutation := isMutation(ctx.Command())
 	app.keyringLocked = mutation
-	err := runCommand(func() error { return ctx.Run(app) }, mutation)
+	err = runCommand(func() error { return ctx.Run(app) }, mutation)
 	if mutation && !daemon.Notify() {
 		// Persist even partially successful imports; offline upload failures leave
 		// the local snapshot and pending marker intact for the watch worker.
@@ -127,7 +169,13 @@ func Execute(version string) {
 		}
 		os.Exit(codeErr.code)
 	}
-	ctx.FatalIfErrorf(err)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "esec-vault: error:", err)
+		for _, h := range hints(err, ctx.Selected()) {
+			fmt.Fprintln(os.Stderr, "hint:", h)
+		}
+		os.Exit(1)
+	}
 }
 
 // isMutation reports whether a command changes keyrings, so it runs under the

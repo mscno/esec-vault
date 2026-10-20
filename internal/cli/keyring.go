@@ -162,7 +162,9 @@ func (c *KeyringAddCmd) Run(ctx *cliCtx) error {
 }
 
 // KeyringListCmd prints metadata only.
-type KeyringListCmd struct{}
+type KeyringListCmd struct {
+	JSON bool `help:"Print JSON, for scripts and agents"`
+}
 
 // Run lists all keyrings including the default store.
 func (c *KeyringListCmd) Run(ctx *cliCtx) error {
@@ -171,12 +173,26 @@ func (c *KeyringListCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
+	type project struct {
+		Project string `json:"project"`
+		Entries int    `json:"entries"`
+	}
+	out := []project{}
 	for _, p := range projects {
 		entries, err := ks.Read(p)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s: %d entries\n", p, len(entries))
+		out = append(out, project{p, len(entries)})
+	}
+	if c.JSON {
+		return printJSON(out)
+	}
+	if len(out) == 0 {
+		fmt.Fprintln(os.Stderr, "No keyrings on this machine yet. Create keys in a repository with: esec vault project init ORG/REPO")
+	}
+	for _, p := range out {
+		fmt.Printf("%s: %d entries\n", p.Project, p.Entries)
 	}
 	return nil
 }

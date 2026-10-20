@@ -30,7 +30,9 @@ type TeamCmd struct {
 }
 
 // TeamListCmd lists shared projects.
-type TeamListCmd struct{}
+type TeamListCmd struct {
+	JSON bool `help:"Print JSON, for scripts and agents"`
+}
 
 // Run implements team list.
 func (c *TeamListCmd) Run(ctx *cliCtx) error {
@@ -43,6 +45,9 @@ func (c *TeamListCmd) Run(ctx *cliCtx) error {
 	list, err := a.TeamSummaries(bg)
 	if err != nil {
 		return err
+	}
+	if c.JSON {
+		return printJSON(nonNil(list))
 	}
 	if len(list) == 0 {
 		fmt.Println("No shared projects. Share one from its repository with: esec vault team create")
@@ -81,6 +86,7 @@ func projectFlag(p string) (string, error) {
 // TeamShowCmd shows one shared project.
 type TeamShowCmd struct {
 	Project string `help:"Project id (default: nearest .esec-project)"`
+	JSON    bool   `help:"Print JSON, for scripts and agents"`
 }
 
 // Run implements team show.
@@ -103,6 +109,9 @@ func (c *TeamShowCmd) Run(ctx *cliCtx) error {
 	keys := map[string]map[string]string{}
 	for _, h := range v.Status.Holders {
 		keys[h.ID] = h.Envs
+	}
+	if c.JSON {
+		return printJSON(teamJSON(project, a.State.Server, v, keys))
 	}
 	fmt.Printf("%s  (%d signed changes; %s/teams/%s)\n", project, st.Seq, a.State.Server, project)
 	fmt.Println("Environments:")

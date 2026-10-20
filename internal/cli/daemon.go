@@ -28,7 +28,7 @@ type DaemonCmd struct {
 	Disable   DaemonDisableCmd   `cmd:"" help:"Stop and disable login startup."`
 	Restart   DaemonRestartCmd   `cmd:"" help:"Restart the service in locked state."`
 	Uninstall DaemonUninstallCmd `cmd:"" help:"Remove service and runtime files, preserving keys."`
-	Run       DaemonRunCmd       `cmd:"" help:"Foreground service entry point for launchd/systemd."`
+	Run       DaemonRunCmd       `cmd:"" hidden:"" help:"Foreground service entry point for launchd/systemd."`
 	Status    DaemonStatusCmd    `cmd:"" help:"Show service registration and broker session state."`
 	Logs      DaemonLogsCmd      `cmd:"" help:"Show recent service logs."`
 	Job       DaemonJobCmd       `cmd:"" help:"Inspect an asynchronous backup job."`

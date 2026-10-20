@@ -35,6 +35,7 @@ func readLine() (string, error) {
 func promptLine(question string) (string, error) {
 	fmt.Fprint(os.Stderr, question)
 	line, err := readLine()
+	noteUnanswered(err)
 	return strings.TrimSpace(line), err
 }
 
@@ -43,6 +44,8 @@ func confirm(question string) bool {
 	fmt.Fprintf(os.Stderr, "%s [y/N]: ", question)
 	answer, err := readLine()
 	if err != nil {
+		noteUnanswered(err)
+		fmt.Fprintln(os.Stderr)
 		return false
 	}
 	return strings.EqualFold(answer, "y")
@@ -62,7 +65,9 @@ func promptSecret(label string) (string, error) {
 		return string(b), nil
 	}
 	fmt.Fprint(os.Stderr, label)
-	return readLine()
+	line, err := readLine()
+	noteUnanswered(err)
+	return line, err
 }
 
 // promptPassphrase asks for a passphrase twice and requires a match. An empty

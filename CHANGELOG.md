@@ -1,3 +1,27 @@
+# v0.12.0
+
+The CLI is easier to find your way in, for people and for agents.
+
+- **Help in sections.** `esec vault` (or `esec vault --help`) lists the
+  commands in seven sections, from "Get started" to "Sharing through git",
+  with a quick start, instead of 100 lines of subcommands. `esec vault help
+  <command>` works like `<command> --help`, and about 35 commands now have
+  examples and a few lines on what they do.
+- **`--json`** on `team list`, `team show`, `group list`, `group show`,
+  `machine list`, `machine whoami`, `devices list`, `env list`,
+  `keyring list`, `delegate list` and `changes` (as on `status`). It shows
+  names, public keys and fingerprints, never a private key.
+- **`changes --list`** shows the changes waiting without signing them.
+- **No hanging, no guessing.** A question with no terminal and no answer on
+  stdin stops the command with a hint naming its `--yes` or `--force` flag.
+  `changes` with no answer signs nothing, and says how many it left.
+- **Hints.** Errors end with a `hint:` line where there is a next step, such
+  as creating a `.esec-project`. `env list` without keys and `keyring list`
+  without keyrings say how to make some; an unknown remote with none
+  configured says how to add one.
+- Usage errors print the usage on stderr, keeping stdout clean. The
+  service's own entry point (`daemon run`) is hidden from the help.
+
 # v0.11.0
 
 Passkeys move to a signer page hosted apart from the vault server.

@@ -273,6 +273,9 @@ func (c *Config) Resolve(name string) (string, Entry, error) {
 	e, ok := c.Remotes[name]
 	if !ok {
 		known := c.Names()
+		if len(known) == 0 {
+			return "", Entry{}, fmt.Errorf("unknown remote %q: no remotes are configured; add one with: esec vault remote add", name)
+		}
 		return "", Entry{}, fmt.Errorf("unknown remote %q (configured: %s)", name, strings.Join(known, ", "))
 	}
 	return name, e, nil

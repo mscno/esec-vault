@@ -16,7 +16,9 @@ type DelegateCmd struct {
 }
 
 // DelegateListCmd lists delegates.
-type DelegateListCmd struct{}
+type DelegateListCmd struct {
+	JSON bool `help:"Print JSON, for scripts and agents"`
+}
 
 // Run implements delegate list.
 func (c *DelegateListCmd) Run(ctx *cliCtx) error {
@@ -29,6 +31,9 @@ func (c *DelegateListCmd) Run(ctx *cliCtx) error {
 	ds, err := a.Delegates(bg)
 	if err != nil {
 		return err
+	}
+	if c.JSON {
+		return printJSON(delegatesJSON(ds))
 	}
 	if len(ds) == 0 {
 		fmt.Printf("Only your devices sign changes. Add a passkey, or let the server sign removals, on %s/account/signing\n", a.State.Server)

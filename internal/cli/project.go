@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -306,7 +307,8 @@ func (c *EnvAddCmd) Run(ctx *cliCtx) error {
 
 // EnvListCmd lists public metadata.
 type EnvListCmd struct {
-	Project string `help:"Project id"`
+	Project string `help:"Project id (default: nearest .esec-project)"`
+	JSON    bool   `help:"Print JSON, for scripts and agents"`
 }
 
 // Run prints environment names and their public keys.
@@ -316,6 +318,9 @@ func (c *EnvListCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	entries, err := keystore.New().Read(project)
+	if errors.Is(err, fs.ErrNotExist) {
+		entries, err = nil, nil
+	}
 	if err != nil {
 		return err
 	}
@@ -326,13 +331,27 @@ func (c *EnvListCmd) Run(ctx *cliCtx) error {
 		}
 	}
 	sort.Strings(names)
+	type envKey struct {
+		Env       string `json:"env"`
+		PublicKey string `json:"public_key"`
+	}
+	out := []envKey{}
 	for _, name := range names {
 		pub, err := publicHex(entries[name])
 		if err != nil {
 			return err
 		}
 		env := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(name, esec.EsecPrivateKey+"_"), "_", "."))
-		fmt.Printf("%s %s\n", env, pub)
+		out = append(out, envKey{env, pub})
+	}
+	if c.JSON {
+		return printJSON(out)
+	}
+	if len(out) == 0 {
+		fmt.Fprintf(os.Stderr, "No environment keys for %s on this machine. Add one with: esec vault env add dev\n", project)
+	}
+	for _, e := range out {
+		fmt.Printf("%s %s\n", e.Env, e.PublicKey)
 	}
 	return nil
 }

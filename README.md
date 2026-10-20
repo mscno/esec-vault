@@ -163,6 +163,31 @@ esec vault changes               # changes made on the web, waiting for you
 
 The web overview lists the same, with the command for each.
 
+### Use it from scripts and agents
+
+```sh
+esec vault                         # the commands, in sections; same as esec vault --help
+esec vault help group token        # one command, with examples
+esec vault team show --json        # list and show commands print JSON with --json
+esec vault changes --list          # look at web changes without signing them
+esec vault team remove alice --yes # commands that ask take --yes (or --force)
+```
+
+`--json` works on `status`, `team list`, `team show`, `group list`,
+`group show`, `machine list`, `machine whoami`, `devices list`, `env list`,
+`keyring list`, `delegate list` and `changes`. It shows names, public keys
+and fingerprints, never a private key.
+
+A command that would ask a question with no terminal attached, and no
+answer on stdin, stops and names the flag that answers it. `changes` never
+signs anything that gives access unasked: with no answer it signs nothing
+and fails, saying so. Errors end with a `hint:` line when there is a next
+step, such as a missing `.esec-project`.
+
+Exit codes: `0` done, `1` failed, `80` bad usage (unknown command or flag).
+`run` and `machine run` return their command's code. Data goes to stdout,
+messages to stderr.
+
 ## Install both tools
 
 ```sh

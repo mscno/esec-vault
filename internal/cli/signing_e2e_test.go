@@ -53,7 +53,7 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // owner's device adds the passkey, the passkey signs two members in, and the
 // owner's sync sends keys to the one whose GitHub SSH proof checks out, not
 // to the one without a proof.
-func TestWebSigningEndToEnd(t *testing.T) {
+func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential story with explicit checks
 	if testing.Short() {
 		t.Skip("builds binaries")
 	}
@@ -100,6 +100,21 @@ func TestWebSigningEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	signerPost(t, h, b, "/passkeys", map[string]any{"name": "YubiKey", "scope": "manage", "credentialId": b64u(pk.CredID), "publicKey": b64u(pk.PublicKey()), "alg": -7, "clientDataJSON": b64u(cd)})
+	var waiting []struct {
+		Kind        string   `json:"kind"`
+		Removes     bool     `json:"removes"`
+		Description []string `json:"description"`
+	}
+	if raw := owner.runJSON(&waiting, "changes"); len(waiting) != 1 || waiting[0].Removes || len(waiting[0].Description) == 0 {
+		t.Fatalf("changes --json:\n%s", raw)
+	}
+	// With nothing to answer, nothing is signed, and it says so.
+	if out, err := owner.cmd(owner.home, "", "esec-vault", "changes").CombinedOutput(); err == nil || !strings.Contains(string(out), "1 change(s) not signed") {
+		t.Fatalf("changes without an answer (err %v):\n%s", err, out)
+	}
+	if raw := owner.runJSON(&waiting, "changes"); len(waiting) != 1 {
+		t.Fatalf("the unanswered change is gone:\n%s", raw)
+	}
 	if out := owner.run("y\n", "changes"); !strings.Contains(out, chain.DelegateWords(pk.Delegate("dl_any000001", "x", chain.ScopeManage, time.Now()))) || !strings.Contains(out, "Added the passkey YubiKey") {
 		t.Fatalf("changes (passkey):\n%s", out)
 	}

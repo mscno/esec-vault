@@ -42,7 +42,9 @@ func groupID(a *account.Account, name string) (string, error) {
 }
 
 // GroupListCmd lists groups.
-type GroupListCmd struct{}
+type GroupListCmd struct {
+	JSON bool `help:"Print JSON, for scripts and agents"`
+}
 
 // Run implements group list.
 func (c *GroupListCmd) Run(ctx *cliCtx) error {
@@ -55,6 +57,9 @@ func (c *GroupListCmd) Run(ctx *cliCtx) error {
 	list, err := a.Groups(bg)
 	if err != nil {
 		return err
+	}
+	if c.JSON {
+		return printJSON(nonNil(list))
 	}
 	if len(list) == 0 {
 		fmt.Println("No machine groups. Create one with: esec vault group create production")
@@ -80,6 +85,7 @@ func (c *GroupListCmd) Run(ctx *cliCtx) error {
 // GroupShowCmd shows a group.
 type GroupShowCmd struct {
 	Group string `arg:"" help:"Group, such as acme/production"`
+	JSON  bool   `help:"Print JSON, for scripts and agents"`
 }
 
 // Run implements group show.
@@ -104,6 +110,9 @@ func (c *GroupShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one report, 
 		for _, s := range v.Status.Creds {
 			used[s.ID] = s
 		}
+	}
+	if c.JSON {
+		return printJSON(groupJSON(id, a.State.Server, v, used))
 	}
 	fmt.Printf("%s  (key version %d, %d signed changes; %s/groups/%s)\n", id, gs.Key.Version, gs.Seq, a.State.Server, id)
 	fmt.Printf("Fingerprint: %s\n", team.GroupWords(id, gs.Root()))

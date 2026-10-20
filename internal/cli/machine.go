@@ -92,6 +92,7 @@ func (c *MachineCreateCmd) Run(ctx *cliCtx) error {
 // MachineListCmd lists machines.
 type MachineListCmd struct {
 	Project string `help:"Project id (default: nearest .esec-project)"`
+	JSON    bool   `help:"Print JSON, for scripts and agents"`
 }
 
 // Run implements machine list.
@@ -115,6 +116,9 @@ func (c *MachineListCmd) Run(ctx *cliCtx) error {
 		used[h.ID] = h.LastUsed
 	}
 	ms := v.State.ActiveMachines()
+	if c.JSON {
+		return printJSON(machinesJSON(ms, used))
+	}
 	if len(ms) == 0 {
 		fmt.Println("No machines. Create one with: esec vault machine create NAME --env ENV")
 		return nil
@@ -351,7 +355,9 @@ func (c *MachineJoinCmd) Run(ctx *cliCtx) error {
 }
 
 // MachineWhoamiCmd shows the machine and what it reads.
-type MachineWhoamiCmd struct{}
+type MachineWhoamiCmd struct {
+	JSON bool `help:"Print JSON, for scripts and agents"`
+}
 
 // Run implements machine whoami.
 func (c *MachineWhoamiCmd) Run(ctx *cliCtx) error {
@@ -362,6 +368,9 @@ func (c *MachineWhoamiCmd) Run(ctx *cliCtx) error {
 	keys, err := fetchMachineKeys()
 	if err != nil {
 		return err
+	}
+	if c.JSON {
+		return printJSON(whoamiJSON(cred, keys))
 	}
 	where := "project " + keys.Project
 	if keys.Group != "" {

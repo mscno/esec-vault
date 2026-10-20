@@ -3,6 +3,7 @@ package cli_test
 import (
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -81,6 +82,19 @@ func TestMachineGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one 
 	if out := web1.run("", "machine", "whoami"); !strings.Contains(out, "machine of the group "+g) || !strings.Contains(out, "acme/api") || !strings.Contains(out, "acme/store") {
 		t.Fatalf("whoami:\n%s", out)
 	}
+	var who struct {
+		Name  string              `json:"name"`
+		Kind  string              `json:"kind"`
+		Group string              `json:"group"`
+		Reads map[string][]string `json:"reads"`
+	}
+	raw := web1.runJSON(&who, "machine", "whoami")
+	if who.Name != "web-1" || who.Kind != "machine" || who.Group != g || len(who.Reads["acme/api"]) == 0 || len(who.Reads["acme/store"]) == 0 {
+		t.Fatalf("whoami --json:\n%s", raw)
+	}
+	if regexp.MustCompile(`[0-9a-f]{64}`).MatchString(raw) {
+		t.Fatalf("whoami --json prints a key:\n%s", raw)
+	}
 	if ok, out := decryptAs(web1, store); !ok || !strings.Contains(out, "postgres://store-prod") {
 		t.Fatalf("web-1:\n%s", out)
 	}
@@ -112,6 +126,30 @@ func TestMachineGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one 
 		}
 	}
 
+	var shown struct {
+		Group    string `json:"group"`
+		Machines []struct {
+			Name         string `json:"name"`
+			EnrolledWith string `json:"enrolled_with"`
+		} `json:"machines"`
+		Tokens   []struct{ Name string } `json:"tokens"`
+		Projects []struct {
+			Project string   `json:"project"`
+			Envs    []string `json:"envs"`
+		} `json:"projects"`
+	}
+	raw = owner.runJSON(&shown, "group", "show", g)
+	if shown.Group != g || len(shown.Machines) != 2 || shown.Machines[0].EnrolledWith == "" && shown.Machines[1].EnrolledWith == "" || len(shown.Tokens) != 1 || len(shown.Projects) != 2 {
+		t.Fatalf("group show --json:\n%s", raw)
+	}
+	var groups []struct {
+		ID       string `json:"id"`
+		Machines int    `json:"machines"`
+	}
+	if raw := owner.runJSON(&groups, "group", "list"); len(groups) != 1 || groups[0].ID != g || groups[0].Machines != 2 {
+		t.Fatalf("group list --json:\n%s", raw)
+	}
+
 	// --- Removing web-1 gives the group a new key; the others keep working. ---
 	out = owner.run("", "group", "remove", g, "web-1", "--yes")
 	if !strings.Contains(out, "has a new group key") || !strings.Contains(out, "It could read prod of acme/api") || !strings.Contains(out, "It could read prod of acme/store") {
@@ -127,6 +165,28 @@ func TestMachineGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one 
 	}
 	if out := owner.run("", "team", "show", "--project=acme/store"); !strings.Contains(out, g) {
 		t.Fatalf("team show lacks the group:\n%s", out)
+	}
+	var team struct {
+		Project string `json:"project"`
+		Groups  []struct {
+			Group string   `json:"group"`
+			Envs  []string `json:"envs"`
+		} `json:"groups"`
+		Rotate []struct {
+			Env     string `json:"env"`
+			Command string `json:"command"`
+		} `json:"rotate"`
+	}
+	var projects []struct {
+		ID    string `json:"id"`
+		Admin bool   `json:"admin"`
+	}
+	if raw := owner.runJSON(&projects, "team", "list"); len(projects) != 2 || !projects[0].Admin {
+		t.Fatalf("team list --json:\n%s", raw)
+	}
+	raw = owner.runJSON(&team, "team", "show", "--project=acme/store")
+	if team.Project != "acme/store" || len(team.Groups) != 1 || team.Groups[0].Group != g || len(team.Rotate) != 1 || team.Rotate[0].Command != "esec vault env rotate prod" {
+		t.Fatalf("team show --json:\n%s", raw)
 	}
 	// The rotation to-do clears with a new prod key, which reaches the group.
 	if out := owner.run("", "team", "sync"); !strings.Contains(out, "acme/store: prod need(s) a new key") {
