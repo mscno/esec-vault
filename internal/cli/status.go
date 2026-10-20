@@ -69,6 +69,11 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 	defer cancel()
 	if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil {
 		s.Daemon = resp
+		resp.CLI = ctx.Version
+		resp.UpToDate = resp.Version != "" && resp.Version == ctx.Version
+		if resp.Version != "" && !resp.UpToDate {
+			s.Problems = append(s.Problems, fmt.Sprintf("daemon runs %s but this CLI is %s; run: esec vault daemon upgrade", resp.Version, ctx.Version))
+		}
 	}
 	if c.JSON {
 		return printJSON(s)
@@ -77,9 +82,6 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 	printServerStatus(s.VaultServer, s.SecretStore)
 	if s.Daemon != nil {
 		fmt.Printf("Daemon: running (pid %d), broker unlocked: %t\n", s.Daemon.PID, s.Daemon.Unlocked)
-		if s.Daemon.Version != "" && s.Daemon.Version != ctx.Version {
-			s.Problems = append(s.Problems, fmt.Sprintf("daemon runs %s but this CLI is %s; run: esec-vault daemon upgrade", s.Daemon.Version, ctx.Version))
-		}
 	}
 	for _, p := range s.Problems {
 		fmt.Println("!", p)

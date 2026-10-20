@@ -1,3 +1,11 @@
+# v0.12.1
+
+- `status --json` now fills in `daemon.cli_version` and
+  `daemon.up_to_date`, and lists a daemon older than the CLI under
+  `problems`. Before, `up_to_date` was always `false` there, and the
+  mismatch showed only in the text output.
+- The README recipes install esec-vault v0.12.0 and esec v0.11.0.
+
 # v0.12.0
 
 The CLI is easier to find your way in, for people and for agents.
