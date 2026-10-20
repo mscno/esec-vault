@@ -62,6 +62,7 @@ type cli struct {
 	Team        TeamCmd        `cmd:"" help:"Share projects with your team through the vault server."`
 	Machine     MachineCmd     `cmd:"" help:"Give CI jobs and apps their own keys to a shared project."`
 	Group       GroupCmd       `cmd:"" help:"Machine groups: production or staging machines that read the same environments."`
+	Changes     ChangesCmd     `cmd:"" help:"Sign the changes made on the web pages (members, access, machines)."`
 
 	Version kong.VersionFlag `help:"Show version"`
 	Debug   bool             `help:"Enable debug logging" env:"ESEC_DEBUG"`

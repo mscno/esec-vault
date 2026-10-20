@@ -351,34 +351,6 @@ func (d *DB) pendingJoins(ctx context.Context, group string, now time.Time) ([]w
 	return out, err
 }
 
-// openProposals lists a group's web changes that wait for a device.
-func (d *DB) openProposals(ctx context.Context, group string) ([]wire.Proposal, error) {
-	logins, err := d.logins(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := []wire.Proposal{}
-	err = scanAll(ctx, d.sql, `SELECT id, kind, project, envs, cred_id, created_by, created_at FROM group_proposals WHERE group_id = ? AND status = 'open' ORDER BY id`,
-		[]any{group}, func(r *sql.Rows) error {
-			var p wire.Proposal
-			var envs, by string
-			var at int64
-			if err := r.Scan(&p.ID, &p.Kind, &p.Project, &envs, &p.Cred, &by, &at); err != nil {
-				return err
-			}
-			if err := json.Unmarshal([]byte(envs), &p.Envs); err != nil {
-				return err
-			}
-			p.By, p.Created = logins[by], fromUnix(at)
-			if p.By == "" {
-				p.By = by
-			}
-			out = append(out, p)
-			return nil
-		})
-	return out, err
-}
-
 // groupStatus reports the server's view of a group.
 func (d *DB) groupStatus(ctx context.Context, gs *team.GroupState, now time.Time) (*wire.GroupStatus, error) {
 	rows, err := d.credRows(ctx, gs.Group)
@@ -418,7 +390,7 @@ func (d *DB) groupStatus(ctx context.Context, gs *team.GroupState, now time.Time
 	if out.Joins, err = d.pendingJoins(ctx, gs.Group, now); err != nil {
 		return nil, err
 	}
-	if out.Proposals, err = d.openProposals(ctx, gs.Group); err != nil {
+	if out.Changes, err = d.openChanges(ctx, wire.ScopeGroup, gs.Group); err != nil {
 		return nil, err
 	}
 	return out, nil

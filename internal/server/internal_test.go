@@ -360,3 +360,18 @@ func TestWebhookTextIsEscaped(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestDatastarAttributesRefuseUnsafePaths(t *testing.T) {
+	for _, bad := range []string{"/x'+alert(1)+'", `/x"`, "/x\\", "/x y", "javascript:alert(1)", "//evil.example/x", "/x<", ""} {
+		if dsPost(bad) != "" || dsLive(bad, 10) != "" {
+			t.Fatalf("made an expression of %q", bad)
+		}
+	}
+	got := string(dsPost("/groups/acme/production/remove"))
+	if got != `data-on:submit="(!el.dataset.confirm || confirm(el.dataset.confirm)) &amp;&amp; @post(&#39;/groups/acme/production/remove&#39;, {contentType: &#39;form&#39;})"` {
+		t.Fatalf("dsPost: %s", got)
+	}
+	if dsLive("/changes/live", 1) != "" || dsLive("/changes/live", 10) == "" {
+		t.Fatal("dsLive bounds")
+	}
+}

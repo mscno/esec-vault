@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"slices"
 	"sort"
@@ -71,7 +69,7 @@ func (s *Server) groupSummaries(ctx context.Context, user string) ([]groupSummar
 			if err != nil {
 				return nil, err
 			}
-			props, err := s.db.openProposals(ctx, id)
+			props, err := s.db.openChanges(ctx, wire.ScopeGroup, id)
 			if err != nil {
 				return nil, err
 			}
@@ -104,15 +102,8 @@ func (s *Server) groupNotices(ctx context.Context, user string) ([]notice, error
 		if err != nil {
 			return nil, err
 		}
-		props, err := s.db.openProposals(ctx, id)
-		if err != nil {
-			return nil, err
-		}
 		if len(joins) > 0 {
 			out = append(out, notice{Level: "warn", Text: id + ": " + plural(len(joins), "machine") + " waiting to join. Let them in from a device, after comparing the words each machine shows.", Command: "esec vault group approve " + id, Link: link, LinkTo: "Open group"})
-		}
-		if len(props) > 0 {
-			out = append(out, notice{Level: "info", Text: id + ": " + plural(len(props), "change") + " made on these pages wait to be signed by an admin's device.", Command: "esec vault group approve " + id, Link: link, LinkTo: "Open group"})
 		}
 		if len(gs.KeyExposed) > 0 {
 			out = append(out, notice{Level: "warn", Text: id + ": a removed machine still holds the group key.", Command: "esec vault group rotate " + id, Link: link, LinkTo: "Open group"})
@@ -124,12 +115,20 @@ func (s *Server) groupNotices(ctx context.Context, user string) ([]notice, error
 // sharedNotices lists what waits for user in machine groups and shared
 // projects.
 func (s *Server) sharedNotices(ctx context.Context, user string) ([]notice, error) {
+	changes, err := s.adminChanges(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	var out []notice
+	if len(changes) > 0 {
+		out = append(out, notice{Level: "info", Text: plural(len(changes), "change") + " made on these pages wait for your device to sign them.", Command: "esec vault changes", Link: "/changes", LinkTo: "See them"})
+	}
 	groups, err := s.groupNotices(ctx, user)
 	if err != nil {
 		return nil, err
 	}
 	teams, err := s.teamNotices(ctx, user)
-	return append(groups, teams...), err
+	return append(append(out, groups...), teams...), err
 }
 
 func (s *Server) webGroups(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +144,21 @@ func (s *Server) webGroups(w http.ResponseWriter, r *http.Request) {
 	data := s.page(ws, "groups")
 	data["Groups"] = groups
 	s.render(w, http.StatusOK, "groups.html", data)
+}
+
+func (s *Server) webGroupsLive(w http.ResponseWriter, r *http.Request) {
+	ws := s.dsSession(w, r)
+	if ws == nil {
+		return
+	}
+	groups, err := s.groupSummaries(r.Context(), ws.user.ID)
+	if err != nil {
+		s.dsFail(w, r, err)
+		return
+	}
+	data := s.page(ws, "groups")
+	data["Groups"] = groups
+	s.dsPatch(w, r, data, "groups-list")
 }
 
 type credView struct {
@@ -191,27 +205,54 @@ func (s *Server) webGroup(w http.ResponseWriter, r *http.Request) {
 	if ws == nil {
 		return
 	}
-	id := r.PathValue("org") + "/" + r.PathValue("name")
-	if team.ValidGroup(id) != nil {
-		s.webError(w, http.StatusNotFound, "There is no such machine group.")
+	data, err := s.groupPageData(r.Context(), ws, r.PathValue("org")+"/"+r.PathValue("name"))
+	if err != nil {
+		s.webFail(w, r, err)
 		return
 	}
-	ctx := r.Context()
+	s.render(w, http.StatusOK, "group.html", data)
+}
+
+// groupLiveParts are the parts of a group's page that refresh on their own;
+// groupParts adds the forms a submission changes.
+var (
+	groupLiveParts = []string{"group-alerts", "group-tiles", "group-joins", "group-machines", "group-tokens", "group-changes", "group-history", "group-activity"}
+	groupParts     = append([]string{"group-access"}, groupLiveParts...)
+)
+
+// webGroupLive patches the parts of a group's page that change on their
+// own: machines fetching keys, asking to join, changes waiting.
+func (s *Server) webGroupLive(w http.ResponseWriter, r *http.Request) {
+	ws := s.dsSession(w, r)
+	if ws == nil {
+		return
+	}
+	data, err := s.groupPageData(r.Context(), ws, r.PathValue("org")+"/"+r.PathValue("name"))
+	if err != nil {
+		s.dsFail(w, r, err)
+		return
+	}
+	s.dsPatch(w, r, data, groupLiveParts...)
+}
+
+// groupPageData builds a group's page for ws, if ws may see it.
+func (s *Server) groupPageData(ctx context.Context, ws *webSession, id string) (map[string]any, error) {
+	notFound := clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no such machine group, or it is not yours to see.")
+	if team.ValidGroup(id) != nil {
+		return nil, notFound
+	}
 	gs, _, err := s.db.groupState(ctx, s.db.sql, id)
 	if err != nil {
-		s.internalError(w, r, err)
-		return
+		return nil, err
 	}
 	readable := false
 	if gs != nil {
 		if readable, err = s.db.canReadGroup(ctx, ws.user.ID, id); err != nil {
-			s.internalError(w, r, err)
-			return
+			return nil, err
 		}
 	}
 	if gs == nil || (!readable && !s.cfg.Admin(ws.user.GitHubID)) {
-		s.webError(w, http.StatusNotFound, "There is no such machine group, or it is not yours to see.")
-		return
+		return nil, notFound
 	}
 	nav := "groups"
 	if !readable {
@@ -219,14 +260,13 @@ func (s *Server) webGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.page(ws, nav)
 	if err := s.groupPage(ctx, gs, ws.user.ID, data); err != nil {
-		s.internalError(w, r, err)
-		return
+		return nil, err
 	}
 	data["Readable"] = readable
 	// Addresses, join requests and the log are the group's admins' (and
 	// the server admins') to see.
 	data["ShowOps"] = gs.Admin(ws.user.ID) || s.cfg.Admin(ws.user.GitHubID)
-	s.render(w, http.StatusOK, "group.html", data)
+	return data, nil
 }
 
 // groupPage adds what the group page shows of gs, for viewer, to data.
@@ -258,7 +298,7 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 		return out
 	}
 	admin := gs.Admin(viewer)
-	matrix, err := s.accessMatrix(ctx, gs, viewer, status.Proposals)
+	matrix, err := s.accessMatrix(ctx, gs, viewer, status.Changes)
 	if err != nil {
 		return err
 	}
@@ -289,7 +329,7 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 	data["Tokens"] = view(team.KindToken)
 	data["Matrix"] = matrix
 	data["Joins"] = status.Joins
-	data["Proposals"] = status.Proposals
+	data["Changes"] = status.Changes
 	data["History"] = groupHistoryOf(gs)
 	data["Activity"] = acts
 	data["Created"] = gs.Links[0].CTime
@@ -300,7 +340,7 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 // accessMatrix lists the projects a group reads or could read: those it
 // trusts, those granting it environments, and those the viewer
 // administers.
-func (s *Server) accessMatrix(ctx context.Context, gs *team.GroupState, viewer string, proposals []wire.Proposal) ([]accessRow, error) {
+func (s *Server) accessMatrix(ctx context.Context, gs *team.GroupState, viewer string, proposals []wire.Change) ([]accessRow, error) {
 	ids := map[string]bool{}
 	for p := range gs.Access {
 		ids[p] = true
@@ -318,7 +358,7 @@ func (s *Server) accessMatrix(ctx context.Context, gs *team.GroupState, viewer s
 	}
 	pending := map[string]bool{}
 	for _, p := range proposals {
-		if p.Kind == wire.ProposalAccess {
+		if p.Kind == wire.ChangeAccess {
 			pending[p.Project] = true
 		}
 	}
@@ -475,152 +515,95 @@ func groupLinkText(gs *team.GroupState, l team.GroupLink) string {
 
 // ---- forms: changes for an admin's device to sign ----
 
-// groupForm runs a CSRF-checked group form and returns to the group page.
-func (s *Server) groupForm(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context, ws *webSession, gs *team.GroupState) error) {
-	ws := s.requireWeb(w, r)
-	if ws == nil {
-		return
-	}
-	if !s.checkForm(r, ws) {
-		s.webError(w, http.StatusForbidden, "The form expired. Reload the page and try again.")
-		return
-	}
+// groupForm runs a CSRF-checked group form: it returns to the group page,
+// or patches the page in place when Datastar sent the form.
+func (s *Server) groupForm(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context, ws *webSession, gs *team.GroupState) (string, error)) {
 	id := r.PathValue("org") + "/" + r.PathValue("name")
-	if team.ValidGroup(id) != nil {
-		s.webError(w, http.StatusNotFound, "There is no such machine group.")
-		return
-	}
-	ctx := r.Context()
-	gs, _, err := s.db.groupState(ctx, s.db.sql, id)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if gs == nil {
-		s.webError(w, http.StatusNotFound, "There is no such machine group.")
-		return
-	}
-	if err := fn(ctx, ws, gs); err != nil {
-		var ae *apiError
-		if errors.As(err, &ae) {
-			s.webError(w, ae.status, ae.desc)
-			return
+	s.pageForm(w, r, "/groups/"+id, func(ctx context.Context, ws *webSession) (string, error) {
+		if team.ValidGroup(id) != nil {
+			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no such machine group.")
 		}
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/groups/"+id, http.StatusSeeOther) //nolint:gosec // id is a valid group id, so this stays on this site
+		gs, _, err := s.db.groupState(ctx, s.db.sql, id)
+		if err != nil {
+			return "", err
+		}
+		if gs == nil {
+			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no such machine group.")
+		}
+		return fn(ctx, ws, gs)
+	}, func(ctx context.Context, ws *webSession) (map[string]any, []string, error) {
+		data, err := s.groupPageData(ctx, ws, id)
+		return data, groupParts, err
+	})
 }
 
 // webGroupAccess proposes what the group reads of a project. An admin of
 // the group or of the project may propose; their device signs their side.
 func (s *Server) webGroupAccess(w http.ResponseWriter, r *http.Request) {
-	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) error {
+	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) (string, error) {
 		project := r.PostForm.Get("project")
 		if team.ValidProject(project) != nil {
-			return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid project")
+			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid project")
 		}
 		st, _, err := s.db.projectState(ctx, s.db.sql, project)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if st == nil {
-			return clientErr(http.StatusNotFound, wire.ErrNotFound, "there is no shared project %s", project)
+			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "there is no shared project %s", project)
 		}
 		// A project admin may propose only for a project the group already
 		// takes keys from: anyone can create a project.
 		if root, trusted := gs.Access[project]; !gs.Admin(ws.user.ID) && (!st.Admin(ws.user.ID) || !trusted || root != st.Root()) {
-			return clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group, or of a project it takes keys from, can change this")
+			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group, or of a project it takes keys from, can change this")
 		}
 		envs := team.SortEnvs(r.PostForm["env"])
 		for _, n := range envs {
 			if _, ok := st.Envs[n]; !ok {
-				return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s has no environment %s", project, n)
+				return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s has no environment %s", project, n)
 			}
 		}
-		raw, err := json.Marshal(envs)
-		if err != nil {
-			return err
+		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeAccess, Project: project, Envs: envs}); err != nil {
+			return "", err
 		}
-		return s.propose(ctx, gs.Group, ws.user.ID, s.clientIP(r), wire.ProposalAccess, project, string(raw), "", gs)
+		return "Proposed. An admin's device signs it with: esec vault changes", nil
 	})
 }
 
 // webGroupRemove blocks a machine or token at once and proposes removing
 // it from the group chain.
 func (s *Server) webGroupRemove(w http.ResponseWriter, r *http.Request) {
-	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) error {
+	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) (string, error) {
 		if !gs.Admin(ws.user.ID) {
-			return clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group can remove machines")
+			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group can remove machines")
 		}
 		id := r.PostForm.Get("cred")
 		c, ok := gs.Cred(id)
 		if !ok {
-			return clientErr(http.StatusNotFound, wire.ErrNotFound, "no such machine or token")
+			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "no such machine or token")
 		}
 		now := s.now()
 		if _, err := s.db.sql.ExecContext(ctx, `UPDATE group_creds SET suspended_at = ? WHERE group_id = ? AND id = ? AND suspended_at = 0`, now.Unix(), gs.Group, id); err != nil {
-			return err
+			return "", err
 		}
 		if err := s.db.groupAudit(ctx, s.db.sql, gs.Group, ws.user.ID, s.clientIP(r), "blocked", c.Kind+" "+c.Name, now); err != nil {
-			return err
+			return "", err
 		}
-		return s.propose(ctx, gs.Group, ws.user.ID, s.clientIP(r), wire.ProposalRemove, "", "[]", id, gs)
+		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeRemove, Subject: id}); err != nil {
+			return "", err
+		}
+		return c.Name + " is blocked. An admin's device removes it for good, and gives the group a new key, with: esec vault changes", nil
 	})
-}
-
-// propose stores a web change for an admin's device to sign, unless the
-// same one waits already, and wakes the group's admins.
-func (s *Server) propose(ctx context.Context, group, user, ip, kind, project, envs, cred string, gs *team.GroupState) error {
-	now := s.now()
-	var wake []string
-	err := s.db.tx(ctx, func(tx *sql.Tx) error {
-		var n, same int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(kind = ? AND project = ? AND envs = ? AND cred_id = ?), 0) FROM group_proposals WHERE group_id = ? AND status = 'open'`,
-			kind, project, envs, cred, group).Scan(&n, &same); err != nil {
-			return err
-		}
-		if same > 0 {
-			return nil
-		}
-		if n >= maxOpenProposals {
-			return clientErr(http.StatusTooManyRequests, wire.ErrRateLimited, "too many changes wait to be signed; sign or dismiss some first (esec vault group approve %s)", group)
-		}
-		// A newer change to the same project replaces an older one.
-		if kind == wire.ProposalAccess {
-			if _, err := tx.ExecContext(ctx, `UPDATE group_proposals SET status = 'dismissed', closed_at = ? WHERE group_id = ? AND status = 'open' AND kind = ? AND project = ?`, now.Unix(), group, kind, project); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO group_proposals (group_id, kind, project, envs, cred_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			group, kind, project, envs, cred, user, now.Unix()); err != nil {
-			return err
-		}
-		if err := s.db.groupAudit(ctx, tx, group, user, ip, "change_proposed", kind+" "+project+cred, now); err != nil {
-			return err
-		}
-		for _, a := range gs.ActiveAdmins() {
-			if err := s.db.addEvent(ctx, tx, a.User, wire.EventGroup, group, now); err != nil {
-				return err
-			}
-			wake = append(wake, a.User)
-		}
-		return nil
-	})
-	for _, u := range wake {
-		s.notify.wake(u)
-	}
-	return err
 }
 
 func (s *Server) webGroupRejectJoin(w http.ResponseWriter, r *http.Request) {
-	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) error {
-		return s.rejectJoin(ctx, gs.Group, r.PathValue("id"), ws.user.ID, s.clientIP(r))
+	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) (string, error) {
+		return "Turned it away.", s.rejectJoin(ctx, gs.Group, r.PathValue("id"), ws.user.ID, s.clientIP(r))
 	})
 }
 
 func (s *Server) webGroupDismiss(w http.ResponseWriter, r *http.Request) {
-	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) error {
-		return s.closeProposal(ctx, gs.Group, r.PathValue("id"), false, ws.user.ID, s.clientIP(r))
+	s.groupForm(w, r, func(ctx context.Context, ws *webSession, _ *team.GroupState) (string, error) {
+		return s.dismiss(ctx, ws, r)
 	})
 }

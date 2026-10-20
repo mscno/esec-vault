@@ -444,10 +444,13 @@ func printTeamSync(res *account.TeamSyncResult) {
 	for _, g := range res.GroupTodos {
 		fmt.Printf("  ! %s: %s; approve on this device with: esec vault group approve %s\n", g.Group, groupTodoText(g), g.Group)
 	}
+	if res.Changes > 0 {
+		fmt.Printf("  ! %d change(s) made on the web wait for you to sign them: esec vault changes\n", res.Changes)
+	}
 	for _, g := range res.GroupRotations {
 		fmt.Printf("  ! %s: a removed machine still holds the group key: esec vault group rotate %s\n", g, g)
 	}
-	if len(res.Imported)+len(res.Sent)+len(res.Conflicts)+len(res.Dropped)+len(res.Unsent)+len(res.Rotations)+len(res.Invites)+len(res.Problems)+len(res.GroupTodos)+len(res.GroupRotations) == 0 {
+	if len(res.Imported)+len(res.Sent)+len(res.Conflicts)+len(res.Dropped)+len(res.Unsent)+len(res.Rotations)+len(res.Invites)+len(res.Problems)+len(res.GroupTodos)+len(res.GroupRotations)+res.Changes == 0 {
 		fmt.Println("✓ Shared projects are up to date.")
 	}
 }

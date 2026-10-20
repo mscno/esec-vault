@@ -71,22 +71,48 @@ type JoinRequest struct {
 	Created time.Time `json:"created"`
 }
 
-// Proposal kinds: changes made on the web pages, which an admin's device
-// signs (esec vault group approve).
+// Change scopes: changes made on the web pages, which an admin's device
+// signs (esec vault changes), are in a group or a shared project.
 const (
-	ProposalAccess = "access"
-	ProposalRemove = "remove"
+	ScopeGroup   = "group"
+	ScopeProject = "project"
 )
 
-// Proposal is a change waiting for an admin's device to sign it.
-type Proposal struct {
-	ID      int64     `json:"id"`
-	Kind    string    `json:"kind"`
-	Project string    `json:"project,omitempty"`
-	Envs    []string  `json:"envs,omitempty"`
-	Cred    string    `json:"cred,omitempty"`
+// Change kinds. In a group: what it reads of a project (ChangeAccess), or a
+// machine or token to remove, blocked on the server already (ChangeRemove).
+// In a project: a member to add (Subject is the login), to change, or to
+// remove.
+const (
+	ChangeAccess       = "access"
+	ChangeRemove       = "remove"
+	ChangeMemberAdd    = "member_add"
+	ChangeMemberSet    = "member_set"
+	ChangeMemberRemove = "member_remove"
+)
+
+// Change is a change made on the web pages, waiting for an admin's device
+// to sign it.
+type Change struct {
+	ID int64 `json:"id"`
+	// Scope is ScopeGroup or ScopeProject, Target the group or project.
+	Scope   string   `json:"scope"`
+	Target  string   `json:"target"`
+	Kind    string   `json:"kind"`
+	Project string   `json:"project,omitempty"`
+	Envs    []string `json:"envs,omitempty"`
+	// Subject is the machine or token id, or the member's login.
+	Subject string `json:"subject,omitempty"`
+	// Name is the machine or token's name, for people; devices take it
+	// from the group chain instead.
+	Name    string    `json:"name,omitempty"`
+	Admin   bool      `json:"admin,omitempty"`
 	By      string    `json:"by"`
 	Created time.Time `json:"created"`
+}
+
+// Changes lists the web changes the caller's devices can sign.
+type Changes struct {
+	Changes []Change `json:"changes"`
 }
 
 // GroupStatus reports what the server knows of a group beyond its chain.
@@ -97,7 +123,7 @@ type GroupStatus struct {
 	// for.
 	AdminsWithKey []string      `json:"admins_with_key"`
 	Joins         []JoinRequest `json:"joins"`
-	Proposals     []Proposal    `json:"proposals"`
+	Changes       []Change      `json:"changes"`
 }
 
 // GroupKeyGrants returns the key grants waiting for the caller.
@@ -105,8 +131,8 @@ type GroupKeyGrants struct {
 	Grants []*envelope.Envelope `json:"grants"`
 }
 
-// ProposalClose marks a proposal applied or dismissed.
-type ProposalClose struct {
+// ChangeClose marks a web change applied or dismissed.
+type ChangeClose struct {
 	Applied bool `json:"applied"`
 }
 

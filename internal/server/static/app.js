@@ -52,7 +52,9 @@ document.addEventListener("click", async (e) => {
 });
 
 // Ask before forms that suspend, disable or end something.
+// (Forms Datastar sends ask in their own handler, which runs first.)
 document.addEventListener("submit", (e) => {
+  if (e.defaultPrevented) return;
   const message = e.target.dataset.confirm;
   if (message && !window.confirm(message)) e.preventDefault();
 });

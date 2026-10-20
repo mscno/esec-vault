@@ -297,18 +297,24 @@ var schema = []string{
 		created_at INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS group_joins_group ON group_joins(group_id, status)`,
-	`CREATE TABLE IF NOT EXISTS group_proposals (
+	// Changes made on the web pages, waiting for an admin's device to sign
+	// them: in a group (scope "group") or a shared project ("project").
+	// group_proposals held them for groups in v0.8.0, always empty.
+	`DROP TABLE IF EXISTS group_proposals`,
+	`CREATE TABLE IF NOT EXISTS changes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		group_id TEXT NOT NULL,
+		scope TEXT NOT NULL,
+		target TEXT NOT NULL,
 		kind TEXT NOT NULL,
 		project TEXT NOT NULL DEFAULT '',
 		envs TEXT NOT NULL DEFAULT '[]',
-		cred_id TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL DEFAULT '',
+		admin INTEGER NOT NULL DEFAULT 0,
 		created_by TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
 		status TEXT NOT NULL DEFAULT 'open',
 		closed_at INTEGER NOT NULL DEFAULT 0)`,
-	`CREATE INDEX IF NOT EXISTS group_proposals_group ON group_proposals(group_id, status)`,
+	`CREATE INDEX IF NOT EXISTS changes_target ON changes(scope, target, status)`,
 	`CREATE TABLE IF NOT EXISTS group_audit (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		group_id TEXT NOT NULL,
@@ -677,7 +683,7 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM project_audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
 		{`DELETE FROM group_audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
 		{`DELETE FROM group_joins WHERE expires_at < ?`, []any{unix(now.Add(-7 * 24 * time.Hour))}},
-		{`DELETE FROM group_proposals WHERE status != 'open' AND closed_at < ?`, []any{unix(now.Add(-90 * 24 * time.Hour))}},
+		{`DELETE FROM changes WHERE status != 'open' AND closed_at < ?`, []any{unix(now.Add(-90 * 24 * time.Hour))}},
 	}
 	for _, s := range stmts {
 		if _, err := d.sql.ExecContext(ctx, s.q, s.args...); err != nil {

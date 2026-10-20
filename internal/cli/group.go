@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -175,7 +174,7 @@ func (c *GroupShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one report, 
 		fmt.Printf("! A removed machine still holds the group key: esec vault group rotate %s\n", id)
 	}
 	if v.Status != nil {
-		if n := len(v.Status.Joins) + len(v.Status.Proposals); n > 0 {
+		if n := len(v.Status.Joins) + len(v.Status.Changes); n > 0 {
 			fmt.Printf("! %d machine(s) or web change(s) wait for approval: esec vault group approve %s\n", n, id)
 		}
 	}
@@ -411,7 +410,7 @@ type GroupApproveCmd struct {
 }
 
 // Run implements group approve.
-func (c *GroupApproveCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one interactive pass over joins, then changes
+func (c *GroupApproveCmd) Run(ctx *cliCtx) error {
 	a, err := openAccount(ctx)
 	if err != nil {
 		return err
@@ -426,11 +425,12 @@ func (c *GroupApproveCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one inter
 	if err != nil {
 		return err
 	}
-	props, err := a.Proposals(bg, id)
+	changes, err := a.Changes(bg)
 	if err != nil {
 		return err
 	}
-	if len(joins)+len(props) == 0 {
+	changes = slices.DeleteFunc(changes, func(c account.ChangeView) bool { return c.Scope != wire.ScopeGroup || c.Target != id })
+	if len(joins)+len(changes) == 0 {
 		fmt.Printf("Nothing waits for approval in %s.\n", id)
 		return nil
 	}
@@ -473,64 +473,7 @@ func (c *GroupApproveCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one inter
 		}
 		fmt.Printf("  ✓ Let %s in; it reads whatever %s reads.\n", safetext.Clean(j.Name), id)
 	}
-	for _, p := range props {
-		desc := describeProposal(p)
-		fmt.Printf("\n%s asked on the web, %s: %s.\n", safetext.Clean(p.By), p.Created.Local().Format("2006-01-02 15:04"), desc) //nolint:gosmopolitan // shown to the local user
-		if (!c.Yes || p.Kind != wire.ProposalRemove) && !confirm("Sign it?") {
-			if confirm("Dismiss it?") {
-				if err := a.CloseProposal(bg, id, p.ID, false); err != nil {
-					return err
-				}
-				fmt.Println("  Dismissed.")
-			}
-			continue
-		}
-		if err := applyProposal(bg, a, id, p); err != nil {
-			fmt.Println("  ! " + err.Error())
-			continue
-		}
-		if err := a.CloseProposal(bg, id, p.ID, true); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func describeProposal(p account.ProposalView) string {
-	switch p.Kind {
-	case wire.ProposalAccess:
-		if len(p.Envs) == 0 {
-			return "stop reading " + p.Project
-		}
-		return "read " + strings.Join(p.Envs, ", ") + " of " + p.Project
-	case wire.ProposalRemove:
-		name := p.Name
-		if name == "" {
-			name = p.Cred
-		}
-		return "remove " + safetext.Clean(name) + " (already blocked by the server)"
-	}
-	return p.Kind
-}
-
-func applyProposal(ctx context.Context, a *account.Account, id string, p account.ProposalView) error {
-	switch p.Kind {
-	case wire.ProposalAccess:
-		res, err := a.GrantGroup(ctx, id, p.Project, p.Envs)
-		if err != nil {
-			return err
-		}
-		printGrant(id, p.Project, p.Envs, res)
-		return nil
-	case wire.ProposalRemove:
-		res, err := a.RemoveCred(ctx, id, p.Cred, "removed on the web", false)
-		if err != nil {
-			return err
-		}
-		printRemoved(id, res)
-		return nil
-	}
-	return fmt.Errorf("unknown change %q", p.Kind)
+	return signChanges(bg, a, changes, c.Yes)
 }
 
 // GroupRemoveCmd removes a machine or token.
@@ -655,14 +598,7 @@ func (c *GroupAdminCmd) Run(ctx *cliCtx) error {
 }
 
 func groupTodoText(g account.GroupTodo) string {
-	var parts []string
-	if g.Joins > 0 {
-		parts = append(parts, fmt.Sprintf("%d machine(s) wait to join", g.Joins))
-	}
-	if g.Changes > 0 {
-		parts = append(parts, fmt.Sprintf("%d web change(s) wait to be signed", g.Changes))
-	}
-	return strings.Join(parts, ", ")
+	return fmt.Sprintf("%d machine(s) wait to join", g.Joins)
 }
 
 func verifiedText(v string) string {

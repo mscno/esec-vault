@@ -66,7 +66,7 @@ func (s *Server) apiGroups(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 				s.internalError(w, r, err)
 				return
 			}
-			props, err := s.db.openProposals(ctx, id)
+			props, err := s.db.openChanges(ctx, wire.ScopeGroup, id)
 			if err != nil {
 				s.internalError(w, r, err)
 				return
@@ -542,57 +542,6 @@ func (s *Server) rejectJoin(ctx context.Context, group, id, user, ip string) err
 			return clientErr(http.StatusNotFound, wire.ErrNotFound, "no pending join request %s", id)
 		}
 		return s.db.groupAudit(ctx, tx, group, user, ip, "join_rejected", id, now)
-	})
-}
-
-// apiGroupCloseProposal marks a web change applied or dismissed. A
-// dismissed removal lets the machine back in.
-func (s *Server) apiGroupCloseProposal(w http.ResponseWriter, r *http.Request, c *reqCtx) {
-	group, err := groupParam(r)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, err.Error())
-		return
-	}
-	var req wire.ProposalClose
-	if err := decodeStrict(c.body, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
-		return
-	}
-	ctx := r.Context()
-	if err := s.closeProposal(ctx, group, r.PathValue("id"), req.Applied, c.user.ID, c.ip); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, struct{}{})
-}
-
-func (s *Server) closeProposal(ctx context.Context, group, id string, applied bool, user, ip string) error {
-	if _, err := s.adminGroup(ctx, group, user); err != nil {
-		return err
-	}
-	now := s.now()
-	status := "dismissed"
-	if applied {
-		status = "applied"
-	}
-	return s.db.tx(ctx, func(tx *sql.Tx) error {
-		var kind, cred string
-		err := tx.QueryRowContext(ctx, `SELECT kind, cred_id FROM group_proposals WHERE id = ? AND group_id = ? AND status = 'open'`, id, group).Scan(&kind, &cred)
-		if errors.Is(err, sql.ErrNoRows) {
-			return clientErr(http.StatusNotFound, wire.ErrNotFound, "no open change %s", id)
-		}
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE group_proposals SET status = ?, closed_at = ? WHERE id = ?`, status, now.Unix(), id); err != nil {
-			return err
-		}
-		if kind == wire.ProposalRemove && !applied {
-			if _, err := tx.ExecContext(ctx, `UPDATE group_creds SET suspended_at = 0 WHERE group_id = ? AND id = ?`, group, cred); err != nil {
-				return err
-			}
-		}
-		return s.db.groupAudit(ctx, tx, group, user, ip, "change_"+status, kind+" "+id, now)
 	})
 }
 

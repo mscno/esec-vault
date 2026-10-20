@@ -31,6 +31,8 @@ func (s *Server) page(ws *webSession, nav string) map[string]any {
 	return map[string]any{
 		"User": ws.user, "CSRF": ws.csrf, "Nav": nav, "Now": s.now(),
 		"IsAdmin": s.cfg.Admin(ws.user.GitHubID), "BaseURL": s.cfg.BaseURL,
+		// Signed-in pages load Datastar, in its nonce mode (datastar.go).
+		"Nonce": newNonce(),
 	}
 }
 

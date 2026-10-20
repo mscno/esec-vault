@@ -387,6 +387,16 @@ from; addresses, join requests and the log only to its admins and server
 admins. Machines' join requests,
 web changes and the log are deleted after 7 days, 90 days and a year.
 
+## Web pages
+
+The signed-in pages are live (Datastar, vendored with the server; no
+outside scripts or CDNs). Each page has its own content security policy
+nonce. Open pages poll the server every 10 to 15 seconds, only while
+visible; behind a proxy, that is a few small GET requests a minute per open
+tab. Changes made on the pages wait in the `changes` table for an admin's
+device (`esec vault changes`); applied and dismissed ones are deleted after
+90 days.
+
 ## Monitor
 
 - `GET /healthz` returns `ok`.

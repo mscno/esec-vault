@@ -3,8 +3,10 @@ package account_test
 import (
 	"context"
 	"crypto/ed25519"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -209,18 +211,18 @@ func TestMachineGroups(t *testing.T) { //nolint:gocyclo,maintidx // one sequenti
 	// A removal asked for on the web blocks the machine at once, and an
 	// admin's device signs it.
 	exec(t, h, `UPDATE group_creds SET suspended_at = 1 WHERE id = ?`, web2.ID)
-	exec(t, h, `INSERT INTO group_proposals (group_id, kind, cred_id, created_by, created_at) VALUES (?, 'remove', ?, ?, 1)`, group, web2.ID, a.State.User)
+	exec(t, h, `INSERT INTO changes (scope, target, kind, subject, created_by, created_at) VALUES ('group', ?, 'remove', ?, ?, 1)`, group, web2.ID, a.State.User)
 	if _, err := machine.FetchGroup(ctx, web2, ""); err == nil {
 		t.Fatal("blocked machine fetched keys")
 	}
-	props, err := a.Proposals(ctx, group)
+	props, err := a.Changes(ctx)
 	if err != nil || len(props) != 1 || props[0].Name != "web-2" {
-		t.Fatalf("proposals: %+v %v", props, err)
+		t.Fatalf("changes: %+v %v", props, err)
 	}
-	if _, err := a.RemoveCred(ctx, group, props[0].Cred, "removed on the web", false); err != nil {
+	if _, err := a.RemoveCred(ctx, group, props[0].Subject, "removed on the web", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.CloseProposal(ctx, group, props[0].ID, true); err != nil {
+	if err := a.CloseChange(ctx, props[0].ID, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -382,21 +384,21 @@ func TestGroupWebPages(t *testing.T) { //nolint:gocyclo // one sequential story
 		t.Fatal("blocked machine fetched keys")
 	}
 	page = getPage(t, b, "/groups/"+group, "change waiting to be signed", "blocked")
-	props, err := a.Proposals(ctx, group)
+	props, err := a.Changes(ctx)
 	if err != nil || len(props) != 2 {
-		t.Fatalf("proposals: %+v %v", props, err)
+		t.Fatalf("changes: %+v %v", props, err)
 	}
 	for _, p := range props {
 		switch p.Kind {
-		case wire.ProposalAccess:
+		case wire.ChangeAccess:
 			res, err := a.GrantGroup(ctx, group, p.Project, p.Envs)
 			if err != nil || !res.Granted {
 				t.Fatalf("apply access: %+v %v", res, err)
 			}
-			if err := a.CloseProposal(ctx, group, p.ID, true); err != nil {
+			if err := a.CloseChange(ctx, p.ID, true); err != nil {
 				t.Fatal(err)
 			}
-		case wire.ProposalRemove:
+		case wire.ChangeRemove:
 			// Dismissing a removal lets the machine back in.
 			if status, body, err := b.Post("/groups/"+group+"/changes/"+strconv.FormatInt(p.ID, 10)+"/dismiss", servertest.CSRF(page), nil); err != nil || status != http.StatusOK {
 				t.Fatalf("dismiss: %d %v\n%s", status, err, body)
@@ -423,4 +425,143 @@ func signedJoin(k *team.CredKey, cred team.Credential, action, nonce string) wir
 	req := wire.GroupJoin{Group: group, Machine: cred.ID, Name: cred.Name, EncPub: cred.EncPub, SignPub: cred.SignPub, Timestamp: time.Now().Unix(), Nonce: nonce}
 	req.Sig = ed25519.Sign(k.Sign(), team.JoinMessage(action, group, cred, req.Timestamp, req.Nonce))
 	return req
+}
+
+// dsRequest sends a request the way Datastar does, from the page's origin
+// unless origin says otherwise.
+func dsRequest(t *testing.T, h *servertest.Harness, b *servertest.Browser, method, path, origin string, form url.Values) (dsResponse, string) {
+	t.Helper()
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	req, err := http.NewRequest(method, h.URL+path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Datastar-Request", "true")
+	req.Header.Set("Accept", "text/event-stream, text/html, application/json")
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if origin == "" {
+		origin = h.URL
+	}
+	req.Header.Set("Origin", origin)
+	resp, err := b.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return dsResponse{StatusCode: resp.StatusCode, Header: resp.Header}, string(raw)
+}
+
+// dsResponse is what the tests check of a response.
+type dsResponse struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func TestDatastarPages(t *testing.T) { //nolint:gocyclo // one sequential story
+	h, a := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if _, err := a.CreateTeam(ctx, project, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CreateGroup(ctx, group); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GrantGroup(ctx, group, project, []string{"dev"}); err != nil {
+		t.Fatal(err)
+	}
+	b := h.Browser("mscno")
+
+	// Pages load Datastar in nonce mode, under a policy without eval.
+	status, page, err := b.Get("/teams/" + project)
+	if err != nil || status != http.StatusOK {
+		t.Fatal(status, err)
+	}
+	m := regexp.MustCompile(`<html lang="en" data-nonce="([A-Za-z0-9_-]{20,})">`).FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("no nonce:\n%s", page[:300])
+	}
+	resp, err := b.Client().Get(h.URL + "/teams/" + project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'self' 'nonce-") || strings.Contains(csp, "unsafe") || !strings.Contains(csp, "connect-src 'self'") {
+		t.Fatalf("policy: %s", csp)
+	}
+	for _, want := range []string{`src="/static/datastar.js"`, `data-on:submit="`, `data-on-interval__duration.15s="@get(&#39;/teams/` + project + `/live&#39;)"`, `action="/teams/` + project + `/members"`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("page lacks %s", want)
+		}
+	}
+	csrf := servertest.CSRF(page)
+
+	// A form sent in place answers with patches and a message.
+	dr, body := dsRequest(t, h, b, http.MethodPost, "/teams/"+project+"/members/set", "", url.Values{"csrf": {csrf}, "login": {"mscno"}, "admin": {"on"}})
+	if dr.StatusCode != http.StatusOK || !strings.HasPrefix(dr.Header.Get("Content-Type"), "text/event-stream") || !strings.Contains(body, "datastar-patch-elements") || !strings.Contains(body, "esec vault changes") || !strings.Contains(body, `id="team-members"`) {
+		t.Fatalf("member change: %d %s\n%s", dr.StatusCode, dr.Header.Get("Content-Type"), body)
+	}
+	// Errors come back as a message too.
+	_, body = dsRequest(t, h, b, http.MethodPost, "/teams/"+project+"/members", "", url.Values{"csrf": {csrf}, "login": {"nobody-here"}, "env": {"dev"}})
+	if !strings.Contains(body, "has no account on this server") || !strings.Contains(body, `id="flash"`) {
+		t.Fatalf("member add error:\n%s", body)
+	}
+	_, body = dsRequest(t, h, b, http.MethodPost, "/teams/"+project+"/members", "", url.Values{"csrf": {csrf}, "login": {"x'+alert(1)+'"}, "env": {"dev"}})
+	if !strings.Contains(body, "not a GitHub login") || strings.Contains(body, "alert(1)") {
+		t.Fatalf("bad login:\n%s", body)
+	}
+	// Without the CSRF token, or from another site, nothing changes.
+	_, body = dsRequest(t, h, b, http.MethodPost, "/teams/"+project+"/members/set", "", url.Values{"login": {"mscno"}, "env": {"dev"}})
+	if !strings.Contains(body, "The form expired") {
+		t.Fatalf("no csrf:\n%s", body)
+	}
+	_, body = dsRequest(t, h, b, http.MethodPost, "/teams/"+project+"/members/set", "https://evil.example", url.Values{"csrf": {csrf}, "login": {"mscno"}, "env": {"dev"}})
+	if !strings.Contains(body, "The form expired") {
+		t.Fatalf("other origin:\n%s", body)
+	}
+	changes, err := a.Changes(ctx)
+	if err != nil || len(changes) != 1 || changes[0].Kind != wire.ChangeMemberSet || !changes[0].Admin || changes[0].Subject != "mscno" {
+		t.Fatalf("changes: %+v %v", changes, err)
+	}
+
+	// The changes page lists it; dismissing it in place removes it.
+	page = getPage(t, b, "/changes", project, "let mscno read everything, as an admin")
+	_, body = dsRequest(t, h, b, http.MethodPost, "/changes/"+strconv.FormatInt(changes[0].ID, 10)+"/dismiss", "", url.Values{"csrf": {servertest.CSRF(page)}})
+	if !strings.Contains(body, "Dismissed.") || !strings.Contains(body, "Nothing waits to be signed") {
+		t.Fatalf("dismiss:\n%s", body)
+	}
+
+	// Live parts refresh; a signed-out page is told so instead of being
+	// sent to sign in.
+	dr, body = dsRequest(t, h, b, http.MethodGet, "/groups/"+group+"/live", "", nil)
+	if dr.StatusCode != http.StatusOK || !strings.Contains(body, `id="group-machines"`) || strings.Contains(body, `id="group-access"`) {
+		t.Fatalf("group live: %d\n%s", dr.StatusCode, body)
+	}
+	req, _ := http.NewRequest(http.MethodGet, h.URL+"/teams/"+project+"/live", nil)
+	req.Header.Set("Datastar-Request", "true")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(raw), "You were signed out") {
+		t.Fatalf("signed out live:\n%s", raw)
+	}
+
+	// Without scripts, the same forms still post and redirect.
+	status, _, err = b.Post("/teams/"+project+"/members/set", csrf, url.Values{"login": {"mscno"}, "env": {"dev"}})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("plain form: %d %v", status, err)
+	}
+	if changes, _ := a.Changes(ctx); len(changes) != 1 {
+		t.Fatalf("plain form change: %+v", changes)
+	}
 }

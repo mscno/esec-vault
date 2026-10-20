@@ -919,6 +919,9 @@ type TeamSyncResult struct {
 	// removed machine still holds.
 	GroupTodos     []GroupTodo
 	GroupRotations []string
+	// Changes counts changes made on the web pages that wait for this
+	// account's devices to sign them.
+	Changes int
 }
 
 // TeamSync imports keys waiting for this account and, as an admin, sends
@@ -930,6 +933,9 @@ func (a *Account) TeamSync(ctx context.Context, opts TeamSyncOptions) (*TeamSync
 			return err
 		}
 		t.fulfilGroups(res)
+		if cs, err := t.a.Client.Changes(t.ctx); err == nil {
+			res.Changes = len(cs)
+		}
 		err := t.fulfil(res)
 		res.Elsewhere = t.elsewhere
 		return err

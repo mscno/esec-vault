@@ -116,6 +116,8 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 		"dur":        durationText,
 		"key":        keyBadge,
 		"trimPrefix": strings.TrimPrefix,
+		"dsPost":     dsPost,
+		"dsLive":     dsLive,
 		"int":        func(n uint64) int { return int(n) }, //nolint:gosec // chain lengths are small
 	}).ParseFS(assets, "templates/*.html")
 	if err != nil {
@@ -207,8 +209,17 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /admin", s.webAdmin)
 	m.HandleFunc("GET /admin/users/{id}", s.webAdminUser)
 	m.HandleFunc("GET /teams/{org}/{repo}", s.webTeam)
+	m.HandleFunc("GET /teams/{org}/{repo}/live", s.webTeamLive)
+	m.HandleFunc("POST /teams/{org}/{repo}/members", s.webTeamAdd)
+	m.HandleFunc("POST /teams/{org}/{repo}/members/set", s.webTeamSet)
+	m.HandleFunc("POST /teams/{org}/{repo}/changes/{id}/dismiss", s.webTeamDismiss)
 	m.HandleFunc("GET /groups", s.webGroups)
+	m.HandleFunc("GET /groups/live", s.webGroupsLive)
+	m.HandleFunc("GET /changes", s.webChanges)
+	m.HandleFunc("GET /changes/live", s.webChangesLive)
+	m.HandleFunc("POST /changes/{id}/dismiss", s.webDismissChange)
 	m.HandleFunc("GET /groups/{org}/{name}", s.webGroup)
+	m.HandleFunc("GET /groups/{org}/{name}/live", s.webGroupLive)
 	m.HandleFunc("POST /groups/{org}/{name}/access", s.webGroupAccess)
 	m.HandleFunc("POST /groups/{org}/{name}/remove", s.webGroupRemove)
 	m.HandleFunc("POST /groups/{org}/{name}/joins/{id}/reject", s.webGroupRejectJoin)
@@ -257,7 +268,8 @@ func (s *Server) routes() {
 	m.Handle("GET /v1/groups/{org}/{name}/key", s.api(false, s.apiGroupKeyGrants))
 	m.Handle("POST /v1/groups/{org}/{name}/commit", s.api(false, s.apiGroupCommit))
 	m.Handle("POST /v1/groups/{org}/{name}/joins/{id}/reject", s.api(false, s.apiGroupRejectJoin))
-	m.Handle("POST /v1/groups/{org}/{name}/changes/{id}/close", s.api(false, s.apiGroupCloseProposal))
+	m.Handle("GET /v1/changes", s.api(false, s.apiChanges))
+	m.Handle("POST /v1/changes/{id}/close", s.api(false, s.apiCloseChange))
 	m.HandleFunc("POST /v1/fleet/join", s.apiFleetJoin)
 	m.HandleFunc("POST /v1/fleet/join/status", s.apiFleetJoinStatus)
 	m.HandleFunc("POST /v1/fleet/enroll", s.apiFleetEnroll)

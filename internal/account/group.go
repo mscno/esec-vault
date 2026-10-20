@@ -913,12 +913,10 @@ func (t *teamCtx) groupSetLinks(st *team.State, pg *team.ProjectGroupState, gs *
 
 // ---- sync ----
 
-// GroupTodo is something about a group waiting for this account.
+// GroupTodo is a group with machines waiting to join it.
 type GroupTodo struct {
 	Group string
 	Joins int
-	// Changes counts web changes waiting to be signed.
-	Changes int
 }
 
 // fulfilGroups, for every group this account administers, seals the group
@@ -950,8 +948,8 @@ func (t *teamCtx) fulfilGroup(id string, res *TeamSyncResult) error {
 	if err != nil {
 		return err
 	}
-	if len(status.Joins) > 0 || len(status.Proposals) > 0 {
-		res.GroupTodos = append(res.GroupTodos, GroupTodo{Group: id, Joins: len(status.Joins), Changes: len(status.Proposals)})
+	if len(status.Joins) > 0 {
+		res.GroupTodos = append(res.GroupTodos, GroupTodo{Group: id, Joins: len(status.Joins)})
 	}
 	if len(gs.KeyExposed) > 0 {
 		// Someone who left still holds the key (an admin who left by
@@ -1039,45 +1037,6 @@ func joinOrNone(list []string) string {
 		return "no projects yet"
 	}
 	return strings.Join(list, ", ")
-}
-
-// ---- web changes ----
-
-// ProposalView is a web change with what applying it means.
-type ProposalView struct {
-	wire.Proposal
-
-	// Name is the machine or token a removal is for.
-	Name string
-}
-
-// Proposals lists the web changes of a group that wait for a device.
-func (a *Account) Proposals(ctx context.Context, id string) ([]ProposalView, error) {
-	var out []ProposalView
-	err := a.withTeam(ctx, func(t *teamCtx) error {
-		gs, err := t.requireGroupAdmin(id)
-		if err != nil {
-			return err
-		}
-		status, err := a.Client.GroupStatus(ctx, id)
-		if err != nil {
-			return err
-		}
-		for _, p := range status.Proposals {
-			v := ProposalView{Proposal: p}
-			if c := gs.Creds[p.Cred]; c != nil {
-				v.Name = c.Name
-			}
-			out = append(out, v)
-		}
-		return nil
-	})
-	return out, err
-}
-
-// CloseProposal marks a web change applied or dismissed.
-func (a *Account) CloseProposal(ctx context.Context, id string, proposal int64, applied bool) error {
-	return a.Client.CloseProposal(ctx, id, proposal, applied)
 }
 
 // describeGroupLink says what a group link did, for people.

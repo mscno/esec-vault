@@ -206,13 +206,34 @@ Sign in at your server with GitHub. The pages never decrypt anything.
   names and public keys, never private keys or values. Search by a public
   key to find which project and environment an encrypted file belongs to.
   Each shared project has a page with its members, what each reads and
-  whether their devices have the keys yet, its machines and when they were
-  last used, keys to rotate, and its history.
+  whether their devices have the keys yet, its machines and machine groups
+  and when they were last used, keys to rotate, and its history. Admins add
+  members, change what they read and remove them there.
+- **Machines**: your machine groups. Each group's page shows its machines
+  (when and from where each last fetched its keys), its tokens, which
+  projects and environments it reads, machines waiting to join, its history
+  and log. Tick environments to change what it reads, remove a machine (it
+  is blocked at once) or turn a joining machine away.
+- **Changes**: changes made on these pages that wait for your device to sign
+  them (see below).
 - **Vault**: the stored versions of your vault, with who pushed each.
 - **Enter a code**: confirm a device sign-in.
 - **Alerts** (on the overview, when the server sends email): get an email
   when a device signs in to your account, is approved, suspended or
   revoked, or when someone signs in on the web from a new browser.
+
+Pages update in place and refresh on their own while open. Changes to who
+reads what are signed with your user key, which only your devices hold, so
+a change made on a page waits until one of your devices signs it:
+
+```sh
+esec vault changes
+```
+
+It shows each change and asks before signing it; for a new member, it also
+checks their GitHub SSH proof first. The background service tells you when
+changes wait. Removing a machine on a page blocks it at once, before you
+sign.
 
 Each device publishes the project index with its vault pushes. Turn it off on
 a device with:
@@ -1410,7 +1431,8 @@ Migration is explicit; installing the binary does not alter live keys.
 | List a project's machines | `esec vault machine list` |
 | List machine groups | `esec vault group` |
 | See a group's machines and what it reads | `esec vault group show acme/production` |
-| Let waiting machines in, sign web changes | `esec vault group approve acme/production` |
+| Let machines waiting to join in | `esec vault group approve acme/production` |
+| Sign changes made on the web pages | `esec vault changes` |
 | On a machine: what am I, what do I read | `esec-vault machine whoami` |
 | List proofs in the current project | `esec vault members list` |
 | Import a share after `git pull` | `esec vault sync` |

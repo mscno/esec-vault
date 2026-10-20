@@ -1,12 +1,14 @@
 {{define "head"}}<!doctype html>
-<html lang="en">
+<html lang="en"{{with .Nonce}} data-nonce="{{.}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin">
 <title>esec vault</title>
 <link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <script src="/static/app.js" defer></script>
+{{if .Nonce}}<script type="module" src="/static/datastar.js"></script>{{end}}
 </head>
 <body>
 <header>
@@ -17,6 +19,7 @@
     <a href="/activity"{{if eq $.Nav "activity"}} aria-current="page"{{end}}>Activity</a>
     <a href="/projects"{{if eq $.Nav "projects"}} aria-current="page"{{end}}>Projects</a>
     <a href="/groups"{{if eq $.Nav "groups"}} aria-current="page"{{end}}>Machines</a>
+    <a href="/changes"{{if eq $.Nav "changes"}} aria-current="page"{{end}}>Changes</a>
     <a href="/vault"{{if eq $.Nav "vault"}} aria-current="page"{{end}}>Vault</a>
     <a href="/device"{{if eq $.Nav "device"}} aria-current="page"{{end}}>Enter a code</a>
     {{if $.IsAdmin}}<a href="/admin"{{if eq $.Nav "admin"}} aria-current="page"{{end}}>Admin</a>{{end}}
@@ -25,7 +28,9 @@
   {{end}}
 </header>
 <main>
+{{template "flash" .}}
 {{end}}
+{{define "flash"}}<div id="flash"{{with .Flash}} class="flash flash-info"{{end}} role="status" aria-live="polite">{{with .Flash}}{{.}}{{end}}</div>{{end}}
 {{define "foot"}}
 </main>
 <footer class="muted">The server stores only ciphertext. Keys never leave your devices unencrypted.</footer>

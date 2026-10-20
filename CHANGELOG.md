@@ -1,3 +1,23 @@
+# v0.9.0
+
+A web UI for running the team and the fleet.
+
+- **Live pages.** The signed-in pages update in place and refresh on their
+  own while open, with Datastar (vendored, v1.0.4) and its Go SDK. They
+  still work without scripts. Datastar runs in its nonce mode: a fresh
+  nonce per page, no `unsafe-eval`, scripts only from the site; expressions
+  are built only from checked paths, and forms carry the same CSRF token
+  and origin check as before.
+- **Manage members on the web.** A project's admins add members, change what
+  they read and remove them on its page. Group pages already let you choose
+  what a group reads, remove machines and turn joining machines away.
+- **Web changes, signed on your device.** Changes made on the pages wait in
+  one list (**Changes** in the menu) until a device signs them:
+  `esec vault changes` shows each and asks; a new member's GitHub SSH proof
+  is checked first, as with `team add`. The background service tells you
+  when changes wait. Only admins can make them.
+- Group pages show machine names in their changes; a favicon.
+
 # v0.8.0
 
 Machine groups: run a fleet of machines that read the same environments.

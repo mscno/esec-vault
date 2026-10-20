@@ -1,7 +1,26 @@
 {{template "head" .}}
 <h1>Machine groups</h1>
 <p class="muted">A machine group is a set of machines, such as production or staging servers, that read the same environments of one or more shared projects. Each machine has its own key; the projects' keys are sealed once, to the group's key, so a new machine reads them as soon as it is in the group.</p>
-<div class="scroll">
+<div id="live" {{dsLive "/groups/live" 15}}></div>
+{{template "groups-list" .}}
+<details class="help"{{if not .Groups}} open{{end}}>
+  <summary>Set up a machine group</summary>
+  <p>On a device that holds the project's keys:</p>
+  {{template "cmd" "esec vault group create acme/production"}}
+  {{template "cmd" "esec vault group grant acme/production --project acme/store --env prod"}}
+  <p>Then bring machines in, whichever suits them:</p>
+  <ul>
+    <li><strong>An enrollment token</strong> for CI jobs and autoscaled machines: use it directly as their secret <code>ESEC_VAULT_MACHINE_KEY</code>, or let each machine join with it.
+    {{template "cmd" "esec vault group token acme/production autoscale --expires 90d"}}</li>
+    <li><strong>On the machine itself</strong>: it asks to join, and an admin lets it in from a device after comparing the words it shows.
+    {{template "cmd" (printf "esec-vault machine join acme/production --server %s" $.BaseURL)}}</li>
+  </ul>
+  <p>On every machine, commands run with the keys of the projects the group reads:</p>
+  {{template "cmd" "esec-vault machine run -- esec run prod -- ./server"}}
+</details>
+{{template "foot" .}}
+
+{{define "groups-list"}}<div id="groups-list" class="scroll">
 <table>
   <thead><tr><th>Group</th><th>You</th><th>Machines</th><th>Tokens</th><th>Reads</th><th>Needs</th><th>Last used</th></tr></thead>
   <tbody>
@@ -20,20 +39,4 @@
   {{end}}
   </tbody>
 </table>
-</div>
-<details class="help"{{if not .Groups}} open{{end}}>
-  <summary>Set up a machine group</summary>
-  <p>On a device that holds the project's keys:</p>
-  {{template "cmd" "esec vault group create acme/production"}}
-  {{template "cmd" "esec vault group grant acme/production --project acme/store --env prod"}}
-  <p>Then bring machines in, whichever suits them:</p>
-  <ul>
-    <li><strong>An enrollment token</strong> for CI jobs and autoscaled machines: use it directly as their secret <code>ESEC_VAULT_MACHINE_KEY</code>, or let each machine join with it.
-    {{template "cmd" "esec vault group token acme/production autoscale --expires 90d"}}</li>
-    <li><strong>On the machine itself</strong>: it asks to join, and an admin lets it in from a device after comparing the words it shows.
-    {{template "cmd" (printf "esec-vault machine join acme/production --server %s" $.BaseURL)}}</li>
-  </ul>
-  <p>On every machine, commands run with the keys of the projects the group reads:</p>
-  {{template "cmd" "esec-vault machine run -- esec run prod -- ./server"}}
-</details>
-{{template "foot" .}}
+</div>{{end}}

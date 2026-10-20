@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -126,6 +127,9 @@ func (s *Server) checkForm(r *http.Request, ws *webSession) bool {
 }
 
 func (s *Server) render(w http.ResponseWriter, status int, name string, data map[string]any) {
+	if nonce, ok := data["Nonce"].(string); ok && nonce != "" {
+		w.Header().Set("Content-Security-Policy", fmt.Sprintf(pageCSP, nonce))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
@@ -145,7 +149,7 @@ func safeNext(next string) string {
 		return "/account"
 	}
 	switch u.Path {
-	case "/account", "/device", "/projects", "/activity", "/vault", "/admin":
+	case "/account", "/device", "/projects", "/activity", "/vault", "/admin", "/changes":
 		return u.Path
 	}
 	for _, prefix := range []string{"/devices/", "/admin/users/"} {

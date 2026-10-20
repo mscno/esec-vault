@@ -1042,9 +1042,14 @@ it any more (their user keys changed).
 ### Web changes
 
 The web pages show each group's machines, tokens, use and a project ×
-environment table. Changes made there are stored as **proposals**: who
-reads what, or removing a machine or token. The server cannot sign links,
-so an admin's device signs them (`group approve`), after showing each. A
+environment table, and each project's members. Changes made there are
+stored as **web changes** (table `changes`, scope `group` or `project`): who
+a group reads, removing a machine or token, adding a member, changing what
+one reads, removing one. The server cannot sign links, so an admin's device
+signs them (`esec vault changes`), after showing each; nothing that gives
+access is signed without asking, and a new member's GitHub SSH proof is
+checked as for `team add`. Only admins of the group or project can make
+them. A
 removal blocks the machine on the server at once, before it is signed;
 dismissing it lets the machine back in. A malicious server can always
 withhold keys, so blocking gives it nothing new. A new group key is not
@@ -1064,6 +1069,28 @@ sealed to blocked machines or expired tokens.
 | Web change invented by the server | Shown to the admin before signing; `approve --yes` signs only removals, never access. Only group admins, or admins of a project the group reads, can propose. |
 | Server freezes a project admin's view of a group | The admin's device pins the group chain as far as it saw it; a server that withholds a later removal and key rotation keeps the admin sealing to the old group key, which the removed machine could open with the server's help. The same withholding class as §14; group admins see the true state. |
 | Expired token | Refused by the server; a token signs `machine_add` only before its expiry, but its clock is its own, so expiry is the server's to enforce. |
+
+## 17. Live web pages
+
+The signed-in pages use Datastar (v1.0.4, vendored in `static/`) and its Go
+SDK. Every page still works without scripts: forms post and redirect. With
+scripts, a form is sent in place (`@post(path, {contentType: 'form'})`,
+the same urlencoded fields and CSRF token) and the server answers with
+server-sent events that patch parts of the page by id and show a message;
+read-only parts (machines, joins, key delivery, history, logs) refresh
+every 10 to 15 seconds while the page is visible. Forms being filled in are
+not refreshed under the person.
+
+Datastar evaluates the expressions in `data-*` attributes. It runs in its
+nonce mode: each page carries a fresh nonce in `<html data-nonce>`, Datastar
+reads and removes it and runs each expression as a script with that nonce,
+and the content security policy allows scripts only from the site and with
+that nonce (`script-src 'self' 'nonce-…'`, `connect-src 'self'`), never
+`unsafe-eval`. Expressions are built only by two template functions from
+paths that match a strict pattern (no quotes, backslashes or `//`); names,
+logins and other data never go into one, and html/template escapes them
+everywhere else, so no attribute can be injected. A request Datastar sends
+for a signed-out page gets a message to reload, not a redirect.
 
 ## Later phases (sketch)
 

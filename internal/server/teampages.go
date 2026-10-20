@@ -225,24 +225,50 @@ func (s *Server) webTeam(w http.ResponseWriter, r *http.Request) {
 	if ws == nil {
 		return
 	}
-	project := r.PathValue("org") + "/" + r.PathValue("repo")
-	if team.ValidProject(project) != nil {
-		s.webError(w, http.StatusNotFound, "There is no such project.")
+	data, err := s.teamPageData(r.Context(), ws, r.PathValue("org")+"/"+r.PathValue("repo"))
+	if err != nil {
+		s.webFail(w, r, err)
 		return
 	}
-	ctx := r.Context()
+	s.render(w, http.StatusOK, "team.html", data)
+}
+
+// The parts of a project's page that refresh on their own, and those a
+// submission changes too.
+var (
+	teamLiveParts = []string{"team-alerts", "team-tiles", "team-members", "team-machines", "team-groups", "team-changes", "team-history", "team-activity"}
+	teamParts     = append([]string{"team-manage"}, teamLiveParts...)
+)
+
+func (s *Server) webTeamLive(w http.ResponseWriter, r *http.Request) {
+	ws := s.dsSession(w, r)
+	if ws == nil {
+		return
+	}
+	data, err := s.teamPageData(r.Context(), ws, r.PathValue("org")+"/"+r.PathValue("repo"))
+	if err != nil {
+		s.dsFail(w, r, err)
+		return
+	}
+	s.dsPatch(w, r, data, teamLiveParts...)
+}
+
+// teamPageData builds a project's page for ws, a member or a server admin.
+func (s *Server) teamPageData(ctx context.Context, ws *webSession, project string) (map[string]any, error) {
+	notFound := clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no such project, or you are not a member of it.")
+	if team.ValidProject(project) != nil {
+		return nil, notFound
+	}
 	st, _, err := s.db.projectState(ctx, s.db.sql, project)
 	if err != nil {
-		s.internalError(w, r, err)
-		return
+		return nil, err
 	}
 	member := false
 	if st != nil {
 		_, member = st.Member(ws.user.ID)
 	}
 	if st == nil || (!member && !s.cfg.Admin(ws.user.GitHubID)) {
-		s.webError(w, http.StatusNotFound, "There is no such project, or you are not a member of it.")
-		return
+		return nil, notFound
 	}
 	nav := "projects"
 	if !member {
@@ -250,13 +276,123 @@ func (s *Server) webTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.page(ws, nav)
 	if err := s.teamPage(ctx, st, data); err != nil {
-		s.internalError(w, r, err)
-		return
+		return nil, err
 	}
 	data["Member"] = member
 	data["MyAdmin"] = st.Admin(ws.user.ID)
 	data["MyAccess"] = st.Access(ws.user.ID)
-	s.render(w, http.StatusOK, "team.html", data)
+	changes, err := s.db.openChanges(ctx, wire.ScopeProject, project)
+	if err != nil {
+		return nil, err
+	}
+	data["Changes"] = changes
+	return data, nil
+}
+
+// teamForm runs a CSRF-checked form of a project's admins.
+func (s *Server) teamForm(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context, ws *webSession, st *team.State) (string, error)) {
+	project := r.PathValue("org") + "/" + r.PathValue("repo")
+	s.pageForm(w, r, "/teams/"+project, func(ctx context.Context, ws *webSession) (string, error) {
+		if team.ValidProject(project) != nil {
+			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no such project.")
+		}
+		st, _, err := s.db.projectState(ctx, s.db.sql, project)
+		if err != nil {
+			return "", err
+		}
+		if st == nil || !st.Admin(ws.user.ID) {
+			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "Only an admin of the project can change who reads it.")
+		}
+		return fn(ctx, ws, st)
+	}, func(ctx context.Context, ws *webSession) (map[string]any, []string, error) {
+		data, err := s.teamPageData(ctx, ws, project)
+		return data, teamParts, err
+	})
+}
+
+// memberForm reads a member form: a login and, unless admin, the
+// environments, which must be the project's.
+func memberForm(r *http.Request, st *team.State) (login string, admin bool, envs []string, err error) {
+	login = r.PostForm.Get("login")
+	if team.ValidLogin(login) != nil {
+		return "", false, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "That is not a GitHub login.")
+	}
+	admin = r.PostForm.Get("admin") == "on"
+	if admin {
+		return login, true, nil, nil
+	}
+	envs = team.SortEnvs(r.PostForm["env"])
+	for _, n := range envs {
+		if _, ok := st.Envs[n]; !ok {
+			return "", false, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s has no environment %s.", st.Project, n)
+		}
+	}
+	return login, false, envs, nil
+}
+
+// memberOf finds an active member by login, ignoring case.
+func memberOf(st *team.State, login string) *team.MemberState {
+	for _, m := range st.ActiveMembers() {
+		if strings.EqualFold(m.Login, login) {
+			return m
+		}
+	}
+	return nil
+}
+
+// webTeamAdd proposes adding a member. The admin's device checks the
+// person's GitHub SSH proof before it signs.
+func (s *Server) webTeamAdd(w http.ResponseWriter, r *http.Request) {
+	s.teamForm(w, r, func(ctx context.Context, ws *webSession, st *team.State) (string, error) {
+		login, admin, envs, err := memberForm(r, st)
+		if err != nil {
+			return "", err
+		}
+		if !admin && len(envs) == 0 {
+			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "Tick what they may read, or make them an admin.")
+		}
+		if memberOf(st, login) != nil {
+			return "", clientErr(http.StatusConflict, wire.ErrConflict, "%s is a member already; change what they read below.", login)
+		}
+		u, err := s.db.userByLogin(ctx, login)
+		if err != nil {
+			return "", err
+		}
+		if u == nil || !s.cfg.Allowed(u.GitHubID) {
+			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s has no account on this server; they sign in first.", login)
+		}
+		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberAdd, Subject: u.Login, Admin: admin, Envs: envs}); err != nil {
+			return "", err
+		}
+		return "Proposed. Your device checks " + u.Login + "'s GitHub SSH proof and signs it with: esec vault changes", nil
+	})
+}
+
+// webTeamSet proposes changing what a member reads, or removing them.
+func (s *Server) webTeamSet(w http.ResponseWriter, r *http.Request) {
+	s.teamForm(w, r, func(ctx context.Context, ws *webSession, st *team.State) (string, error) {
+		login, admin, envs, err := memberForm(r, st)
+		if err != nil {
+			return "", err
+		}
+		m := memberOf(st, login)
+		if m == nil {
+			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "%s is not a member.", login)
+		}
+		c := wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberSet, Subject: m.Login, Admin: admin, Envs: envs}
+		done := "Proposed. An admin's device signs it with: esec vault changes"
+		if r.PostForm.Get("remove") != "" {
+			c = wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberRemove, Subject: m.Login}
+			done = "Proposed. An admin's device removes " + m.Login + " with: esec vault changes; then rotate what they could read."
+		}
+		return done, s.propose(ctx, ws.user.ID, s.clientIP(r), c)
+	})
+}
+
+func (s *Server) webTeamDismiss(w http.ResponseWriter, r *http.Request) {
+	s.teamForm(w, r, func(ctx context.Context, ws *webSession, _ *team.State) (string, error) {
+		return s.dismiss(ctx, ws, r)
+	})
 }
 
 // teamPage adds what the project page shows of st to data.
@@ -419,6 +555,12 @@ func projectAuditLabel(action string) string {
 		return "Machine fetched its keys"
 	case "machine_refused":
 		return "Machine refused"
+	case "change_proposed":
+		return "Change proposed on the web"
+	case "change_applied":
+		return "Change signed"
+	case "change_dismissed":
+		return "Change dismissed"
 	}
 	return action
 }

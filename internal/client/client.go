@@ -332,9 +332,16 @@ func (c *Client) RejectJoin(ctx context.Context, group, id string) error {
 	return c.do(ctx, http.MethodPost, groupPath(group)+"/joins/"+url.PathEscape(id)+"/reject", authenticated, struct{}{}, nil)
 }
 
-// CloseProposal marks a web change applied or dismissed.
-func (c *Client) CloseProposal(ctx context.Context, group string, id int64, applied bool) error {
-	return c.do(ctx, http.MethodPost, groupPath(group)+"/changes/"+strconv.FormatInt(id, 10)+"/close", authenticated, wire.ProposalClose{Applied: applied}, nil)
+// Changes lists the web changes this account's devices can sign.
+func (c *Client) Changes(ctx context.Context) ([]wire.Change, error) {
+	var out wire.Changes
+	err := c.do(ctx, http.MethodGet, "/v1/changes", authenticated, nil, &out)
+	return out.Changes, err
+}
+
+// CloseChange marks a web change applied or dismissed.
+func (c *Client) CloseChange(ctx context.Context, id int64, applied bool) error {
+	return c.do(ctx, http.MethodPost, "/v1/changes/"+strconv.FormatInt(id, 10)+"/close", authenticated, wire.ChangeClose{Applied: applied}, nil)
 }
 
 // FleetJoin asks to join a group, or (status) whether this machine was let
