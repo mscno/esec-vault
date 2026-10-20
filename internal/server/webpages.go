@@ -33,6 +33,8 @@ func (s *Server) page(ws *webSession, nav string) map[string]any {
 		"IsAdmin": s.cfg.Admin(ws.user.GitHubID), "BaseURL": s.cfg.BaseURL,
 		// Signed-in pages load Datastar, in its nonce mode (datastar.go).
 		"Nonce": newNonce(),
+		// The passkey signer page, hosted apart (passkeys.go).
+		"SignerURL": s.cfg.Signer(),
 	}
 }
 

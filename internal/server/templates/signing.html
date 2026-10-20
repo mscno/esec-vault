@@ -15,7 +15,7 @@
 {{template "cmd" "esec vault changes"}}
 
 <h2 id="passkeys">Passkeys</h2>
-<p>A passkey (a security key such as a YubiKey, Touch ID, or your phone) signs changes right here, with one touch each. It never holds your user key, and it can sign only these changes: adding members, changing what members and machine groups read, and removals. Never making anyone an admin, never keys. A member a passkey adds gets keys only once an admin's device has checked their GitHub SSH proof.</p>
+<p>A passkey (a security key such as a YubiKey, Touch ID, or your phone) signs changes with one touch each, on the signer page. It never holds your user key, and it can sign only these changes: adding members, changing what members and machine groups read, and removals. Never making anyone an admin, never keys. A member a passkey adds gets keys only once an admin's device has checked their GitHub SSH proof.</p>
 <div class="scroll">
 <table>
   <thead><tr><th>Passkey</th><th>May sign</th><th>Fingerprint</th><th></th></tr></thead>
@@ -41,12 +41,12 @@
   </tbody>
 </table>
 </div>
-<form class="grid-form" data-passkey-register>
-  <label>Name <input name="name" required maxlength="64" placeholder="YubiKey 5C" autocomplete="off"></label>
-  <label>May sign <select name="scope"><option value="manage">members, access and removals</option><option value="remove">removals only</option></select></label>
-  <div><button type="submit">Add a passkey</button></div>
-</form>
-<p class="muted">Then add it from one of your devices with <code>esec vault changes</code>, after checking it shows the same fingerprint as this page. While you add it, you trust this server not to swap the passkey for one of its own; after that, every signature is checked by your colleagues' devices.</p>
+{{if .SignerURL}}
+<p><a class="button" href="{{.SignerURL}}/#register" target="_blank" rel="noopener">Add a passkey on the signer page</a></p>
+<p class="muted">The signer page, <code>{{.SignerURL}}</code>, is a static page hosted apart from this server: passkeys work only there, so this server can neither register one nor have one sign anything. It shows the new passkey's fingerprint; add it from one of your devices with <code>esec vault changes</code> after checking that the device shows the same words. When it signs, it decodes and shows the exact change it signs.</p>
+{{else}}
+<p class="muted">This server has no signer page (<code>signer_url</code>), so passkeys are off.</p>
+{{end}}
 
 <h2 id="server">Removals by the server</h2>
 {{if .Server}}

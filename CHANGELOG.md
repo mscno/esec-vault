@@ -1,3 +1,22 @@
+# v0.11.0
+
+Passkeys move to a signer page hosted apart from the vault server.
+
+- **The signer page** (`signer/`, published by GitHub Pages at
+  `https://sign.` and the server's host): passkeys are made and used only
+  there. The vault server's own pages can neither make a passkey nor have one
+  sign anything, so a compromised server cannot slip in a key of its own or
+  get something signed that the person did not see.
+- The signer shows a new passkey's fingerprint, worked out itself; devices
+  add a passkey only if it is bound to the signer origin they work out from
+  their own server URL. Before each signature, it decodes the exact change
+  and shows it, with accounts looked up at GitHub, and refuses what it cannot
+  describe.
+- Server: `signer_url` (default `https://sign.<host>`); the signer's API is
+  under `/signer/v1/`, for its origin only. The passkey endpoints of v0.10
+  on the vault's own pages are gone; passkeys made there (none should exist)
+  are not accepted by devices.
+
 # v0.10.1
 
 - **Quick recipes** in the README: sharing a project, GitHub Actions, Fly.io

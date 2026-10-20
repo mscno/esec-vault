@@ -1,23 +1,19 @@
 package server
 
-// Passkeys on the web pages. A person registers a passkey in the browser;
-// that only proposes it, and one of their devices adds it to their user
-// chain as a delegate (esec vault changes). From then on, a change made on
-// the pages can be signed with the passkey: the server builds the link, the
-// browser asks the passkey to sign its hash, and the server checks the
-// signature and commits the link like a device's.
+// The passkey signer's API. Passkeys are made and used only on the signer
+// page (Config.Signer), a static page hosted apart from this server: it
+// shows the passkey's fingerprint for the person to compare with their
+// device's, and it decodes and shows the exact link it signs. This server
+// only stores what the signer sends and checks it like a device's; its own
+// pages are another origin, so they can neither make nor use a passkey.
 //
-// The page's script comes from this server, so a person registering a
-// passkey trusts the server at that moment, and a passkey signs what the
-// page asks it to. Devices check every signature and the delegate's scope,
-// which never covers making an admin or sealing keys, and a member added
-// with a passkey gets keys only after an admin's device checked their
-// GitHub SSH proof.
+// The signer calls these endpoints from its origin with the person's web
+// session cookie (both are on the same site), CORS limited to that origin,
+// and a custom header that a form on another site cannot send.
 
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -69,9 +65,38 @@ func (c *ceremonies) prune(now time.Time) {
 	}
 }
 
-// jsonAction runs a JSON request of a page's script: signed in, from this
-// site's origin (required), with the page's CSRF token in X-CSRF-Token.
-func (s *Server) jsonAction(w http.ResponseWriter, r *http.Request, in any, fn func(ctx context.Context, ws *webSession) (any, error)) {
+// signerCORS answers the signer's preflight requests and adds the CORS
+// headers that let it read the answers. Any other origin gets none.
+func (s *Server) signerCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := s.cfg.Signer()
+		if origin == "" || r.Header.Get("Origin") != origin {
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only the signer page may call this."})
+			return
+		}
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", origin)
+		h.Set("Access-Control-Allow-Credentials", "true")
+		h.Add("Vary", "Origin")
+		if r.Method == http.MethodOptions {
+			h.Set("Access-Control-Allow-Methods", "GET, POST")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, X-Esec-Signer")
+			h.Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// signerAction runs a request of the signer page: signed in, from the
+// signer's origin (signerCORS), with the X-Esec-Signer header, which forces
+// a CORS preflight, so no other site can send it.
+func (s *Server) signerAction(w http.ResponseWriter, r *http.Request, in any, fn func(ctx context.Context, ws *webSession) (any, error)) {
 	fail := func(status int, msg string) {
 		writeJSON(w, status, map[string]string{"error": msg})
 	}
@@ -81,12 +106,11 @@ func (s *Server) jsonAction(w http.ResponseWriter, r *http.Request, in any, fn f
 		return
 	}
 	if ws == nil {
-		fail(http.StatusUnauthorized, "You were signed out. Reload the page to sign in again.")
+		fail(http.StatusUnauthorized, "Sign in to "+s.cfg.BaseURL+" first, in this browser.")
 		return
 	}
-	got := r.Header.Get("X-Csrf-Token")
-	if r.Header.Get("Origin") != s.cfg.BaseURL || got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(ws.csrf)) != 1 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		fail(http.StatusForbidden, "The page expired. Reload it and try again.")
+	if r.Header.Get("X-Esec-Signer") != "1" || (r.Method == http.MethodPost && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json")) {
+		fail(http.StatusForbidden, "Only the signer page may call this.")
 		return
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
@@ -113,8 +137,9 @@ func (s *Server) jsonAction(w http.ResponseWriter, r *http.Request, in any, fn f
 	writeJSON(w, http.StatusOK, out)
 }
 
+// rpID is the passkeys' relying party: the signer page's host.
 func (s *Server) rpID() string {
-	u, err := url.Parse(s.cfg.BaseURL)
+	u, err := url.Parse(s.cfg.Signer())
 	if err != nil {
 		return ""
 	}
@@ -125,7 +150,7 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 // webPasskeyOptions starts registering a passkey.
 func (s *Server) webPasskeyOptions(w http.ResponseWriter, r *http.Request) {
-	s.jsonAction(w, r, nil, func(ctx context.Context, ws *webSession) (any, error) {
+	s.signerAction(w, r, nil, func(ctx context.Context, ws *webSession) (any, error) {
 		first, err := s.db.firstLink(ctx, ws.user.ID)
 		if err != nil {
 			return nil, err
@@ -172,7 +197,7 @@ type passkeyRegistration struct {
 // webPasskeyRegister proposes a new passkey for a device to add.
 func (s *Server) webPasskeyRegister(w http.ResponseWriter, r *http.Request) {
 	var in passkeyRegistration
-	s.jsonAction(w, r, &in, func(ctx context.Context, ws *webSession) (any, error) {
+	s.signerAction(w, r, &in, func(ctx context.Context, ws *webSession) (any, error) {
 		now := s.now()
 		s.webauthn.mu.Lock()
 		reg, ok := s.webauthn.reg[ws.idHash]
@@ -189,14 +214,14 @@ func (s *Server) webPasskeyRegister(w http.ResponseWriter, r *http.Request) {
 		raw, err1 := base64.RawURLEncoding.DecodeString(in.ClientDataJSON)
 		credID, err2 := base64.RawURLEncoding.DecodeString(in.CredentialID)
 		pub, err3 := base64.RawURLEncoding.DecodeString(in.PublicKey)
-		if errors.Join(err1, err2, err3) != nil || json.Unmarshal(raw, &cd) != nil || cd.Type != "webauthn.create" || cd.Origin != s.cfg.BaseURL || cd.Challenge != b64u(reg.challenge) {
+		if errors.Join(err1, err2, err3) != nil || json.Unmarshal(raw, &cd) != nil || cd.Type != "webauthn.create" || cd.Origin != s.cfg.Signer() || cd.Challenge != b64u(reg.challenge) {
 			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "The browser's answer does not match. Try again.")
 		}
 		scope := chain.ScopeManage
 		if in.Scope == chain.ScopeRemove {
 			scope = chain.ScopeRemove
 		}
-		d := chain.Delegate{ID: randomID("dl_"), Kind: chain.DelegatePasskey, Name: strings.TrimSpace(in.Name), Scope: scope, Alg: in.Alg, PublicKey: pub, CredentialID: credID, RPID: s.rpID(), Origin: s.cfg.BaseURL, Created: now.UTC().Truncate(time.Second)}
+		d := chain.Delegate{ID: randomID("dl_"), Kind: chain.DelegatePasskey, Name: strings.TrimSpace(in.Name), Scope: scope, Alg: in.Alg, PublicKey: pub, CredentialID: credID, RPID: s.rpID(), Origin: s.cfg.Signer(), Created: now.UTC().Truncate(time.Second)}
 		if err := chain.ValidateDelegate(d); err != nil {
 			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s", err.Error())
 		}
@@ -207,7 +232,7 @@ func (s *Server) webPasskeyRegister(w http.ResponseWriter, r *http.Request) {
 		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeAccount, Target: ws.user.ID, Kind: wire.ChangeDelegateAdd, Subject: d.ID, Data: data}); err != nil {
 			return nil, err
 		}
-		return map[string]string{"words": chain.DelegateWords(d), "message": "Now add it from one of your devices: esec vault changes. Check that it shows the same words."}, nil
+		return map[string]string{"message": "Now add it from one of your devices: esec vault changes. Check that the device shows the same fingerprint as this page."}, nil
 	})
 }
 
@@ -242,7 +267,7 @@ func (s *Server) openChange(ctx context.Context, user string, id int64) (*wire.C
 // returns what it signs.
 func (s *Server) webPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 	var in passkeySign
-	s.jsonAction(w, r, &in, func(ctx context.Context, ws *webSession) (any, error) {
+	s.signerAction(w, r, &in, func(ctx context.Context, ws *webSession) (any, error) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {
 			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid change id")
@@ -266,9 +291,9 @@ func (s *Server) webPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		challenges := make([]string, 0, len(links))
+		bodies := make([]map[string]string, 0, len(links))
 		for _, e := range links {
-			challenges = append(challenges, b64u(e.Challenge()))
+			bodies = append(bodies, map[string]string{"kind": e.Kind, "body": b64u(e.Body)})
 		}
 		now := s.now()
 		s.webauthn.mu.Lock()
@@ -278,14 +303,15 @@ func (s *Server) webPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 		}
 		s.webauthn.sign[ws.idHash] = signing{change: id, delegate: d.ID, links: links, expires: now.Add(ceremonyLifetime)}
 		s.webauthn.mu.Unlock()
-		return map[string]any{"rpId": d.RPID, "credentialId": b64u(d.CredentialID), "challenges": challenges, "text": passkeyDescribe(*c)}, nil
+		// The signer decodes each link and works out what it signs itself.
+		return map[string]any{"rpId": d.RPID, "credentialId": b64u(d.CredentialID), "links": bodies}, nil
 	})
 }
 
 // webPasskeyFinish checks the passkey's signatures and commits the change.
 func (s *Server) webPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 	var in passkeySign
-	s.jsonAction(w, r, &in, func(ctx context.Context, ws *webSession) (any, error) {
+	s.signerAction(w, r, &in, func(ctx context.Context, ws *webSession) (any, error) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {
 			return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid change id")
@@ -321,5 +347,45 @@ func (s *Server) webPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		return map[string]string{"message": "Signed with your passkey. Admins' devices send any keys it needs on their next sync."}, nil
+	})
+}
+
+// signerMe tells the signer page who is signed in and which passkeys they
+// have.
+func (s *Server) signerMe(w http.ResponseWriter, r *http.Request) {
+	s.signerAction(w, r, nil, func(ctx context.Context, ws *webSession) (any, error) {
+		out := map[string]any{"login": ws.user.Login, "user": ws.user.ID, "server": s.cfg.BaseURL, "passkeys": []map[string]string{}}
+		first, err := s.db.firstLink(ctx, ws.user.ID)
+		if err != nil || first == nil {
+			return out, err
+		}
+		ds, err := s.delegatesOf(ctx, ws.user.ID)
+		if err != nil {
+			return nil, err
+		}
+		pks := make([]map[string]string, 0, len(ds.passkeys))
+		for _, d := range ds.passkeys {
+			pks = append(pks, map[string]string{"id": d.ID, "name": d.Name, "credentialId": b64u(d.CredentialID), "scope": d.Scope})
+		}
+		out["passkeys"] = pks
+		return out, nil
+	})
+}
+
+// signerChanges lists the changes the signer may sign: in projects and
+// groups (a person's own account is a device's to change).
+func (s *Server) signerChanges(w http.ResponseWriter, r *http.Request) {
+	s.signerAction(w, r, nil, func(ctx context.Context, ws *webSession) (any, error) {
+		cs, err := s.adminChanges(ctx, ws.user.ID)
+		if err != nil {
+			return nil, err
+		}
+		out := []wire.Change{}
+		for _, c := range cs {
+			if c.Scope != wire.ScopeAccount {
+				out = append(out, c)
+			}
+		}
+		return wire.Changes{Changes: out}, nil
 	})
 }

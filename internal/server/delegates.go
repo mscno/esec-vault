@@ -19,7 +19,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"sync"
@@ -410,9 +409,4 @@ func (s *Server) serverSigns(ctx context.Context, user, ip string, c wire.Change
 		return false, err
 	}
 	return true, nil
-}
-
-// passkeyDescribe says what a change does, for the page asking for a touch.
-func passkeyDescribe(c wire.Change) string {
-	return fmt.Sprintf("%s in %s", c.Kind, c.Target)
 }

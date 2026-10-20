@@ -1137,12 +1137,23 @@ removals with the server's key and apply them at once. The server never makes
 group keys; an admin's background service gives a group a new key after it.
 A server can already deny service, so this gives it nothing new.
 
-**Residual risks.** The pages' script comes from the server: while a person
-registers a passkey, a malicious server could register one of its own
-instead (the fingerprint a device shows is the one the server gave), and a
-passkey signs what the page asks it to, with one touch. Scopes bound both:
-no admin, no keys, and new members get keys only after a device checks
-them. Like an old user key (§14), a removed delegate's key can sign as of a
+**The signer page.** Passkeys are made and used only on a static page hosted
+apart from the server (`signer_url`, by default `https://sign.` and the
+server's host; GitHub Pages from `signer/`). Its host is the passkeys'
+relying party and its origin is in every assertion, so the server's own
+pages, another origin, can neither make a passkey for it nor have one sign
+(browsers refuse; verifiers check the origin). Devices add only passkeys
+bound to the signer origin they work out from their own server URL. The
+signer computes a new passkey's fingerprint words itself, which the person
+compares with their device's: a key the server substituted shows other
+words. To sign, it decodes each link the server asks to have signed, shows
+it from its own bytes (accounts by GitHub id, looked up at GitHub), hashes it
+itself, and refuses what it cannot describe. It talks to the server with the
+person's web session (same site), CORS limited to its origin.
+
+**Residual risks.** Whoever controls the signer page's host is trusted with
+what passkeys sign, within their scope; a vault server alone is not. Scopes bound that: no admin, no keys, and new members get keys only after a
+device checks them. Like an old user key (§14), a removed delegate's key can sign as of a
 position before its removal until the person signs again in that project
 or group.
 

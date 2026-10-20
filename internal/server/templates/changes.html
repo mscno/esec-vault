@@ -2,7 +2,7 @@
 <h1>Changes to sign</h1>
 <p class="muted">Changes made on these pages (who reads what, members to add or remove, machines to remove) take effect once an admin's device signs them. The server holds no key, so it cannot sign anything itself, and your device shows each change before it signs. Run on a device with your account:</p>
 {{template "cmd" "esec vault changes"}}
-<p class="muted">Or sign them here with a passkey, and let the server sign removals: <a href="/account/signing">set up signing</a>.{{with .Passkeys}}{{if gt (len .) 1}} Sign with <select id="passkey-choice">{{range .}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>{{end}}{{end}}</p>
+<p class="muted">Or sign them with a passkey on the signer page, and let the server sign removals: <a href="/account/signing">set up signing</a>.</p>
 <div id="live" {{dsLive "/changes/live" 10}}></div>
 {{template "changes-list" .}}
 {{template "foot" .}}
@@ -17,7 +17,7 @@
     <td>{{template "change-text" .}}</td>
     <td>{{.By}}</td>
     <td>{{when .Created}}</td>
-    <td class="actions">{{if and $.Passkeys (ne .Scope "account")}}<button type="button" class="secondary" data-passkey-change="{{.ID}}" data-passkey-delegate="{{(index $.Passkeys 0).ID}}" hidden>Sign with passkey</button> {{end}}<form method="post" action="/changes/{{.ID}}/dismiss" {{dsPost (printf "/changes/%d/dismiss" .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form></td>
+    <td class="actions">{{if and $.Passkeys $.SignerURL (ne .Scope "account")}}<a class="button secondary" href="{{$.SignerURL}}/#change={{.ID}}" target="_blank" rel="noopener">Sign with passkey</a> {{end}}<form method="post" action="/changes/{{.ID}}/dismiss" {{dsPost (printf "/changes/%d/dismiss" .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form></td>
   </tr>
   {{else}}
   <tr><td colspan="5" class="muted">Nothing waits to be signed.</td></tr>

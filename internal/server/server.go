@@ -85,6 +85,9 @@ func WithRegistrationLimits(perAddr, perNet int) Option {
 // WithVersion sets the version the admin page shows.
 func WithVersion(v string) Option { return func(s *Server) { s.version = v } }
 
+// WithSignerURL sets the passkey signer page's origin, for tests.
+func WithSignerURL(origin string) Option { return func(s *Server) { s.cfg.SignerURL = origin } }
+
 // WithGitHub overrides the GitHub client.
 func WithGitHub(g GitHub) Option { return func(s *Server) { s.github = g } }
 
@@ -222,11 +225,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /changes", s.webChanges)
 	m.HandleFunc("GET /changes/live", s.webChangesLive)
 	m.HandleFunc("POST /changes/{id}/dismiss", s.webDismissChange)
-	m.HandleFunc("POST /changes/{id}/passkey/begin", s.webPasskeyBegin)
-	m.HandleFunc("POST /changes/{id}/passkey/finish", s.webPasskeyFinish)
 	m.HandleFunc("GET /account/signing", s.webSigning)
-	m.HandleFunc("POST /account/passkeys/options", s.webPasskeyOptions)
-	m.HandleFunc("POST /account/passkeys", s.webPasskeyRegister)
 	m.HandleFunc("POST /account/delegates/server", s.webDelegateServer)
 	m.HandleFunc("POST /account/delegates/{id}/remove", s.webDelegateRemove)
 	m.HandleFunc("GET /groups/{org}/{name}", s.webGroup)
@@ -286,6 +285,14 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /v1/fleet/enroll", s.apiFleetEnroll)
 	m.HandleFunc("POST /v1/fleet/keys", s.apiFleetKeys)
 	m.HandleFunc("GET /v1/server/key", s.apiServerKey)
+	// The passkey signer page, hosted apart (passkeys.go).
+	m.HandleFunc("OPTIONS /signer/v1/", s.signerCORS(func(http.ResponseWriter, *http.Request) {}))
+	m.HandleFunc("GET /signer/v1/me", s.signerCORS(s.signerMe))
+	m.HandleFunc("GET /signer/v1/changes", s.signerCORS(s.signerChanges))
+	m.HandleFunc("POST /signer/v1/passkeys/options", s.signerCORS(s.webPasskeyOptions))
+	m.HandleFunc("POST /signer/v1/passkeys", s.signerCORS(s.webPasskeyRegister))
+	m.HandleFunc("POST /signer/v1/changes/{id}/begin", s.signerCORS(s.webPasskeyBegin))
+	m.HandleFunc("POST /signer/v1/changes/{id}/finish", s.signerCORS(s.webPasskeyFinish))
 	s.mux = m
 }
 

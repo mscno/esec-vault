@@ -8,7 +8,6 @@
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 {{with .CSRF}}<meta name="csrf" content="{{.}}">{{end}}
-{{if .Nonce}}<script src="/static/passkey.js" defer></script>{{end}}
 <script src="/static/app.js" defer></script>
 {{if .Nonce}}<script type="module" src="/static/datastar.js"></script>{{end}}
 </head>

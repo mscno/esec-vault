@@ -147,9 +147,10 @@ On the web, **Remove** blocks a machine at once; with
 
 ### Approve web changes without a terminal
 
-Under **Overview › Signing**: add a passkey (YubiKey, Touch ID, phone) and
-approve it once with `esec vault changes`. From then on, sign changes made on
-the pages with one touch. Your computer also shows a dialog for each change
+Under **Overview › Signing**, open the signer page and make a passkey
+(YubiKey, Touch ID, phone); approve it once with `esec vault changes` after
+comparing the fingerprint. From then on, **Sign with passkey** on the Changes
+page opens the signer, which shows what you sign; one touch signs it. Your computer also shows a dialog for each change
 while the background service runs.
 
 ### See what needs doing
@@ -372,9 +373,13 @@ Signing**:
   soon as it waits, in a dialog it writes itself from the change it will
   sign, with **Sign**, **Later** and **Dismiss**. (`ESEC_VAULT_DIALOGS=off`
   turns it off; without a desktop it notifies instead.)
-- **A passkey** (a YubiKey, Touch ID, your phone). Register it on the
-  Signing page, add it from a device with `esec vault changes` after checking
-  its fingerprint, then sign changes on the pages with one touch. A passkey
+- **A passkey** (a YubiKey, Touch ID, your phone). Passkeys live on the
+  *signer page*, `https://sign.` and your server's host: a static page hosted
+  apart from the vault server, so the server can neither make a passkey nor
+  have one sign anything. Make one there, add it from a device with
+  `esec vault changes` after checking the device shows the same fingerprint
+  as the signer page, then sign changes there with one touch: the signer
+  decodes and shows the exact change each signature signs. A passkey
   signs adding members, changing what members and already-granted machine
   groups read, and removals; never making anyone an admin, never keys, never
   a new group for a project. A member a passkey adds

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https: http://localhost:* http://127.0.0.1:*; base-uri 'none'; form-action 'none'">
+<title>esec vault signer</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script src="words.js" defer></script>
+<script src="signer.js" defer></script>
+</head>
+<body>
+<header><strong>esec vault signer</strong> <span id="who" class="muted"></span></header>
+<main id="main" hidden>
+<p class="muted">This page is hosted apart from your vault server, from the esec-vault repository (<code>signer/</code>). Passkeys work only here: your vault server cannot make one or have one sign anything. It shows exactly what each signature signs, decoded here from the signed bytes.</p>
+<div id="flash" role="status" aria-live="polite"></div>
+
+<section id="review" hidden>
+  <h2>Sign this change</h2>
+  <div id="review-body"></div>
+  <p><label>With <select id="passkey"></select></label></p>
+  <p><button id="sign" type="button">Sign with passkey</button> <button id="cancel" type="button" class="secondary">Cancel</button></p>
+</section>
+
+<section>
+  <h2>Changes waiting for you</h2>
+  <ul id="changes"></ul>
+</section>
+
+<section id="register">
+  <h2>Add a passkey</h2>
+  <p>A passkey (YubiKey, Touch ID, your phone) signs changes for you here, one touch each: adding members, changing what members and machine groups read, and removals. Never admins, never keys.</p>
+  <form id="register-form">
+    <label>Name <input name="name" required maxlength="64" placeholder="YubiKey 5C" autocomplete="off"></label>
+    <label>May sign <select name="scope"><option value="manage">members, access and removals</option><option value="remove">removals only</option></select></label>
+    <button type="submit">Make a passkey</button>
+  </form>
+  <div id="words" hidden>
+    <p>Your new passkey's fingerprint:</p>
+    <p class="words" id="words-text"></p>
+    <p>Now, on one of your devices, run <code>esec vault changes</code>. Add the passkey only if the device shows exactly these words.</p>
+  </div>
+</section>
+</main>
+<main id="signin" hidden>
+  <p>Sign in to your vault server in this browser first: <a id="signin-link" href="#" rel="noopener">open it</a>, then reload this page.</p>
+</main>
+<main id="framed" hidden><p>This page does not work inside another page.</p></main>
+<footer class="muted">Nothing here leaves your browser except what it sends your vault server to store: the passkey's public key, and signatures.</footer>
+</body>
+</html>

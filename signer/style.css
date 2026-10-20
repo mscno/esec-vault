@@ -1,0 +1,25 @@
+:root { --bg: #fbfaf7; --fg: #1f1e1b; --muted: #6b675e; --line: #dedad2; --accent: #2f5d50; --accent-fg: #fff; --danger: #a33a2c; --code: #f0efea; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --bg: #161513; --fg: #ecebe6; --muted: #a39e93; --line: #36332e; --accent: #7fb8a4; --accent-fg: #10201b; --danger: #e48c7f; --code: #24231f; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+header, main, footer { max-width: 46rem; margin: 0 auto; padding: 1rem; }
+header { border-bottom: 1px solid var(--line); }
+.muted { color: var(--muted); }
+code { background: var(--code); padding: 0.1rem 0.3rem; border-radius: 3px; }
+h2 { font-size: 1.15rem; margin-top: 2rem; }
+button { font: inherit; padding: 0.45rem 0.9rem; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: var(--accent-fg); cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+input, select { font: inherit; padding: 0.4rem 0.5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+label { display: block; margin: 0.5rem 0; }
+form button { margin-top: 0.5rem; }
+ul { padding-left: 1.2rem; }
+li { margin: 0.4rem 0; }
+.words { font-size: 1.3rem; font-weight: 600; font-family: ui-monospace, monospace; }
+.change { border: 1px solid var(--line); border-left: 4px solid var(--accent); padding: 0.6rem 0.8rem; margin: 0.6rem 0; border-radius: 4px; }
+.change .what { font-size: 1.1rem; font-weight: 600; }
+.warn { border-left-color: var(--danger); }
+#flash:empty { display: none; }
+#flash { margin: 1rem 0; padding: 0.6rem 0.8rem; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 4px; }
+#flash.bad { border-left-color: var(--danger); }
+pre { white-space: pre-wrap; word-break: break-all; background: var(--code); padding: 0.5rem; border-radius: 4px; font-size: 0.85rem; }

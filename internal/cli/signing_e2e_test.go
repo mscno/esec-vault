@@ -11,22 +11,28 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mscno/esec-vault/internal/chain"
+	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/passkey/passkeytest"
 	"github.com/mscno/esec-vault/internal/server"
 	"github.com/mscno/esec-vault/internal/servertest"
 )
 
-func jsonPost(t *testing.T, h *servertest.Harness, b *servertest.Browser, csrf, path string, body any) map[string]any {
+const e2eSigner = "http://sign.localhost:9999"
+
+// signerPost sends what the signer page sends, from its origin.
+func signerPost(t *testing.T, h *servertest.Harness, b *servertest.Browser, path string, body any) map[string]any {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest(http.MethodPost, h.URL+path, bytes.NewReader(raw))
+	req, _ := http.NewRequest(http.MethodPost, h.URL+"/signer/v1"+path, bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Csrf-Token", csrf)
-	req.Header.Set("Origin", h.URL)
+	req.Header.Set("X-Esec-Signer", "1")
+	req.Header.Set("Origin", e2eSigner)
 	resp, err := b.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +61,7 @@ func TestWebSigningEndToEnd(t *testing.T) {
 		t.Skip("unix sockets")
 	}
 	bin := buildBinaries(t)
-	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(100, 1000)}, 53101343, 2002, 2003)
+	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(100, 1000), server.WithSignerURL(e2eSigner)}, 53101343, 2002, 2003)
 	h.GitHub.AddUser(53101343, "mscno")
 	h.GitHub.AddUser(2002, "alice")
 	h.GitHub.AddUser(2003, "bob")
@@ -64,7 +70,7 @@ func TestWebSigningEndToEnd(t *testing.T) {
 	gh := "ESEC_VAULT_GITHUB_URL=" + h.GitHub.URL
 	const p = "--project=acme/store"
 
-	owner := newMachine(t, bin, "owner").with(gh)
+	owner := newMachine(t, bin, "owner").with(gh, "ESEC_VAULT_SIGNER="+e2eSigner)
 	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev", "--format", "env")
@@ -87,14 +93,14 @@ func TestWebSigningEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	csrf := servertest.CSRF(page)
-	pk := passkeytest.New("127.0.0.1", h.URL)
-	opts := jsonPost(t, h, b, csrf, "/account/passkeys/options", nil)
-	cd, err := json.Marshal(map[string]any{"type": "webauthn.create", "challenge": opts["challenge"], "origin": h.URL})
+	pk := passkeytest.New("sign.localhost", e2eSigner)
+	opts := signerPost(t, h, b, "/passkeys/options", nil)
+	cd, err := json.Marshal(map[string]any{"type": "webauthn.create", "challenge": opts["challenge"], "origin": e2eSigner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg := jsonPost(t, h, b, csrf, "/account/passkeys", map[string]any{"name": "YubiKey", "scope": "manage", "credentialId": b64u(pk.CredID), "publicKey": b64u(pk.PublicKey()), "alg": -7, "clientDataJSON": b64u(cd)})
-	if out := owner.run("y\n", "changes"); !strings.Contains(out, str(reg["words"])) || !strings.Contains(out, "Added the passkey YubiKey") {
+	signerPost(t, h, b, "/passkeys", map[string]any{"name": "YubiKey", "scope": "manage", "credentialId": b64u(pk.CredID), "publicKey": b64u(pk.PublicKey()), "alg": -7, "clientDataJSON": b64u(cd)})
+	if out := owner.run("y\n", "changes"); !strings.Contains(out, chain.DelegateWords(pk.Delegate("dl_any000001", "x", chain.ScopeManage, time.Now()))) || !strings.Contains(out, "Added the passkey YubiKey") {
 		t.Fatalf("changes (passkey):\n%s", out)
 	}
 	out := owner.run("", "delegate")
@@ -109,16 +115,18 @@ func TestWebSigningEndToEnd(t *testing.T) {
 			t.Fatalf("propose %s: %d %v", who, status, err)
 		}
 		_, page, _ = b.Get("/changes")
-		id := regexpFind(t, page, `data-passkey-change="([0-9]+)"`)
-		begin := jsonPost(t, h, b, csrf, "/changes/"+id+"/passkey/begin", map[string]any{"delegate": pkID})
-		chs := list(begin["challenges"])
-		assertions := make([]map[string]string, 0, len(chs))
-		for _, ch := range chs {
-			c, _ := base64.RawURLEncoding.DecodeString(str(ch))
-			as := pk.Assert(c)
+		id := regexpFind(t, page, `/#change=([0-9]+)"`)
+		begin := signerPost(t, h, b, "/changes/"+id+"/begin", map[string]any{"delegate": pkID})
+		links := list(begin["links"])
+		assertions := make([]map[string]string, 0, len(links))
+		for _, l := range links {
+			m, _ := l.(map[string]any)
+			body, _ := base64.RawURLEncoding.DecodeString(str(m["body"]))
+			e := envelope.Envelope{Kind: str(m["kind"]), Body: body}
+			as := pk.Assert(e.Challenge())
 			assertions = append(assertions, map[string]string{"credentialId": b64u(as.CredentialID), "authenticatorData": b64u(as.AuthenticatorData), "clientDataJSON": b64u(as.ClientDataJSON), "signature": b64u(as.Signature)})
 		}
-		jsonPost(t, h, b, csrf, "/changes/"+id+"/passkey/finish", map[string]any{"delegate": pkID, "assertions": assertions})
+		signerPost(t, h, b, "/changes/"+id+"/finish", map[string]any{"delegate": pkID, "assertions": assertions})
 	}
 	out = owner.run("", "team", "show", p)
 	if !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {

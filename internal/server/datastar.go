@@ -148,7 +148,7 @@ func (s *Server) pageForm(w http.ResponseWriter, r *http.Request, back string, f
 		if !dsPath.MatchString(back) {
 			back = "/account"
 		}
-		http.Redirect(w, r, back, http.StatusSeeOther) //nolint:gosec // back is a path on this site (dsPath)
+		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
 	data, names, err := patch(ctx, ws)

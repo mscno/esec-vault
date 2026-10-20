@@ -15,25 +15,34 @@ import (
 
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/chain"
+	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/machine"
 	"github.com/mscno/esec-vault/internal/passkey/passkeytest"
+	"github.com/mscno/esec-vault/internal/server"
 	"github.com/mscno/esec-vault/internal/servertest"
 	"github.com/mscno/esec-vault/internal/team"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
-// jsonPost sends what passkey.js sends: JSON with the page's CSRF token.
-func jsonPost(t *testing.T, h *servertest.Harness, b *servertest.Browser, csrf, path string, body any) (int, map[string]any) {
+// testSigner is the signer page's origin in these tests.
+const testSigner = "http://sign.localhost:9999"
+
+// signerPost sends what the signer page sends: JSON from its origin, with
+// its header. origin "" is the signer's.
+func signerPost(t *testing.T, h *servertest.Harness, b *servertest.Browser, origin, path string, body any) (int, map[string]any) {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest(http.MethodPost, h.URL+path, bytes.NewReader(raw))
+	if origin == "" {
+		origin = testSigner
+	}
+	req, _ := http.NewRequest(http.MethodPost, h.URL+"/signer/v1"+path, bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Csrf-Token", csrf)
-	req.Header.Set("Origin", h.URL)
+	req.Header.Set("X-Esec-Signer", "1")
+	req.Header.Set("Origin", origin)
 	resp, err := b.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +57,8 @@ func jsonPost(t *testing.T, h *servertest.Harness, b *servertest.Browser, csrf, 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func TestWebSigning(t *testing.T) { //nolint:gocyclo,maintidx // one sequential story
-	h, a := setup(t)
+	h, a := setupWith(t, []server.Option{server.WithSignerURL(testSigner)})
+	t.Setenv("ESEC_VAULT_SIGNER", testSigner)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if _, err := a.CreateTeam(ctx, project, nil); err != nil {
@@ -138,23 +148,25 @@ func TestWebSigning(t *testing.T) { //nolint:gocyclo,maintidx // one sequential 
 		t.Fatalf("widening:\n%s", body)
 	}
 
-	// A passkey: registered on the web, added by a device.
-	pk := passkeytest.New("127.0.0.1", h.URL)
-	csrf := servertest.CSRF(getPage(t, b, "/account/signing"))
-	status, opts := jsonPost(t, h, b, csrf, "/account/passkeys/options", nil)
-	if status != http.StatusOK {
+	// A passkey: made on the signer page, added by a device.
+	pk := passkeytest.New("sign.localhost", testSigner)
+	if status, _ := signerPost(t, h, b, h.URL, "/passkeys/options", nil); status != http.StatusForbidden {
+		t.Fatalf("options from the vault's own origin: %d", status)
+	}
+	status, opts := signerPost(t, h, b, "", "/passkeys/options", nil)
+	if status != http.StatusOK || opts["rpId"] != "sign.localhost" {
 		t.Fatalf("options: %d %v", status, opts)
 	}
-	cd, err := json.Marshal(map[string]any{"type": "webauthn.create", "challenge": opts["challenge"], "origin": h.URL})
+	cd, err := json.Marshal(map[string]any{"type": "webauthn.create", "challenge": opts["challenge"], "origin": testSigner})
 	if err != nil {
 		t.Fatal(err)
 	}
 	reg := map[string]any{"name": "YubiKey", "scope": "manage", "credentialId": b64(pk.CredID), "publicKey": b64(pk.PublicKey()), "alg": -7, "clientDataJSON": b64(cd)}
-	if status, out := jsonPost(t, h, b, "wrong", "/account/passkeys", reg); status != http.StatusForbidden {
-		t.Fatalf("register without CSRF: %d %v", status, out)
+	if status, out := signerPost(t, h, b, "https://evil.example", "/passkeys", reg); status != http.StatusForbidden {
+		t.Fatalf("register from another origin: %d %v", status, out)
 	}
-	status, out := jsonPost(t, h, b, csrf, "/account/passkeys", reg)
-	if status != http.StatusOK || out["words"] == "" {
+	status, out := signerPost(t, h, b, "", "/passkeys", reg)
+	if status != http.StatusOK {
 		t.Fatalf("register: %d %v", status, out)
 	}
 	changes, err = a.Changes(ctx)
@@ -167,8 +179,19 @@ func TestWebSigning(t *testing.T) { //nolint:gocyclo,maintidx // one sequential 
 			addPK = &changes[i]
 		}
 	}
-	if addPK == nil || !strings.Contains(addPK.Describe(), str(out["words"])) {
+	// The device shows the words the signer page worked out itself.
+	if addPK == nil || !strings.Contains(addPK.Describe(), chain.DelegateWords(pk.Delegate("dl_any000001", "x", chain.ScopeManage, time.Now()))) {
 		t.Fatalf("passkey change: %+v", changes)
+	}
+	// A passkey bound to the vault's own pages is refused by the device.
+	vaultBound := pk.Delegate("dl_vaultpage1", "fake", chain.ScopeManage, time.Now())
+	vaultBound.Origin, vaultBound.RPID = h.URL, "127.0.0.1"
+	vb, err := json.Marshal(vaultBound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ApplyChange(ctx, account.ChangeView{Change: wire.Change{Scope: wire.ScopeAccount, Kind: wire.ChangeDelegateAdd, Data: vb}}); err == nil || !strings.Contains(err.Error(), "signer page") {
+		t.Fatalf("a vault-bound passkey: %v", err)
 	}
 	if _, err := a.ApplyChange(ctx, *addPK); err != nil {
 		t.Fatal(err)
@@ -191,9 +214,8 @@ func TestWebSigning(t *testing.T) { //nolint:gocyclo,maintidx // one sequential 
 		t.Fatalf("waiting: %+v", changes)
 	}
 	id := strconv.FormatInt(changes[0].ID, 10)
-	page = getPage(t, b, "/changes", "Sign with passkey")
-	csrf = servertest.CSRF(page)
-	status, begin := jsonPost(t, h, b, csrf, "/changes/"+id+"/passkey/begin", map[string]any{"delegate": pkID})
+	getPage(t, b, "/changes", "Sign with passkey", testSigner+"/#change="+id)
+	status, begin := signerPost(t, h, b, "", "/changes/"+id+"/begin", map[string]any{"delegate": pkID})
 	if status != http.StatusOK {
 		t.Fatalf("begin: %d %v", status, begin)
 	}
@@ -202,21 +224,23 @@ func TestWebSigning(t *testing.T) { //nolint:gocyclo,maintidx // one sequential 
 		if mutate != nil {
 			mutate(&a)
 		}
-		chs := list(begin["challenges"])
-		out := make([]map[string]string, 0, len(chs))
-		for _, ch := range chs {
-			c, _ := base64.RawURLEncoding.DecodeString(str(ch))
-			as := a.Assert(c)
+		links := list(begin["links"])
+		out := make([]map[string]string, 0, len(links))
+		for _, l := range links {
+			m, _ := l.(map[string]any)
+			body, _ := base64.RawURLEncoding.DecodeString(str(m["body"]))
+			e := envelope.Envelope{Kind: str(m["kind"]), Body: body}
+			as := a.Assert(e.Challenge())
 			out = append(out, map[string]string{"credentialId": b64(as.CredentialID), "authenticatorData": b64(as.AuthenticatorData), "clientDataJSON": b64(as.ClientDataJSON), "signature": b64(as.Signature)})
 		}
 		return out
 	}
-	if status, out := jsonPost(t, h, b, csrf, "/changes/"+id+"/passkey/finish", map[string]any{"delegate": pkID, "assertions": sign(func(a *passkeytest.Authenticator) { a.Origin = "https://evil.example" })}); status == http.StatusOK {
+	if status, out := signerPost(t, h, b, "", "/changes/"+id+"/finish", map[string]any{"delegate": pkID, "assertions": sign(func(a *passkeytest.Authenticator) { a.Origin = h.URL })}); status == http.StatusOK {
 		t.Fatalf("finish from another origin: %v", out)
 	}
 	// A failed attempt ends the ceremony; start again.
-	_, begin = jsonPost(t, h, b, csrf, "/changes/"+id+"/passkey/begin", map[string]any{"delegate": pkID})
-	if status, out := jsonPost(t, h, b, csrf, "/changes/"+id+"/passkey/finish", map[string]any{"delegate": pkID, "assertions": sign(nil)}); status != http.StatusOK {
+	_, begin = signerPost(t, h, b, "", "/changes/"+id+"/begin", map[string]any{"delegate": pkID})
+	if status, out := signerPost(t, h, b, "", "/changes/"+id+"/finish", map[string]any{"delegate": pkID, "assertions": sign(nil)}); status != http.StatusOK {
 		t.Fatalf("finish: %d %v", status, out)
 	}
 	view, err = a.Group(ctx, group)
@@ -235,11 +259,11 @@ func TestWebSigning(t *testing.T) { //nolint:gocyclo,maintidx // one sequential 
 	}
 
 	// A user-chain change cannot be signed by a passkey.
-	if status, _, err := b.Post("/account/delegates/"+pkID+"/remove", csrf, nil); err != nil || status != http.StatusOK {
+	if status, _, err := b.Post("/account/delegates/"+pkID+"/remove", servertest.CSRF(getPage(t, b, "/account/signing")), nil); err != nil || status != http.StatusOK {
 		t.Fatal(status, err)
 	}
 	changes, _ = a.Changes(ctx)
-	if status, _ := jsonPost(t, h, b, csrf, "/changes/"+strconv.FormatInt(changes[0].ID, 10)+"/passkey/begin", map[string]any{"delegate": pkID}); status == http.StatusOK {
+	if status, _ := signerPost(t, h, b, "", "/changes/"+strconv.FormatInt(changes[0].ID, 10)+"/begin", map[string]any{"delegate": pkID}); status == http.StatusOK {
 		t.Fatal("a passkey was offered a user-chain change")
 	}
 	if _, err := a.ApplyChange(ctx, changes[0]); err != nil {

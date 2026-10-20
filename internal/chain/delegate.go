@@ -143,7 +143,7 @@ func ValidateDelegate(d Delegate) error { //nolint:gocyclo // every rule in one 
 	if !ok {
 		// Plain http only on the loopback, for a server under test.
 		host, ok = strings.CutPrefix(d.Origin, "http://")
-		if !ok || (d.RPID != "localhost" && d.RPID != "127.0.0.1") {
+		if !ok || (d.RPID != "localhost" && d.RPID != "127.0.0.1" && !strings.HasSuffix(d.RPID, ".localhost")) {
 			return fmt.Errorf("a passkey's origin must be https")
 		}
 	}

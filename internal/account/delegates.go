@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -65,9 +67,15 @@ func (a *Account) AddPasskey(ctx context.Context, d chain.Delegate) error {
 	if err := chain.ValidateDelegate(d); err != nil {
 		return err
 	}
-	// It must be for this account's server, which the passkey signs on.
-	if !strings.EqualFold(strings.TrimRight(d.Origin, "/"), strings.TrimRight(a.State.Server, "/")) {
-		return fmt.Errorf("the passkey is for %s, not this account's server %s", d.Origin, a.State.Server)
+	// It must be bound to the signer page of this account's server, worked
+	// out here, not taken from the server: a passkey that works on the
+	// server's own pages could be one the server made.
+	signer := SignerOrigin(a.State.Server)
+	if signer == "" || d.Origin != signer {
+		return fmt.Errorf("the passkey is bound to %s, not to the signer page %s; register it there", d.Origin, signer)
+	}
+	if u, err := url.Parse(signer); err != nil || d.RPID != u.Hostname() {
+		return fmt.Errorf("the passkey's relying party %s is not the signer page's", d.RPID)
 	}
 	return a.appendUserLink(ctx, chain.TypeDelegateAdd, chain.DelegateAddBody{Delegate: d})
 }
@@ -104,6 +112,19 @@ func (a *Account) RemoveDelegate(ctx context.Context, idOrName string) (*chain.D
 		return nil, fmt.Errorf("several delegates are named %s; use its id", idOrName)
 	}
 	return found[0], a.appendUserLink(ctx, chain.TypeDelegateRemove, chain.DelegateRemoveBody{ID: found[0].ID})
+}
+
+// SignerOrigin returns the passkey signer page of a vault server:
+// ESEC_VAULT_SIGNER, or https://sign. and the server's host.
+func SignerOrigin(server string) string {
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv("ESEC_VAULT_SIGNER")), "/"); v != "" {
+		return v
+	}
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return ""
+	}
+	return "https://sign." + u.Host
 }
 
 func base32(b []byte) string {

@@ -408,7 +408,21 @@ web changes and the log are deleted after 7 days, 90 days and a year.
 ## Signing on the web
 
 People can let a passkey, or the server, sign some changes for them
-(**Overview › Signing**). The server's own Ed25519 key is made on first use
+(**Overview › Signing**).
+
+Passkeys work only on the **signer page**, a static page (`signer/` in the
+esec-vault repository) hosted apart from the server, at `signer_url`
+(default `https://sign.` and the server's host). Publish it with GitHub Pages
+(the repository's "Signer page" workflow does) or any static host, at that
+name, with its `CNAME` file set to it. Its origin is the passkeys' relying
+party, and devices accept only passkeys bound to it, so the vault server
+cannot make or use one. Whoever controls the signer's host is trusted
+instead: keep it on an account apart from the server, verify the domain with
+GitHub so nobody else can claim it, and review changes to `signer/`. The
+server answers the signer's requests (`/signer/v1/...`) only from that
+origin (CORS, with a header no form can send), using the person's web
+session cookie; the two hosts must be on the same site (same registrable
+domain). The server's own Ed25519 key is made on first use
 and kept in the `server_keys` table; back it up with the database. Losing it
 only means people let the server sign removals again; anyone with it can sign
 removals for the people who allowed it, so treat the database as the secret

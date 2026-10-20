@@ -21,8 +21,13 @@ import (
 // from the environment, never from the file.
 type Config struct {
 	BaseURL string `toml:"base_url"`
-	Listen  string `toml:"listen"`
-	DBPath  string `toml:"db_path"`
+	// SignerURL is the origin of the passkey signer page, a static page
+	// hosted apart from this server (default: https://sign. and this
+	// server's host). Passkeys are bound to it, so this server's own pages
+	// can neither register one nor have one sign anything.
+	SignerURL string `toml:"signer_url"`
+	Listen    string `toml:"listen"`
+	DBPath    string `toml:"db_path"`
 	// VaultHistory is how many vault versions are kept per user.
 	VaultHistory int `toml:"vault_history"`
 	// ClientIPHeader names a header set by a trusted reverse proxy that
@@ -179,6 +184,12 @@ func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent
 	case u.Scheme != "https" && (u.Scheme != "http" || !isLoopback(u.Hostname())):
 		errs = append(errs, errors.New("base_url must use https (http is allowed only for localhost)"))
 	}
+	if c.SignerURL != "" {
+		su, err := url.Parse(c.SignerURL)
+		if err != nil || su.Host == "" || (su.Path != "" && su.Path != "/") || su.RawQuery != "" || su.User != nil || (su.Scheme != "https" && (su.Scheme != "http" || (!isLoopback(su.Hostname()) && !strings.HasSuffix(su.Hostname(), ".localhost")))) {
+			errs = append(errs, errors.New("signer_url must be an https origin such as https://sign.vault.example.com"))
+		}
+	}
 	if c.DBPath == "" {
 		errs = append(errs, errors.New("db_path is required"))
 	}
@@ -291,6 +302,18 @@ const (
 
 // Secure reports whether the server is served over https.
 func (c *Config) Secure() bool { return strings.HasPrefix(c.BaseURL, "https://") }
+
+// Signer returns the signer page's origin, or "" when there is none.
+func (c *Config) Signer() string {
+	if c.SignerURL != "" {
+		return strings.TrimRight(c.SignerURL, "/")
+	}
+	u, err := url.Parse(c.BaseURL)
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	return "https://sign." + u.Host
+}
 
 // Allowed reports whether a GitHub user id may sign in.
 func (c *Config) Allowed(githubID int64) bool {
