@@ -42,6 +42,7 @@ func (s *Server) changesPageData(ctx context.Context, ws *webSession) (map[strin
 	}
 	data := s.page(ws, "changes")
 	data["Changes"] = cs
+	s.addPasskeys(ctx, ws, data)
 	return data, nil
 }
 

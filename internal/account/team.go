@@ -126,6 +126,8 @@ type teamCtx struct {
 	groups map[string]*team.GroupState
 	// groupKeys caches group private keys this operation opened.
 	groupKeys map[string][32]byte
+	// webChecked caches the checks of members added on the web.
+	webChecked map[string]error
 	// elsewhere describes new links this account signed on another device.
 	elsewhere []string
 }
@@ -148,7 +150,7 @@ func (a *Account) team(ctx context.Context) (*teamCtx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &teamCtx{a: a, ctx: ctx, own: own, id: id, pins: pins, peers: map[string]*chain.State{a.State.User: own}, given: map[string][]*envelope.Envelope{}, states: map[string]*team.State{}, groups: map[string]*team.GroupState{}, groupKeys: map[string][32]byte{}}, nil
+	return &teamCtx{a: a, ctx: ctx, own: own, id: id, pins: pins, peers: map[string]*chain.State{a.State.User: own}, given: map[string][]*envelope.Envelope{}, states: map[string]*team.State{}, groups: map[string]*team.GroupState{}, groupKeys: map[string][32]byte{}, webChecked: map[string]error{}}, nil
 }
 
 func (t *teamCtx) save() error { return errors.Join(t.pins.save(), t.a.State.Save()) }
@@ -375,6 +377,10 @@ func (t *teamCtx) recipient(st *team.State, holder string) (team.Recipient, erro
 // grant seals the given environments (those this device holds) to holder.
 // It returns nil when there is nothing to send.
 func (t *teamCtx) grant(st *team.State, holder string, envs []string) (*envelope.Envelope, []string, error) {
+	// A member a passkey added gets nothing until their account checks out.
+	if m, ok := st.Members[holder]; ok && m.Verified == team.VerifiedWeb && t.checkWebMember(m) != nil {
+		return nil, envs, nil //nolint:nilerr // not an error of this send: the keys stay unsent
+	}
 	have := t.localKeys(st)
 	keys := map[string]string{}
 	var missing []string
@@ -1175,7 +1181,7 @@ func (t *teamCtx) fulfil(res *TeamSyncResult) error {
 
 // fulfilProject sends the keys the server reports missing in one project,
 // after checking each against the verified chain.
-func (t *teamCtx) fulfilProject(st *team.State, res *TeamSyncResult) error {
+func (t *teamCtx) fulfilProject(st *team.State, res *TeamSyncResult) error { //nolint:gocyclo // one pass over the holders, each kind in turn
 	status, err := t.a.Client.ProjectStatus(t.ctx, st.Project)
 	if err != nil {
 		return err
@@ -1193,6 +1199,12 @@ func (t *teamCtx) fulfilProject(st *team.State, res *TeamSyncResult) error {
 		}
 		if len(want) == 0 {
 			continue
+		}
+		if mem, ok := st.Members[h.ID]; ok && mem.Verified == team.VerifiedWeb {
+			if err := t.checkWebMember(mem); err != nil {
+				res.Unsent = append(res.Unsent, fmt.Sprintf("%s: %s (added on the web): %v", mem.Login, st.Project, err))
+				continue
+			}
 		}
 		name := h.ID
 		m, isMachine := st.Machine(h.ID)
@@ -1234,6 +1246,35 @@ func (t *teamCtx) fulfilProject(st *team.State, res *TeamSyncResult) error {
 		return nil
 	}
 	return t.commit(st, nil, grants)
+}
+
+// checkWebMember checks, before any key goes to a member a passkey added on
+// the web, that their account is theirs: by their GitHub SSH proof, which
+// this device fetches from github.com, as for a member added on a device.
+func (t *teamCtx) checkWebMember(m *team.MemberState) error {
+	if err, ok := t.webChecked[m.User]; ok {
+		return err
+	}
+	err := func() error {
+		p, err := t.a.Client.PersonByID(t.ctx, m.User)
+		if err != nil {
+			return err
+		}
+		cs, err := t.chains(m.User)
+		if err != nil {
+			return err
+		}
+		if cs.Root() != m.Root {
+			return errors.New("the account is not the one the project recorded")
+		}
+		_, err = checkPerson(m.Person, p.Proof, cs, "")
+		if errors.Is(err, ErrNoProof) {
+			return fmt.Errorf("%s has not published a GitHub SSH proof (esec vault team prove), so no key goes to them", m.Login)
+		}
+		return err
+	}()
+	t.webChecked[m.User] = err
+	return err
 }
 
 // ackMissingOwn records keys this device holds that the server does not

@@ -1092,6 +1092,60 @@ logins and other data never go into one, and html/template escapes them
 everywhere else, so no attribute can be injected. A request Datastar sends
 for a signed-out page gets a message to reload, not a redirect.
 
+## 18. Signing on the web
+
+Only a person's user key signs who reads what, and only their devices hold
+it. Three ways spare them a terminal without changing that.
+
+**Device dialogs.** When web changes wait, the background service shows each
+in a native dialog (osascript on macOS, zenity on Linux) with Sign, Later and
+Dismiss, Later being the default. The text is written by the device from the
+change it will sign, whole and first, with control and bidirectional
+characters replaced; who asked comes last and must be a GitHub login. A
+server cannot show one change and get another signed. Devices seal keys to a
+group only while both its chain and the project's agree on each other.
+Machine joins stay in `group approve`, where the person types the words.
+
+**Delegates.** A user chain may add delegates (`delegate_add`,
+`delegate_remove`, signed by the user key): a passkey (WebAuthn credential:
+algorithm, SubjectPublicKeyInfo, credential id, relying party id, origin),
+or the server's own Ed25519 key. Each has a scope: `remove` (taking access
+away) or `manage` (also adding members and changing what members and groups
+read; passkeys only). A project or group link may then be signed by the
+person's delegate: it names the person as signer, the delegate in
+`signer_delegate`, `signer_ukey_version` 0 and the person's chain position,
+at which the delegate must be active (added, not removed, not dropped by a
+new user key), and not expired at the link's time. The verifier checks the
+scope against the chain before the link:
+
+| Scope `remove` | Scope `manage` adds | Never |
+|---|---|---|
+| removing a member who is not an admin; narrowing what such a member reads; removing a project machine; narrowing or ending a group's grant; removing a group machine or token (not as destroyed); a group no longer taking keys from a project | adding a member (who is recorded as `web`); widening what a member who is not an admin reads; widening what a group the project already grants reads | making or changing admins, environment keys, machines and tokens added, group keys, granting a project to a new group or a group trusting a new project (which chain, by its root, is a device's to choose), anything a device must seal |
+
+A passkey signs as WebAuthn does: its assertion is in the envelope
+(`passkey`), and its challenge is the SHA-256 of the envelope's message.
+The verifier checks the client data (`webauthn.get`, that challenge, the
+delegate's origin, not cross-origin), the authenticator data (the relying
+party's hash, user present), and the signature (ES256 or EdDSA). A member
+added by a passkey is recorded as `web`: nobody's device checked the
+account, so admins' devices check the person's GitHub SSH proof before they
+send them any key. A new user key drops every delegate, since a revoked
+device could have added one.
+
+**Removals by the server.** With the server delegate, the web pages sign
+removals with the server's key and apply them at once. The server never makes
+group keys; an admin's background service gives a group a new key after it.
+A server can already deny service, so this gives it nothing new.
+
+**Residual risks.** The pages' script comes from the server: while a person
+registers a passkey, a malicious server could register one of its own
+instead (the fingerprint a device shows is the one the server gave), and a
+passkey signs what the page asks it to, with one touch. Scopes bound both:
+no admin, no keys, and new members get keys only after a device checks
+them. Like an old user key (§14), a removed delegate's key can sign as of a
+position before its removal until the person signs again in that project
+or group.
+
 ## Later phases (sketch)
 
 - Passkey-PRF approval in the browser (requires trusting the JavaScript the

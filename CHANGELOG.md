@@ -1,3 +1,30 @@
+# v0.10.0
+
+Sign changes made on the web: on your computer, with a passkey, or by the
+server for removals.
+
+- **Dialogs on your computer.** When a change made on the web pages waits,
+  the background service shows it in a dialog with Sign, Later and Dismiss.
+  The device writes the text from the change it signs, so the page cannot
+  show one thing and have another signed; Later is the default button.
+  `ESEC_VAULT_DIALOGS=off` turns them off.
+- **Passkeys.** Register a YubiKey, Touch ID or phone passkey under
+  Overview › Signing, add it from a device (`esec vault changes`, after
+  checking its fingerprint), then sign changes on the pages with one touch.
+  A passkey signs adding members, changing what members and already-granted
+  machine groups read, and removals; never admins, never keys, never a new
+  group for a project. Members it adds get keys only
+  after an admin's device has checked their GitHub SSH proof.
+- **Removals by the server.** `esec vault delegate server` (or the Signing
+  page) lets the server sign changes that only take access away, so they take
+  effect at once. It can never add anyone or grant anything.
+- Under the hood: delegates in the user chain (`delegate_add`,
+  `delegate_remove`), links signed by a delegate (`signer_delegate`), checked
+  for scope by every device; WebAuthn assertions in envelopes. Everyone you
+  share projects with needs v0.10 to read chains with these links.
+- `esec vault delegate` lists, adds and removes them; `esec vault changes`
+  signs every kind of web change, the account's too.
+
 # v0.9.0
 
 A web UI for running the team and the fleet.

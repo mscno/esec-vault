@@ -45,6 +45,19 @@ type Envelope struct {
 	Kind string      `json:"kind"`
 	Body []byte      `json:"body"`
 	Sigs []Signature `json:"sigs"`
+	// Passkey is a WebAuthn assertion over the envelope, made in a browser
+	// by a passkey its signer delegated to (see package passkey).
+	Passkey *Assertion `json:"passkey,omitempty"`
+}
+
+// Assertion is a WebAuthn assertion. Its challenge is Challenge of the
+// envelope: the authenticator signs the authenticator data and the hash of
+// the client data, which names that challenge.
+type Assertion struct {
+	CredentialID      []byte `json:"credential_id"`
+	AuthenticatorData []byte `json:"authenticator_data"`
+	ClientDataJSON    []byte `json:"client_data_json"`
+	Signature         []byte `json:"signature"`
 }
 
 var kindPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -85,6 +98,12 @@ func NewRaw(kind string, body []byte, keys ...ed25519.PrivateKey) (*Envelope, er
 	return e, nil
 }
 
+// Challenge is what a passkey signs for e: the SHA-256 of its message.
+func (e *Envelope) Challenge() []byte {
+	sum := sha256.Sum256(message(e.Kind, e.Body))
+	return sum[:]
+}
+
 // AddSignature appends a signature by key.
 func (e *Envelope) AddSignature(key ed25519.PrivateKey) {
 	pub, _ := key.Public().(ed25519.PublicKey)
@@ -107,6 +126,9 @@ func (e *Envelope) Check() error {
 	}
 	if len(e.Sigs) > 8 {
 		return fmt.Errorf("too many envelope signatures")
+	}
+	if a := e.Passkey; a != nil && (len(a.CredentialID) == 0 || len(a.CredentialID) > 1023 || len(a.AuthenticatorData) < 37 || len(a.AuthenticatorData) > 1024 || len(a.ClientDataJSON) == 0 || len(a.ClientDataJSON) > 4096 || len(a.Signature) == 0 || len(a.Signature) > 256) {
+		return fmt.Errorf("invalid passkey assertion")
 	}
 	return nil
 }

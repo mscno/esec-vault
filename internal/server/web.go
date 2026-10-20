@@ -149,7 +149,7 @@ func safeNext(next string) string {
 		return "/account"
 	}
 	switch u.Path {
-	case "/account", "/device", "/projects", "/activity", "/vault", "/admin", "/changes":
+	case "/account", "/account/signing", "/device", "/projects", "/activity", "/vault", "/admin", "/changes":
 		return u.Path
 	}
 	for _, prefix := range []string{"/devices/", "/admin/users/"} {

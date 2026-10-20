@@ -102,15 +102,18 @@ func ValidCredID(id string) error {
 // (for machine_add only) the id of an enrollment token, signing with the
 // token's key; then SignerKey and SignerSeq are 0.
 type GroupLink struct {
-	Group     string          `json:"group"`
-	Seq       uint64          `json:"seq"`
-	Prev      string          `json:"prev"`
-	CTime     time.Time       `json:"ctime"`
-	Type      string          `json:"type"`
-	Signer    string          `json:"signer"`
-	SignerKey uint64          `json:"signer_ukey_version"`
-	SignerSeq uint64          `json:"signer_seq"`
-	Body      json.RawMessage `json:"body"`
+	Group     string    `json:"group"`
+	Seq       uint64    `json:"seq"`
+	Prev      string    `json:"prev"`
+	CTime     time.Time `json:"ctime"`
+	Type      string    `json:"type"`
+	Signer    string    `json:"signer"`
+	SignerKey uint64    `json:"signer_ukey_version"`
+	SignerSeq uint64    `json:"signer_seq"`
+	// SignerDelegate, when set, is the admin's delegate that signed the
+	// link for them; SignerKey is then 0.
+	SignerDelegate string          `json:"signer_delegate,omitempty"`
+	Body           json.RawMessage `json:"body"`
 }
 
 // GroupKey is a version of a group's X25519 key.
@@ -383,6 +386,21 @@ func PeekGroupLink(e *envelope.Envelope) (*GroupLink, error) {
 	return &l, nil
 }
 
+// DelegateLink builds the next link for a delegate of an admin to sign;
+// the caller adds the delegate's signature.
+func (s *GroupState) DelegateLink(typ string, body any, ctime time.Time, signer, delegate string, signerSeq uint64) (*envelope.Envelope, error) {
+	l := GroupLink{Group: s.Group, Seq: s.Seq + 1, Prev: s.Head(), CTime: ctime.UTC().Truncate(time.Second), Type: typ, Signer: signer, SignerSeq: signerSeq, SignerDelegate: delegate}
+	var err error
+	if l.Body, err = json.Marshal(body); err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(l)
+	if err != nil {
+		return nil, err
+	}
+	return envelope.NewRaw(KindGroupLink, raw)
+}
+
 func (s *GroupState) step(e *envelope.Envelope, chains Chains) error {
 	l, err := PeekGroupLink(e)
 	if err != nil {
@@ -400,11 +418,7 @@ func (s *GroupState) step(e *envelope.Envelope, chains Chains) error {
 	if !s.LastTime.IsZero() && l.CTime.Before(s.LastTime.Add(-time.Hour)) {
 		return errors.New("link time goes backwards")
 	}
-	pub, err := s.signerKey(l, chains)
-	if err != nil {
-		return err
-	}
-	if err := e.Require(KindGroupLink, pub); err != nil {
+	if err := s.checkSigner(e, l, chains); err != nil {
 		return err
 	}
 	if err := s.apply(*l); err != nil {
@@ -421,6 +435,38 @@ func (s *GroupState) step(e *envelope.Envelope, chains Chains) error {
 	s.LastTime = l.CTime
 	s.Links = append(s.Links, *l)
 	return nil
+}
+
+// checkSigner checks a link's signature: by a token (for a machine it
+// enrolls), an admin's user key, or a delegate of an admin's whose scope
+// covers the link.
+func (s *GroupState) checkSigner(e *envelope.Envelope, l *GroupLink, chains Chains) error {
+	if l.SignerDelegate == "" {
+		pub, err := s.signerKey(l, chains)
+		if err != nil {
+			return err
+		}
+		return e.Require(KindGroupLink, pub)
+	}
+	a, ok := s.Admins[l.Signer]
+	if !ok || !a.Active || l.SignerKey != 0 || l.Seq == 1 {
+		return errors.New("only an admin's delegate signs group links")
+	}
+	if l.SignerSeq < s.signerSeqs[l.Signer] {
+		return fmt.Errorf("%s signed as of an earlier position of their user chain than before", l.Signer)
+	}
+	d, err := DelegateSigner(chains, l.Signer, a.Root, l.SignerDelegate, l.SignerSeq, l.CTime)
+	if err != nil {
+		return err
+	}
+	scope, err := groupScope(*l)
+	if err != nil {
+		return err
+	}
+	if !chain.DelegateAllows(d.Scope, scope) {
+		return fmt.Errorf("%w: the delegate %s may only sign %s changes", errNotInScope, d.Name, d.Scope)
+	}
+	return verifyDelegate(e, KindGroupLink, d)
 }
 
 // signerKey returns the key a link must be signed with: an enrollment

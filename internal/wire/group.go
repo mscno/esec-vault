@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/envelope"
@@ -76,6 +77,8 @@ type JoinRequest struct {
 const (
 	ScopeGroup   = "group"
 	ScopeProject = "project"
+	// ScopeAccount changes are to the person's own user chain: delegates.
+	ScopeAccount = "account"
 )
 
 // Change kinds. In a group: what it reads of a project (ChangeAccess), or a
@@ -88,6 +91,12 @@ const (
 	ChangeMemberAdd    = "member_add"
 	ChangeMemberSet    = "member_set"
 	ChangeMemberRemove = "member_remove"
+	// ChangeDelegateAdd, in an account, adds a passkey as a delegate (Data
+	// is the chain.Delegate); ChangeDelegateServer lets the server sign
+	// removals; ChangeDelegateRemove removes a delegate (Subject is its id).
+	ChangeDelegateAdd    = "delegate_add"
+	ChangeDelegateServer = "delegate_server"
+	ChangeDelegateRemove = "delegate_remove"
 )
 
 // Change is a change made on the web pages, waiting for an admin's device
@@ -104,10 +113,12 @@ type Change struct {
 	Subject string `json:"subject,omitempty"`
 	// Name is the machine or token's name, for people; devices take it
 	// from the group chain instead.
-	Name    string    `json:"name,omitempty"`
-	Admin   bool      `json:"admin,omitempty"`
-	By      string    `json:"by"`
-	Created time.Time `json:"created"`
+	Name  string `json:"name,omitempty"`
+	Admin bool   `json:"admin,omitempty"`
+	// Data is a passkey's description for ChangeDelegateAdd.
+	Data    json.RawMessage `json:"data,omitempty"`
+	By      string          `json:"by"`
+	Created time.Time       `json:"created"`
 }
 
 // Changes lists the web changes the caller's devices can sign.
@@ -199,4 +210,10 @@ type GroupKeys struct {
 	Chains   map[string][]*envelope.Envelope `json:"chains"`
 	KeyGrant *envelope.Envelope              `json:"key_grant"`
 	Projects []GroupProjectKeys              `json:"projects"`
+}
+
+// ServerKey is the server's own signing key, which a person may let sign
+// removals for them.
+type ServerKey struct {
+	SignPub string `json:"sign_pub"`
 }

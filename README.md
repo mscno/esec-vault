@@ -231,9 +231,29 @@ esec vault changes
 ```
 
 It shows each change and asks before signing it; for a new member, it also
-checks their GitHub SSH proof first. The background service tells you when
-changes wait. Removing a machine on a page blocks it at once, before you
-sign.
+checks their GitHub SSH proof first. Removing a machine on a page blocks it at
+once, before you sign. There are faster ways, set up under **Overview ›
+Signing**:
+
+- **A dialog on your computer.** The background service shows each change as
+  soon as it waits, in a dialog it writes itself from the change it will
+  sign, with **Sign**, **Later** and **Dismiss**. (`ESEC_VAULT_DIALOGS=off`
+  turns it off; without a desktop it notifies instead.)
+- **A passkey** (a YubiKey, Touch ID, your phone). Register it on the
+  Signing page, add it from a device with `esec vault changes` after checking
+  its fingerprint, then sign changes on the pages with one touch. A passkey
+  signs adding members, changing what members and already-granted machine
+  groups read, and removals; never making anyone an admin, never keys, never
+  a new group for a project. A member a passkey adds
+  gets keys only once an admin's device has checked their GitHub SSH proof.
+- **Removals by the server.** Let the server sign changes that only take
+  access away (from members who are not admins, and machines), so they take
+  effect at once: `esec vault delegate server`, or on the Signing page. It can
+  never add anyone or grant anything.
+
+`esec vault delegate` lists them; `esec vault delegate remove NAME` and
+`esec vault delegate server --off` take them back. A new user key (after you
+revoke a device) drops them all.
 
 Each device publishes the project index with its vault pushes. Turn it off on
 a device with:
@@ -1433,6 +1453,7 @@ Migration is explicit; installing the binary does not alter live keys.
 | See a group's machines and what it reads | `esec vault group show acme/production` |
 | Let machines waiting to join in | `esec vault group approve acme/production` |
 | Sign changes made on the web pages | `esec vault changes` |
+| Passkeys and server removals | `esec vault delegate` |
 | On a machine: what am I, what do I read | `esec-vault machine whoami` |
 | List proofs in the current project | `esec vault members list` |
 | Import a share after `git pull` | `esec vault sync` |

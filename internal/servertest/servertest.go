@@ -12,6 +12,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -190,6 +191,10 @@ func StartConfig(t *testing.T, opts []server.Option, edit func(*server.Config), 
 	h.ts.Start()
 	t.Cleanup(h.ts.Close)
 	h.URL = h.ts.URL
+	if os.Getenv("ESEC_TEST_LOCALHOST") == "1" {
+		// For browsers' WebAuthn, whose relying party must be a name.
+		h.URL = strings.Replace(h.URL, "127.0.0.1", "localhost", 1)
+	}
 	cfg := &server.Config{
 		BaseURL:      h.URL,
 		DBPath:       "unused",

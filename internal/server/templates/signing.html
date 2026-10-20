@@ -1,0 +1,62 @@
+{{template "head" .}}
+<p class="crumbs"><a href="/account">Overview</a> › Signing</p>
+<h1>Signing changes</h1>
+<p class="muted">Who may read what is signed with your user key, which only your devices hold; the server cannot sign as you. Changes you make on these pages are signed one of these ways.</p>
+<p class="muted">Changes signed by a passkey or the server can be read only by esec-vault v0.10 or later: everyone who shares a project or machine group with you, and the group's machines, need it first.</p>
+{{template "signing-body" .}}
+{{template "foot" .}}
+
+{{define "signing-body"}}<div id="signing-body">
+{{if .NoAccount}}
+<p>Create your vault account on a device first: <code>esec vault login {{.BaseURL}}</code>.</p>
+{{else}}
+<h2>Your devices</h2>
+<p>A device with the background service shows a dialog as soon as a change waits, and signs it when you say so. Without it, run:</p>
+{{template "cmd" "esec vault changes"}}
+
+<h2 id="passkeys">Passkeys</h2>
+<p>A passkey (a security key such as a YubiKey, Touch ID, or your phone) signs changes right here, with one touch each. It never holds your user key, and it can sign only these changes: adding members, changing what members and machine groups read, and removals. Never making anyone an admin, never keys. A member a passkey adds gets keys only once an admin's device has checked their GitHub SSH proof.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Passkey</th><th>May sign</th><th>Fingerprint</th><th></th></tr></thead>
+  <tbody>
+  {{range .Passkeys}}
+  <tr>
+    <td><strong>{{.Name}}</strong><br><span class="muted">added {{when .Created}}</span></td>
+    <td>{{if eq .Scope "remove"}}removals only{{else}}members, access and removals{{end}}</td>
+    <td><code>{{.Words}}</code></td>
+    <td><form method="post" action="/account/delegates/{{.ID}}/remove" data-confirm="Remove {{.Name}}? Your device signs the removal." {{dsPost (printf "/account/delegates/%s/remove" .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Remove</button></form></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="4" class="muted">No passkeys yet.</td></tr>
+  {{end}}
+  {{range .Pending}}{{if .Delegate}}
+  <tr>
+    <td><strong>{{.Delegate.Name}}</strong> <span class="badge status-pending">waiting for your device</span></td>
+    <td>{{if eq .Delegate.Scope "remove"}}removals only{{else}}members, access and removals{{end}}</td>
+    <td><code>{{.Words}}</code></td>
+    <td></td>
+  </tr>
+  {{end}}{{end}}
+  </tbody>
+</table>
+</div>
+<form class="grid-form" data-passkey-register>
+  <label>Name <input name="name" required maxlength="64" placeholder="YubiKey 5C" autocomplete="off"></label>
+  <label>May sign <select name="scope"><option value="manage">members, access and removals</option><option value="remove">removals only</option></select></label>
+  <div><button type="submit">Add a passkey</button></div>
+</form>
+<p class="muted">Then add it from one of your devices with <code>esec vault changes</code>, after checking it shows the same fingerprint as this page. While you add it, you trust this server not to swap the passkey for one of its own; after that, every signature is checked by your colleagues' devices.</p>
+
+<h2 id="server">Removals by the server</h2>
+{{if .Server}}
+<p><span class="badge status-active">on</span> The server signs, for you, the changes made on these pages that only take access away from people who are not admins, and from machines. It can never add anyone or grant anything. Your background service gives a machine group a new key after a removal.</p>
+<form method="post" action="/account/delegates/{{.Server.ID}}/remove" {{dsPost (printf "/account/delegates/%s/remove" .Server.ID)}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Turn off</button></form>
+{{else if .ServerPending}}
+<p><span class="badge status-pending">waiting for your device</span> Allow it with <code>esec vault changes</code>.</p>
+{{else}}
+<p>Let the server sign removals for you, so removing a member's access or a machine on these pages takes effect at once, without a device or passkey. A server can already deny service, so this gives it nothing new: it can only take access away, never from admins, and never add anyone.</p>
+<form method="post" action="/account/delegates/server" {{dsPost "/account/delegates/server"}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Let the server sign removals</button></form>
+{{end}}
+{{end}}
+</div>{{end}}

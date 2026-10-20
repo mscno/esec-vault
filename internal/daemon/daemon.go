@@ -75,12 +75,14 @@ type queued struct {
 // Server owns one broker session and serializes uploads. Keyring access by the
 // backup worker is transient and does not extend the broker session TTL.
 type Server struct {
-	Keyring    keyring.Keyring
-	Logger     *slog.Logger
-	Broker     *broker.Server
-	UID        uint32
-	Interval   time.Duration
-	mu         sync.Mutex
+	Keyring  keyring.Keyring
+	Logger   *slog.Logger
+	Broker   *broker.Server
+	UID      uint32
+	Interval time.Duration
+	mu       sync.Mutex
+	// dialogs asks whether to sign changes made on the web pages.
+	dialogs    changeDialogs
 	jobs       map[string]Job
 	sequence   uint64
 	queue      chan queued

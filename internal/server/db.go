@@ -301,6 +301,11 @@ var schema = []string{
 	// them: in a group (scope "group") or a shared project ("project").
 	// group_proposals held them for groups in v0.8.0, always empty.
 	`DROP TABLE IF EXISTS group_proposals`,
+	// The server's own signing key, which people may let sign removals.
+	`CREATE TABLE IF NOT EXISTS server_keys (
+		id TEXT PRIMARY KEY,
+		seed BLOB NOT NULL,
+		created_at INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS changes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		scope TEXT NOT NULL,
@@ -328,6 +333,8 @@ var schema = []string{
 }
 
 var addedColumns = []struct{ table, column, def string }{
+	// A passkey's description, for a change that adds one.
+	{"changes", "data", "TEXT NOT NULL DEFAULT ''"},
 	{"web_sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"},
 	{"web_sessions", "ip", "TEXT NOT NULL DEFAULT ''"},
 	// The confirmed address for alert emails, and one waiting for its

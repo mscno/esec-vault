@@ -203,7 +203,7 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) {
 			Notifier("esec vault: added to a project", msg)
 		}
 	}
-	s.announceGroups(res)
+	s.announceGroups(ctx, res)
 	for project, envs := range res.Rotations {
 		for _, env := range envs {
 			key := "rotate " + project + " " + env
@@ -223,7 +223,7 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) {
 
 // announceGroups notifies about machines waiting to join a group, web
 // changes waiting to be signed, and group keys a removed machine holds.
-func (s *Server) announceGroups(res *account.TeamSyncResult) {
+func (s *Server) announceGroups(ctx context.Context, res *account.TeamSyncResult) {
 	for _, g := range res.GroupTodos {
 		// Machines waiting to join are announced at once, once per count.
 		key := fmt.Sprintf("group %s %d", g.Group, g.Joins)
@@ -235,11 +235,8 @@ func (s *Server) announceGroups(res *account.TeamSyncResult) {
 		s.Logger.Info("machine groups: " + msg)
 		Notifier("esec vault: machines waiting", msg)
 	}
-	if key := fmt.Sprintf("changes %d", res.Changes); res.Changes > 0 && !s.teamNoted[key] {
-		s.teamNoted[key] = true
-		msg := fmt.Sprintf("%d change(s) made on the web wait for this device to sign them. Run: esec vault changes", res.Changes)
-		s.Logger.Info("web changes: " + msg)
-		Notifier("esec vault: changes to sign", msg)
+	if res.Changes > 0 {
+		s.askChanges(ctx)
 	}
 	for _, g := range res.GroupRotations {
 		if s.stillWaiting("group key " + g) {

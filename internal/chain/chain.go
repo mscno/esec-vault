@@ -41,6 +41,8 @@ const (
 	TypeUKeyRotate      = "ukey_rotate"
 	TypeAgentSlotAdd    = "agent_slot_add"
 	TypeAgentSlotRemove = "agent_slot_remove"
+	TypeDelegateAdd     = "delegate_add"
+	TypeDelegateRemove  = "delegate_remove"
 )
 
 // Device addition methods.
@@ -205,6 +207,8 @@ type State struct {
 	MasterSignPub ed25519.PublicKey
 	Devices       map[string]*DeviceState
 	Slots         map[string]*SlotState
+	// Delegates are keys that may sign some project and group changes.
+	Delegates map[string]*DelegateState
 	// Epochs lists every user key the chain has had, oldest first.
 	Epochs []KeyEpoch
 	// Links holds the decoded links, in order.
@@ -400,7 +404,7 @@ func VerifyProof(proof *envelope.Envelope) (*DeviceProof, error) {
 
 // New returns the empty state for user.
 func New(user string) *State {
-	return &State{User: user, Devices: map[string]*DeviceState{}, Slots: map[string]*SlotState{}}
+	return &State{User: user, Devices: map[string]*DeviceState{}, Slots: map[string]*SlotState{}, Delegates: map[string]*DelegateState{}}
 }
 
 // Verify checks a complete chain from its first link.
@@ -665,6 +669,10 @@ func (s *State) apply(e *envelope.Envelope, l Link) error { //nolint:gocyclo // 
 		}
 		sl.Active = false
 		return nil
+	case TypeDelegateAdd:
+		return s.applyDelegateAdd(l)
+	case TypeDelegateRemove:
+		return s.applyDelegateRemove(l)
 	}
 	return fmt.Errorf("unknown link type %q", l.Type)
 }
@@ -756,6 +764,13 @@ func (s *State) applyRotate(e *envelope.Envelope, l Link) error {
 	for _, sl := range s.Slots {
 		sl.Active = false
 	}
+	// A device the rotation leaves out may have added a delegate; a new
+	// user key drops them all, to be added again.
+	for _, d := range s.Delegates {
+		if d.Active {
+			d.Active, d.RemovedSeq = false, l.Seq
+		}
+	}
 	s.UKeyVersion, s.EncPub, s.SignPub = l.UKeyVersion, enc, sign
 	s.Epochs = append(s.Epochs, KeyEpoch{Version: l.UKeyVersion, EncPub: enc, SignPub: sign, Seq: l.Seq, Since: l.CTime})
 	return nil
@@ -787,6 +802,11 @@ func (s *State) clone() *State {
 	for k, v := range s.Slots {
 		c := *v
 		n.Slots[k] = &c
+	}
+	n.Delegates = make(map[string]*DelegateState, len(s.Delegates))
+	for k, v := range s.Delegates {
+		c := *v
+		n.Delegates[k] = &c
 	}
 	return &n
 }

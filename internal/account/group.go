@@ -84,6 +84,10 @@ func (t *teamCtx) groupRecipient(st *team.State, id string) (team.Recipient, err
 	if gs == nil || gs.Root() != pg.Root {
 		return team.Recipient{}, fmt.Errorf("the group %s is not the one %s names", id, st.Project)
 	}
+	// Both sides agreed: the group's admins chose this project, too.
+	if root, ok := gs.Access[st.Project]; !ok || root != st.Root() {
+		return team.Recipient{}, fmt.Errorf("the group %s does not take keys from %s", id, st.Project)
+	}
 	pub, err := chain.ParseKey32(gs.Key.EncPub)
 	return team.Recipient{ID: team.GroupHolder(id), Version: gs.Key.Version, EncPub: pub}, err
 }

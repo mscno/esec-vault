@@ -286,6 +286,7 @@ func (s *Server) teamPageData(ctx context.Context, ws *webSession, project strin
 		return nil, err
 	}
 	data["Changes"] = changes
+	s.addPasskeys(ctx, ws, data)
 	return data, nil
 }
 
@@ -364,7 +365,7 @@ func (s *Server) webTeamAdd(w http.ResponseWriter, r *http.Request) {
 		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberAdd, Subject: u.Login, Admin: admin, Envs: envs}); err != nil {
 			return "", err
 		}
-		return "Proposed. Your device checks " + u.Login + "'s GitHub SSH proof and signs it with: esec vault changes", nil
+		return "Proposed. Sign it with your passkey on the Changes page, or on a device: esec vault changes. Either way, " + u.Login + " gets keys only once an admin's device has checked their GitHub SSH proof.", nil
 	})
 }
 
@@ -380,10 +381,13 @@ func (s *Server) webTeamSet(w http.ResponseWriter, r *http.Request) {
 			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "%s is not a member.", login)
 		}
 		c := wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberSet, Subject: m.Login, Admin: admin, Envs: envs}
-		done := "Proposed. An admin's device signs it with: esec vault changes"
+		done := "Proposed. Sign it with your passkey on the Changes page, or on a device: esec vault changes"
 		if r.PostForm.Get("remove") != "" {
 			c = wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberRemove, Subject: m.Login}
-			done = "Proposed. An admin's device removes " + m.Login + " with: esec vault changes; then rotate what they could read."
+			done = "Proposed. Sign it with your passkey on the Changes page, or on a device: esec vault changes. Then rotate what they could read."
+		}
+		if signed, err := s.serverSigns(ctx, ws.user.ID, s.clientIP(r), c); err != nil || signed {
+			return "Done, signed by the server for you. Rotate what " + m.Login + " can no longer read; the page lists it.", err
 		}
 		return done, s.propose(ctx, ws.user.ID, s.clientIP(r), c)
 	})

@@ -51,12 +51,15 @@ func (d *DB) changesWhere(ctx context.Context, where string, args ...any) ([]wir
 		return nil, err
 	}
 	out := []wire.Change{}
-	err = scanAll(ctx, d.sql, `SELECT id, scope, target, kind, project, envs, subject, admin, created_by, created_at FROM changes WHERE `+where+` ORDER BY id`, args, func(r *sql.Rows) error {
+	err = scanAll(ctx, d.sql, `SELECT id, scope, target, kind, project, envs, subject, admin, data, created_by, created_at FROM changes WHERE `+where+` ORDER BY id`, args, func(r *sql.Rows) error {
 		var c wire.Change
-		var envs, by string
+		var envs, data, by string
 		var at int64
-		if err := r.Scan(&c.ID, &c.Scope, &c.Target, &c.Kind, &c.Project, &envs, &c.Subject, &c.Admin, &by, &at); err != nil {
+		if err := r.Scan(&c.ID, &c.Scope, &c.Target, &c.Kind, &c.Project, &envs, &c.Subject, &c.Admin, &data, &by, &at); err != nil {
 			return err
+		}
+		if data != "" {
+			c.Data = json.RawMessage(data)
 		}
 		if err := json.Unmarshal([]byte(envs), &c.Envs); err != nil {
 			return err
@@ -71,14 +74,17 @@ func (d *DB) changesWhere(ctx context.Context, where string, args ...any) ([]wir
 	return out, err
 }
 
-// adminChanges lists the open changes in the groups and projects user
-// administers: the ones their devices can sign.
+// adminChanges lists the open changes in the person's own account and in
+// the groups and projects they administer: the ones their devices can sign.
 func (s *Server) adminChanges(ctx context.Context, user string) ([]wire.Change, error) {
+	out, err := s.db.openChanges(ctx, wire.ScopeAccount, user)
+	if err != nil {
+		return nil, err
+	}
 	groups, err := s.db.adminGroups(ctx, user)
 	if err != nil {
 		return nil, err
 	}
-	out := []wire.Change{}
 	for _, g := range groups {
 		cs, err := s.db.openChanges(ctx, wire.ScopeGroup, g)
 		if err != nil {
@@ -111,6 +117,8 @@ func (s *Server) adminChanges(ctx context.Context, user string) ([]wire.Change, 
 // sign or close it.
 func (s *Server) changeAdmins(ctx context.Context, scope, target string) ([]string, error) {
 	switch scope {
+	case wire.ScopeAccount:
+		return []string{target}, nil
 	case wire.ScopeGroup:
 		gs, err := s.listedGroup(ctx, target)
 		if err != nil || gs == nil {
@@ -195,7 +203,10 @@ func (s *Server) closeChange(ctx context.Context, id int64, applied bool, user, 
 }
 
 func (s *Server) changeAudit(ctx context.Context, q queryer, scope, target, user, ip, action, detail string, now time.Time) error {
-	if scope == wire.ScopeGroup {
+	switch scope {
+	case wire.ScopeAccount:
+		return s.db.audit(ctx, q, target, "", ip, action, detail, now)
+	case wire.ScopeGroup:
 		return s.db.groupAudit(ctx, q, target, user, ip, action, detail, now)
 	}
 	return s.db.projectAudit(ctx, q, target, user, ip, action, detail, now)
@@ -230,8 +241,8 @@ func (s *Server) propose(ctx context.Context, user, ip string, c wire.Change) er
 			now.Unix(), c.Scope, c.Target, c.Kind, c.Project, c.Subject); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO changes (scope, target, kind, project, envs, subject, admin, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			c.Scope, c.Target, c.Kind, c.Project, string(envs), c.Subject, c.Admin, user, now.Unix()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO changes (scope, target, kind, project, envs, subject, admin, data, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.Scope, c.Target, c.Kind, c.Project, string(envs), c.Subject, c.Admin, string(c.Data), user, now.Unix()); err != nil {
 			return err
 		}
 		if err := s.changeAudit(ctx, tx, c.Scope, c.Target, user, ip, "change_proposed", c.Kind+" "+c.Project+c.Subject, now); err != nil {
@@ -239,7 +250,7 @@ func (s *Server) propose(ctx context.Context, user, ip string, c wire.Change) er
 		}
 		for _, a := range admins {
 			typ := wire.EventGroup
-			if c.Scope == wire.ScopeProject {
+			if c.Scope != wire.ScopeGroup {
 				typ = wire.EventProject
 			}
 			if err := s.db.addEvent(ctx, tx, a, typ, c.Target, now); err != nil {

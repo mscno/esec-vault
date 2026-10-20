@@ -23,6 +23,7 @@ import (
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
+	"github.com/mscno/esec-vault/internal/notify"
 	"github.com/mscno/esec-vault/internal/servertest"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/wire"
@@ -176,4 +177,73 @@ func TestServerLoopSyncsAndNotifies(t *testing.T) {
 
 func chainDevice(d wire.DeviceInfo, k *devicekey.Key) chain.Device {
 	return chain.Device{ID: d.ID, Name: d.Name, Platform: d.Platform, EncPub: k.EncPubHex(), SignPub: k.SignPubHex(), Created: d.Created.UTC()}
+}
+
+// TestDialogSignsWebChanges: a change made on the web pages raises a
+// dialog showing that change, and answering Sign signs it on the device.
+func TestDialogSignsWebChanges(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("daemon platforms only")
+	}
+	h := servertest.Start(t, 53101343)
+	h.GitHub.AddUser(53101343, "mscno")
+	dir, err := os.MkdirTemp("", "evs-") //nolint:usetesting // short paths for daemon sockets
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("ESEC_VAULT_HOME", dir)
+	t.Setenv("ESEC_KEYRING_DIR", "")
+	t.Setenv(secretstore.EnvBackend, secretstore.BackendFile)
+	kr := keyring.NewOS()
+	if _, err := identity.Init(kr, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a, err := account.Login(ctx, kr, confirmUI{t: t, h: h}, account.LoginOptions{Server: h.URL, Name: "laptop", Poll: 20 * time.Millisecond, BootstrapToken: servertest.BootstrapToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var asked []string
+	Asker = func(_, text string, _ time.Duration) (string, error) {
+		mu.Lock()
+		asked = append(asked, text)
+		mu.Unlock()
+		return notify.AnswerSign, nil
+	}
+	Notifier = func(string, string) {}
+	t.Cleanup(func() { Asker = notify.Ask; Notifier = func(string, string) {} })
+
+	s, err := New(kr, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Interval = 50 * time.Millisecond
+	done := make(chan struct{})
+	go func() { s.serverLoop(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	eventually(t, "first sync", func() bool {
+		st, err := account.LoadState()
+		return err == nil && st.Events.Last > 0
+	})
+
+	b := h.Browser("mscno")
+	_, page, err := b.Get("/account/signing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _, err := b.Post("/account/delegates/server", servertest.CSRF(page), nil); err != nil || status != 200 {
+		t.Fatal(status, err)
+	}
+	eventually(t, "the change signed", func() bool {
+		ds, err := a.Delegates(ctx)
+		return err == nil && len(ds) == 1 && ds[0].Kind == chain.DelegateServer
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) != 1 || !strings.Contains(asked[0], "let the server sign removals") {
+		t.Fatalf("dialogs: %q", asked)
+	}
 }

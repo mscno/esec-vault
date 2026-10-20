@@ -57,6 +57,10 @@ type Server struct {
 	alertHTTP *http.Client
 	// oidc checks machines' OIDC tokens.
 	oidc *oidcVerifier
+	// signer is the server's own key, which people may let sign removals.
+	signer serverSigner
+	// webauthn holds passkey ceremonies in progress.
+	webauthn ceremonies
 }
 
 // Option customizes a Server, mainly for tests.
@@ -218,6 +222,13 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /changes", s.webChanges)
 	m.HandleFunc("GET /changes/live", s.webChangesLive)
 	m.HandleFunc("POST /changes/{id}/dismiss", s.webDismissChange)
+	m.HandleFunc("POST /changes/{id}/passkey/begin", s.webPasskeyBegin)
+	m.HandleFunc("POST /changes/{id}/passkey/finish", s.webPasskeyFinish)
+	m.HandleFunc("GET /account/signing", s.webSigning)
+	m.HandleFunc("POST /account/passkeys/options", s.webPasskeyOptions)
+	m.HandleFunc("POST /account/passkeys", s.webPasskeyRegister)
+	m.HandleFunc("POST /account/delegates/server", s.webDelegateServer)
+	m.HandleFunc("POST /account/delegates/{id}/remove", s.webDelegateRemove)
 	m.HandleFunc("GET /groups/{org}/{name}", s.webGroup)
 	m.HandleFunc("GET /groups/{org}/{name}/live", s.webGroupLive)
 	m.HandleFunc("POST /groups/{org}/{name}/access", s.webGroupAccess)
@@ -274,6 +285,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /v1/fleet/join/status", s.apiFleetJoinStatus)
 	m.HandleFunc("POST /v1/fleet/enroll", s.apiFleetEnroll)
 	m.HandleFunc("POST /v1/fleet/keys", s.apiFleetKeys)
+	m.HandleFunc("GET /v1/server/key", s.apiServerKey)
 	s.mux = m
 }
 

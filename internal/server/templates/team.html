@@ -135,7 +135,7 @@
     <td>{{template "change-text" .}}</td>
     <td>{{.By}}</td>
     <td>{{when .Created}}</td>
-    <td><form method="post" action="/teams/{{$.Project}}/changes/{{.ID}}/dismiss" {{dsPost (printf "/teams/%s/changes/%d/dismiss" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form></td>
+    <td class="actions">{{if and $.Passkeys (ne .Scope "account")}}<button type="button" class="secondary" data-passkey-change="{{.ID}}" data-passkey-delegate="{{(index $.Passkeys 0).ID}}" hidden>Sign with passkey</button> {{end}}<form method="post" action="/teams/{{$.Project}}/changes/{{.ID}}/dismiss" {{dsPost (printf "/teams/%s/changes/%d/dismiss" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form></td>
   </tr>
   {{end}}
   </tbody>

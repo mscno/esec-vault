@@ -241,6 +241,8 @@ everyone who checks them.
 | Someone leaves a team | An admin runs `esec vault team remove LOGIN`, then `esec vault env rotate ENV` in the repository for each environment it lists, and changes the secret values they may have seen. The project page shows what is left. |
 | Machine key leaked | `esec vault machine remove NAME`: the server stops handing it keys at once. Rotate the environments it could read. A machine bound to GitHub Actions is useless outside its repository and refs even before that. |
 | Group machine or enrollment token leaked | Remove it on the group's web page (it is blocked at once), or `esec vault group remove GROUP NAME`. The group gets a new key; rotate the environments `group show` lists. Machines it enrolled are listed with it on the group page: remove those you do not recognise. |
+| A passkey is lost or stolen | Remove it on **Overview › Signing** and sign that on a device, or run `esec vault delegate remove NAME`. Its signatures stop counting from then on. Review the projects' and groups' histories for changes it signed. |
+| The server's database leaked | Besides the metadata, the attacker holds the server's signing key: they can sign removals for people who let the server do so (never additions). Everyone turns it off with `esec vault delegate server --off`; redeploy, and they turn it on again for the new key. |
 | Unknown machine asks to join a group | Turn it away on the group's page, or answer `no` in `esec vault group approve`. If the words a machine shows do not match the ones your device shows, do not let it in, and delete the machine's key file: the server may be lying to it. |
 
 ## Close the server to new devices during an attack
@@ -386,6 +388,16 @@ log are shown to its admins and to members of the projects it takes keys
 from; addresses, join requests and the log only to its admins and server
 admins. Machines' join requests,
 web changes and the log are deleted after 7 days, 90 days and a year.
+
+## Signing on the web
+
+People can let a passkey, or the server, sign some changes for them
+(**Overview › Signing**). The server's own Ed25519 key is made on first use
+and kept in the `server_keys` table; back it up with the database. Losing it
+only means people let the server sign removals again; anyone with it can sign
+removals for the people who allowed it, so treat the database as the secret
+it is. Passkeys need the server's `base_url` to be its real https origin:
+they are bound to it, and changing the domain means registering them again.
 
 ## Web pages
 

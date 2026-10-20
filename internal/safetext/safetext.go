@@ -12,11 +12,14 @@ import (
 
 // Clean replaces control characters, C1 controls and bidirectional
 // overrides with '?', and limits the length.
-func Clean(s string) string {
+func Clean(s string) string { return CleanN(s, 200) }
+
+// CleanN is Clean with a limit of limit runes.
+func CleanN(s string, limit int) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
-		if n >= 200 {
+		if n >= limit {
 			b.WriteString("…")
 			break
 		}

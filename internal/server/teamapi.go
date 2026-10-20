@@ -314,35 +314,8 @@ func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, proje
 				return nil, nil, clientErr(http.StatusConflict, wire.ErrConflict, "%s is already a shared project; ask one of its admins to add you", project)
 			}
 		}
-		next, err := st.Next(e, chains)
+		next, err := s.appendProjectLink(ctx, tx, st, e, *l, chains, c.user.ID, c.ip, now)
 		if err != nil {
-			return nil, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "link rejected: %v", err)
-		}
-		if err := s.checkNewMember(ctx, tx, *l, chains); err != nil {
-			return nil, nil, err
-		}
-		if err := checkNewMachine(ctx, tx, project, *l); err != nil {
-			return nil, nil, err
-		}
-		if err := s.checkGroupSet(ctx, tx, *l); err != nil {
-			return nil, nil, err
-		}
-		raw, err := json.Marshal(e)
-		if err != nil {
-			return nil, nil, err
-		}
-		if l.Type == team.TypeInit {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO projects (id, created_by, created_at) VALUES (?, ?, ?)`, project, c.user.ID, now.Unix()); err != nil {
-				return nil, nil, err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO project_links (project, seq, hash, envelope, signer, created_at) VALUES (?, ?, ?, ?, ?, ?)`, project, l.Seq, e.Hash(), raw, l.Signer, now.Unix()); err != nil {
-			return nil, nil, err
-		}
-		if err := s.db.projectAudit(ctx, tx, project, c.user.ID, c.ip, "link_"+l.Type, linkSummary(st, next, *l), now); err != nil {
-			return nil, nil, err
-		}
-		if err := s.queueProjectAlert(ctx, tx, st, next, *l, c.ip, now); err != nil {
 			return nil, nil, err
 		}
 		st = next
@@ -379,6 +352,44 @@ func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, proje
 		return nil, nil, err
 	}
 	return &wire.ProjectCommitResult{Seq: st.Seq}, users, nil
+}
+
+// appendProjectLink verifies e as the next link of st, checks what only
+// the server can, and stores it with its audit entry and alert. A project's
+// first link also creates the project.
+func (s *Server) appendProjectLink(ctx context.Context, tx *sql.Tx, st *team.State, e *envelope.Envelope, l team.Link, chains team.Chains, actor, ip string, now time.Time) (*team.State, error) {
+	next, err := st.Next(e, chains)
+	if err != nil {
+		return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "link rejected: %v", err)
+	}
+	if err := s.checkNewMember(ctx, tx, l, chains); err != nil {
+		return nil, err
+	}
+	if err := checkNewMachine(ctx, tx, st.Project, l); err != nil {
+		return nil, err
+	}
+	if err := s.checkGroupSet(ctx, tx, l); err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	if l.Type == team.TypeInit {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO projects (id, created_by, created_at) VALUES (?, ?, ?)`, st.Project, actor, now.Unix()); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO project_links (project, seq, hash, envelope, signer, created_at) VALUES (?, ?, ?, ?, ?, ?)`, st.Project, l.Seq, e.Hash(), raw, l.Signer, now.Unix()); err != nil {
+		return nil, err
+	}
+	if err := s.db.projectAudit(ctx, tx, st.Project, actor, ip, "link_"+l.Type, linkSummary(st, next, l), now); err != nil {
+		return nil, err
+	}
+	if err := s.queueProjectAlert(ctx, tx, st, next, l, ip, now); err != nil {
+		return nil, err
+	}
+	return next, nil
 }
 
 // checkNewMember checks, for a member_add link, that the account exists on

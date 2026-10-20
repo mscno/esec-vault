@@ -332,6 +332,12 @@ func (c *Client) RejectJoin(ctx context.Context, group, id string) error {
 	return c.do(ctx, http.MethodPost, groupPath(group)+"/joins/"+url.PathEscape(id)+"/reject", authenticated, struct{}{}, nil)
 }
 
+// ServerKey returns the server's own signing key.
+func (c *Client) ServerKey(ctx context.Context) (*wire.ServerKey, error) {
+	var out wire.ServerKey
+	return &out, c.do(ctx, http.MethodGet, "/v1/server/key", unsigned, nil, &out)
+}
+
 // Changes lists the web changes this account's devices can sign.
 func (c *Client) Changes(ctx context.Context) ([]wire.Change, error) {
 	var out wire.Changes

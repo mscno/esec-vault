@@ -83,10 +83,13 @@ type Link struct {
 	// their user key that signed it, and SignerSeq the length of their user
 	// chain then. The key must be the one current at that position, and a
 	// signer's positions never go back within a project chain.
-	Signer    string          `json:"signer"`
-	SignerKey uint64          `json:"signer_ukey_version"`
-	SignerSeq uint64          `json:"signer_seq"`
-	Body      json.RawMessage `json:"body"`
+	Signer    string `json:"signer"`
+	SignerKey uint64 `json:"signer_ukey_version"`
+	SignerSeq uint64 `json:"signer_seq"`
+	// SignerDelegate, when set, is the signer's delegate that signed the
+	// link for them (delegate.go); SignerKey is then 0.
+	SignerDelegate string          `json:"signer_delegate,omitempty"`
+	Body           json.RawMessage `json:"body"`
 }
 
 // Person identifies a member's account: the GitHub id, the login when they
@@ -596,6 +599,21 @@ func SignerKey(chains Chains, user, root string, version, seq uint64) (ed25519.P
 	return ep.SignPub, nil
 }
 
+// DelegateLink builds the next link for a delegate of signer to sign; the
+// caller adds the delegate's signature.
+func (s *State) DelegateLink(typ string, body any, ctime time.Time, signer, delegate string, signerSeq uint64) (*envelope.Envelope, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	l := Link{Project: s.Project, Seq: s.Seq + 1, Prev: s.Head(), CTime: ctime.UTC().Truncate(time.Second), Type: typ, Signer: signer, SignerSeq: signerSeq, SignerDelegate: delegate, Body: raw}
+	body2, err := json.Marshal(l)
+	if err != nil {
+		return nil, err
+	}
+	return envelope.NewRaw(KindLink, body2)
+}
+
 func (s *State) step(e *envelope.Envelope, chains Chains) error {
 	l, err := PeekLink(e)
 	if err != nil {
@@ -622,8 +640,7 @@ func (s *State) step(e *envelope.Envelope, chains Chains) error {
 	if err != nil {
 		return err
 	}
-	pub, err := SignerKey(chains, l.Signer, root, l.SignerKey, l.SignerSeq)
-	if err != nil {
+	if err := s.checkSigner(e, l, root, chains); err != nil {
 		return err
 	}
 	// A revoked device holds its owner's old key and knows the old chain,
@@ -631,9 +648,6 @@ func (s *State) step(e *envelope.Envelope, chains Chains) error {
 	// has signed in this project as of a later position, that is refused.
 	if l.SignerSeq < s.signerSeqs[l.Signer] {
 		return fmt.Errorf("%s signed as of an earlier position of their user chain than before", l.Signer)
-	}
-	if err := e.Require(KindLink, pub); err != nil {
-		return err
 	}
 	if err := s.apply(*l); err != nil {
 		return err
@@ -647,6 +661,39 @@ func (s *State) step(e *envelope.Envelope, chains Chains) error {
 	s.LastTime = l.CTime
 	s.Links = append(s.Links, *l)
 	return nil
+}
+
+// checkSigner checks a link's signature: by the signer's user key current
+// at the position it names, or by a delegate of theirs whose scope covers
+// the link.
+func (s *State) checkSigner(e *envelope.Envelope, l *Link, root string, chains Chains) error {
+	var add MemberAddBody
+	webAdd := l.Type == TypeMemberAdd && decodeBody(*l, &add) == nil && add.Verified == VerifiedWeb
+	if l.SignerDelegate == "" {
+		if webAdd {
+			return errors.New("only a delegate's link adds a member checked on the web")
+		}
+		pub, err := SignerKey(chains, l.Signer, root, l.SignerKey, l.SignerSeq)
+		if err != nil {
+			return err
+		}
+		return e.Require(KindLink, pub)
+	}
+	if l.SignerKey != 0 {
+		return errors.New("a delegate's link names no user key version")
+	}
+	d, err := DelegateSigner(chains, l.Signer, root, l.SignerDelegate, l.SignerSeq, l.CTime)
+	if err != nil {
+		return err
+	}
+	scope, err := projectScope(s, *l)
+	if err != nil {
+		return err
+	}
+	if !chain.DelegateAllows(d.Scope, scope) {
+		return fmt.Errorf("%w: the delegate %s may only sign %s changes", errNotInScope, d.Name, d.Scope)
+	}
+	return verifyDelegate(e, KindLink, d)
 }
 
 // signerRoot returns the account root the signer must have: the creator's
@@ -735,7 +782,7 @@ func (s *State) applyMemberAdd(l Link) error {
 	if err := validPerson(b.Member); err != nil {
 		return err
 	}
-	if b.Verified != VerifiedGitHubSSH && b.Verified != VerifiedAccountKey {
+	if b.Verified != VerifiedGitHubSSH && b.Verified != VerifiedAccountKey && b.Verified != VerifiedWeb {
 		return fmt.Errorf("unknown verification %q", b.Verified)
 	}
 	if old, exists := s.Members[b.Member.User]; exists && old.Active {

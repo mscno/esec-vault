@@ -266,6 +266,7 @@ func (s *Server) groupPageData(ctx context.Context, ws *webSession, id string) (
 	// Addresses, join requests and the log are the group's admins' (and
 	// the server admins') to see.
 	data["ShowOps"] = gs.Admin(ws.user.ID) || s.cfg.Admin(ws.user.GitHubID)
+	s.addPasskeys(ctx, ws, data)
 	return data, nil
 }
 
@@ -563,10 +564,14 @@ func (s *Server) webGroupAccess(w http.ResponseWriter, r *http.Request) {
 				return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s has no environment %s", project, n)
 			}
 		}
-		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeAccess, Project: project, Envs: envs}); err != nil {
+		change := wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeAccess, Project: project, Envs: envs}
+		if done, err := s.serverSigns(ctx, ws.user.ID, s.clientIP(r), change); err != nil || done {
+			return "Done, signed by the server for you: the group reads less of " + project + ".", err
+		}
+		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), change); err != nil {
 			return "", err
 		}
-		return "Proposed. An admin's device signs it with: esec vault changes", nil
+		return "Proposed. Sign it with your passkey on the Changes page, or on a device: esec vault changes", nil
 	})
 }
 
@@ -582,6 +587,10 @@ func (s *Server) webGroupRemove(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "no such machine or token")
 		}
+		change := wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeRemove, Subject: id}
+		if done, err := s.serverSigns(ctx, ws.user.ID, s.clientIP(r), change); err != nil || done {
+			return c.Name + " is removed, signed by the server for you. An admin's background service gives the group a new key.", err
+		}
 		now := s.now()
 		if _, err := s.db.sql.ExecContext(ctx, `UPDATE group_creds SET suspended_at = ? WHERE group_id = ? AND id = ? AND suspended_at = 0`, now.Unix(), gs.Group, id); err != nil {
 			return "", err
@@ -589,7 +598,7 @@ func (s *Server) webGroupRemove(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.groupAudit(ctx, s.db.sql, gs.Group, ws.user.ID, s.clientIP(r), "blocked", c.Kind+" "+c.Name, now); err != nil {
 			return "", err
 		}
-		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeRemove, Subject: id}); err != nil {
+		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), change); err != nil {
 			return "", err
 		}
 		return c.Name + " is blocked. An admin's device removes it for good, and gives the group a new key, with: esec vault changes", nil

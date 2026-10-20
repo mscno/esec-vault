@@ -167,7 +167,7 @@
     <td>{{template "change-text" .}}</td>
     <td>{{.By}}</td>
     <td>{{when .Created}}</td>
-    <td>{{if $.MyAdmin}}<form method="post" action="/groups/{{$.Group}}/changes/{{.ID}}/dismiss" {{dsPost (printf "/groups/%s/changes/%d/dismiss" $.Group .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form>{{end}}</td>
+    <td class="actions">{{if and $.Passkeys (ne .Scope "account")}}<button type="button" class="secondary" data-passkey-change="{{.ID}}" data-passkey-delegate="{{(index $.Passkeys 0).ID}}" hidden>Sign with passkey</button> {{end}}{{if $.MyAdmin}}<form method="post" action="/groups/{{$.Group}}/changes/{{.ID}}/dismiss" {{dsPost (printf "/groups/%s/changes/%d/dismiss" $.Group .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form>{{end}}</td>
   </tr>
   {{end}}
   </tbody>
@@ -207,4 +207,7 @@
 {{- else if eq .Kind "member_add"}}add {{.Subject}}, who reads {{template "change-reads" .}}
 {{- else if eq .Kind "member_set"}}let {{.Subject}} read {{template "change-reads" .}}
 {{- else if eq .Kind "member_remove"}}remove {{.Subject}}
+{{- else if eq .Kind "delegate_add"}}add a passkey (see Signing)
+{{- else if eq .Kind "delegate_server"}}let the server sign removals
+{{- else if eq .Kind "delegate_remove"}}remove a passkey or the server's signing
 {{- else}}{{.Kind}}{{end}}{{end}}
