@@ -1,3 +1,10 @@
+# v0.10.1
+
+- **Quick recipes** in the README: sharing a project, GitHub Actions, Fly.io
+  apps (with a Dockerfile), servers, autoscaling, removing people and
+  machines, approving web changes. The runbook gains a table of everyday
+  operations.
+
 # v0.10.0
 
 Sign changes made on the web: on your computer, with a passkey, or by the

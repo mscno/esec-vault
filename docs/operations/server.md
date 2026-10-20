@@ -229,6 +229,22 @@ everyone who checks them.
 | Remove a person | Remove the id and redeploy. Their sessions fail on the next request. Their data stays until you delete it. Shared projects still list them (their pages mark them "removed from the server"): an admin of each project removes them with `esec vault team remove LOGIN` and rotates the keys they could read. |
 | Rotate the GitHub client secret | Generate a new secret in the OAuth app, run `fly secrets set ESEC_SERVER_GITHUB_CLIENT_SECRET=...`, then delete the old secret. |
 
+## Everyday operations
+
+| Task | How |
+|---|---|
+| Let a person in | Add their numeric GitHub id to `allowed_github_ids`, redeploy, send them `esec-vault-server -bootstrap-token-for <id>`. They run `esec vault login URL` and `esec vault team prove`. |
+| Share a project with them | In the repository: `esec vault team create` (once), `esec vault team add LOGIN --env dev`. Or on the project's page, then sign it. |
+| Give CI its secrets | A machine group per environment, a token per repository bound to it: `esec vault group token acme/ci deploy --github-repo acme/store --github-ref refs/heads/main --out - \| gh secret set ESEC_VAULT_MACHINE_KEY`. See the README's recipes for the workflow. |
+| Run an app (Fly.io, containers) | The group token as the app's secret `ESEC_VAULT_MACHINE_KEY`; start it with `esec-vault machine run -- esec run prod -- ./app`. |
+| Add a server | On it: `esec-vault machine join GROUP --server URL --fingerprint WORDS`; on a laptop: `esec vault group approve GROUP`. |
+| Autoscaling | `esec vault group token GROUP autoscale --expires 90d` in the image; machines run `esec-vault machine join` at boot. |
+| Remove a machine or token | The group's page › **Remove** (blocked at once), or `esec vault group remove GROUP NAME`. Rotate what it lists. |
+| Remove a person | `esec vault team remove LOGIN` in each project, then `esec vault env rotate ENV` for each environment listed; remove their id from `allowed_github_ids`. |
+| Approve web changes | `esec vault changes`, the dialog on a computer running the background service, or a passkey on the Changes page. |
+| See what needs doing | The web overview; `esec vault team`, `esec vault group`, `esec vault changes`. |
+| Upgrade | Deploy the new server version, then update the CLIs (`go install ...@vX` or the release archives) and run `esec-vault daemon upgrade` on each computer. Read the CHANGELOG first: some releases need every colleague's CLI updated before a feature is used. |
+
 ## Respond to incidents
 
 | Event | Response |

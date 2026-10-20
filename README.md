@@ -8,6 +8,7 @@ Both forms run the same program.
 
 ## Find a guide
 
+- [Quick recipes: people, CI, servers, Fly.io apps, fleets](#quick-recipes).
 - [Set up your personal vault](#first-setup).
 - [Sync keys between machines with a vault server](#sync-keys-with-a-vault-server).
 - [Set up a project and its marker](#set-up-a-project).
@@ -28,6 +29,138 @@ The examples use esec v0.8.0 or later and esec-vault v0.3.0 or later.
 Replace `acme`, project names, paths, and GitHub logins with your own values.
 Replace `npm run dev` with your application's start command. Set `$EDITOR` to
 your editor, or replace `$EDITOR` in the examples with an editor command.
+
+## Quick recipes
+
+Copy-paste versions of the common tasks. Each assumes you signed in to your
+vault server (`esec vault login https://vault.example.com`) and run the
+command in the project's repository, or pass `--project org/repo`. Replace
+`acme/store`, `acme/production` and the logins with your own.
+
+### Share a project with a teammate
+
+```sh
+esec vault team create                    # once per project: you become its admin
+# the teammate, once: sign in, then prove their account with their GitHub SSH key
+esec vault login https://vault.example.com && esec vault team prove
+esec vault team add alice --env dev       # you: add them; their devices get the dev key
+```
+
+On the web: the project's page › **Add a member**, then sign it with a
+passkey or `esec vault changes`.
+
+### Give a GitHub Actions workflow its secrets
+
+```sh
+esec vault group create acme/ci
+esec vault group grant acme/ci --env prod                 # in the repository
+esec vault group token acme/ci deploy --expires never \
+  --github-repo acme/store --github-ref refs/heads/main --out - | gh secret set ESEC_VAULT_MACHINE_KEY
+```
+
+```yaml
+permissions:
+  id-token: write          # the token works only from this repository's main branch
+  contents: read
+steps:
+  - uses: actions/checkout@v5
+  - name: Install esec and esec-vault
+    run: |
+      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.10.0/esec-vault_0.10.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
+      curl -fsSL https://github.com/mscno/esec/releases/download/v0.10.1/esec_0.10.1_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
+  - run: esec-vault machine run -- esec run prod -- ./deploy.sh
+    env:
+      ESEC_VAULT_MACHINE_KEY: ${{ secrets.ESEC_VAULT_MACHINE_KEY }}
+```
+
+One token can serve every workflow of the repository; make one token per
+repository, so each works only from its own.
+
+### Run a Fly.io app with its secrets
+
+Give the app's machines a token of a group, and start the app through
+`esec-vault`, which hands it the keys of its project:
+
+```sh
+esec vault group create acme/production
+esec vault group grant acme/production --env prod
+fly secrets set -a store ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/production fly-store --expires never --out -)"
+```
+
+```dockerfile
+FROM alpine:3.21 AS esec
+RUN apk add --no-cache curl \
+ && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.10.0/esec-vault_0.10.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
+ && curl -fsSL https://github.com/mscno/esec/releases/download/v0.10.1/esec_0.10.1_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
+
+FROM your-app-image
+COPY --from=esec /usr/local/bin/esec /usr/local/bin/esec-vault /usr/local/bin/
+# The image holds the repository's .esec-project and encrypted .env.prod.
+CMD ["esec-vault", "machine", "run", "--", "esec", "run", "prod", "--", "/app/server"]
+```
+
+Every machine of the app uses the same token, and the group's page shows
+when each fetched its keys. Remove the token there to cut them all off.
+
+### Add a server or VM
+
+On the server (once), with esec and esec-vault installed:
+
+```sh
+sudo esec-vault machine join acme/production --server https://vault.example.com \
+  --fingerprint WORD-WORD-WORD-WORD-WORD-WORD-WORD-WORD   # from: esec vault group show acme/production
+```
+
+It shows six words and waits. On your laptop, check the words and let it in:
+
+```sh
+esec vault group approve acme/production
+```
+
+The server keeps its key in `/etc/esec-vault/machine.key`; services start
+with `esec-vault machine run -- esec run prod -- ./server`.
+
+### Add many machines at once (autoscaling, images)
+
+```sh
+esec vault group token acme/production autoscale --expires 90d
+```
+
+Put the token in the image or the machines' start-up script; each machine
+joins by itself, with its own key, and no laptop needs to be on:
+
+```sh
+ESEC_VAULT_ENROLL_TOKEN=esecg1_... esec-vault machine join
+```
+
+### Remove a person or a machine
+
+```sh
+esec vault team remove alice                      # then rotate what it lists
+esec vault env rotate dev
+esec vault group remove acme/production web-3     # the group gets a new key
+esec vault group remove acme/production web-4 --destroyed   # deleted with its disk: nothing to rotate
+```
+
+On the web, **Remove** blocks a machine at once; with
+`esec vault delegate server`, the server also signs the removal for you.
+
+### Approve web changes without a terminal
+
+Under **Overview › Signing**: add a passkey (YubiKey, Touch ID, phone) and
+approve it once with `esec vault changes`. From then on, sign changes made on
+the pages with one touch. Your computer also shows a dialog for each change
+while the background service runs.
+
+### See what needs doing
+
+```sh
+esec vault team                  # shared projects and their to-dos
+esec vault group                 # machine groups, machines waiting to join
+esec vault changes               # changes made on the web, waiting for you
+```
+
+The web overview lists the same, with the command for each.
 
 ## Install both tools
 
