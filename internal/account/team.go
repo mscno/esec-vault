@@ -54,6 +54,8 @@ type TeamPins struct {
 	// Signed lists the hashes of project links this device signed, so it
 	// can tell the person about changes their account made elsewhere.
 	Signed map[string]bool `toml:"signed"`
+	// Groups pins machine group chains.
+	Groups map[string]Pin `toml:"groups"`
 }
 
 // hold records that this device holds pub as env of project.
@@ -95,6 +97,9 @@ func loadTeamPins() (*TeamPins, error) {
 	if p.Signed == nil {
 		p.Signed = map[string]bool{}
 	}
+	if p.Groups == nil {
+		p.Groups = map[string]Pin{}
+	}
 	return p, nil
 }
 
@@ -118,6 +123,9 @@ type teamCtx struct {
 	peers  map[string]*chain.State
 	given  map[string][]*envelope.Envelope
 	states map[string]*team.State
+	groups map[string]*team.GroupState
+	// groupKeys caches group private keys this operation opened.
+	groupKeys map[string][32]byte
 	// elsewhere describes new links this account signed on another device.
 	elsewhere []string
 }
@@ -140,7 +148,7 @@ func (a *Account) team(ctx context.Context) (*teamCtx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &teamCtx{a: a, ctx: ctx, own: own, id: id, pins: pins, peers: map[string]*chain.State{a.State.User: own}, given: map[string][]*envelope.Envelope{}, states: map[string]*team.State{}}, nil
+	return &teamCtx{a: a, ctx: ctx, own: own, id: id, pins: pins, peers: map[string]*chain.State{a.State.User: own}, given: map[string][]*envelope.Envelope{}, states: map[string]*team.State{}, groups: map[string]*team.GroupState{}, groupKeys: map[string][32]byte{}}, nil
 }
 
 func (t *teamCtx) save() error { return errors.Join(t.pins.save(), t.a.State.Save()) }
@@ -207,21 +215,39 @@ func (t *teamCtx) state(project string) (*team.State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the server's chain for %s does not verify: %w", project, err)
 	}
-	if pin, ok := t.pins.Projects[project]; ok {
-		if pin.Root != st.Root() {
-			return nil, fmt.Errorf("%w: %s is not the project this device saw before", team.ErrRollback, project)
-		}
-		if err := st.CheckPin(pin.Seq, pin.Head); err != nil {
-			return nil, err
-		}
-		for i := pin.Seq; i < st.Seq; i++ {
-			if l := st.Links[i]; l.Signer == t.a.State.User && !t.pins.Signed[st.Hashes[i]] {
-				t.elsewhere = append(t.elsewhere, project+": "+describeLink(st, l))
-			}
-		}
+	pin, ok := t.pins.Projects[project]
+	if err := t.checkPin(pin, ok, project, "project", st, st.Hashes, func(i uint64) (string, string) { return st.Links[i].Signer, describeLink(st, st.Links[i]) }); err != nil {
+		return nil, err
 	}
 	t.pin(st)
 	return st, nil
+}
+
+// pinnedChain is a verified project or group chain.
+type pinnedChain interface {
+	Root() string
+	CheckPin(seq uint64, hash string) error
+}
+
+// checkPin refuses a chain that does not extend this device's pin of it,
+// and notes the links since that this account signed on another device.
+// link returns the signer and description of the link at an index.
+func (t *teamCtx) checkPin(pin Pin, pinned bool, id, kind string, c pinnedChain, hashes []string, link func(i uint64) (signer, text string)) error {
+	if !pinned {
+		return nil
+	}
+	if pin.Root != c.Root() {
+		return fmt.Errorf("%w: %s is not the %s this device saw before", team.ErrRollback, id, kind)
+	}
+	if err := c.CheckPin(pin.Seq, pin.Head); err != nil {
+		return err
+	}
+	for i := pin.Seq; i < uint64(len(hashes)); i++ {
+		if signer, text := link(i); signer == t.a.State.User && !t.pins.Signed[hashes[i]] {
+			t.elsewhere = append(t.elsewhere, id+": "+text)
+		}
+	}
+	return nil
 }
 
 // errNotMember is returned for a project this account is not a member of.
@@ -249,7 +275,11 @@ func (t *teamCtx) requireAdmin(project string) (*team.State, error) {
 
 // link signs the next link of st.
 func (t *teamCtx) link(st *team.State, typ string, body any) (*envelope.Envelope, *team.State, error) {
-	e, err := st.NewLink(typ, body, t.a.Now(), t.a.State.User, t.own.UKeyVersion, t.own.Seq, t.id.Sign)
+	now := t.a.Now()
+	if typ == team.TypeEnvSet {
+		now = t.afterRemovals(st, now)
+	}
+	e, err := st.NewLink(typ, body, now, t.a.State.User, t.own.UKeyVersion, t.own.Seq, t.id.Sign)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -258,6 +288,26 @@ func (t *teamCtx) link(st *team.State, typ string, body any) (*envelope.Envelope
 		return nil, nil, err
 	}
 	return e, next, nil
+}
+
+// afterRemovals returns now, or a second after the latest removal from a
+// group reading st that this device knows of. Link times have whole
+// seconds, and a removal in the same second as a new key counts as
+// exposing it, so a new key must be dated after the removals it answers.
+func (t *teamCtx) afterRemovals(st *team.State, now time.Time) time.Time {
+	now = now.UTC().Truncate(time.Second)
+	for _, pg := range st.ActiveGroups() {
+		gs, err := t.group(pg.Group)
+		if err != nil || gs == nil {
+			continue
+		}
+		for _, c := range gs.Creds {
+			if !c.Active && !c.RemovedTime.Before(now) && c.RemovedTime.Sub(now) < 10*time.Minute {
+				now = c.RemovedTime.Add(time.Second)
+			}
+		}
+	}
+	return now
 }
 
 // commit sends links and grants, and pins the new state.
@@ -298,8 +348,12 @@ func (t *teamCtx) localKeys(st *team.State) map[string]string {
 	return out
 }
 
-// recipient returns the key a member's or machine's grant is sealed to.
+// recipient returns the key a member's, machine's or group's grant is
+// sealed to.
 func (t *teamCtx) recipient(st *team.State, holder string) (team.Recipient, error) {
+	if id, ok := strings.CutPrefix(holder, team.GroupHolderPrefix); ok {
+		return t.groupRecipient(st, id)
+	}
 	if m, ok := st.Machine(holder); ok {
 		pub, err := chain.ParseKey32(m.EncPub)
 		return team.Recipient{ID: holder, EncPub: pub}, err
@@ -411,6 +465,9 @@ type TeamView struct {
 	Status *wire.ProjectStatus
 	// Logins maps holders (users and machines) to display names.
 	Names map[string]string
+	// GroupExposed lists, by environment, machines removed from groups
+	// that read it, who may hold its current key.
+	GroupExposed map[string][]team.Exposure
 }
 
 // Team verifies a project and returns it with its delivery status.
@@ -435,7 +492,14 @@ func (a *Account) Team(ctx context.Context, project string) (*TeamView, error) {
 		for id, m := range st.Machines {
 			names[id] = m.Name
 		}
-		out = &TeamView{State: st, Status: status, Names: names}
+		out = &TeamView{State: st, Status: status, Names: names, GroupExposed: map[string][]team.Exposure{}}
+		for _, pg := range st.ActiveGroups() {
+			if gs, err := t.group(pg.Group); err == nil && gs != nil {
+				for env, ex := range team.GroupExposures(st, gs) {
+					out.GroupExposed[env] = append(out.GroupExposed[env], ex...)
+				}
+			}
+		}
 		return nil
 	})
 	return out, err
@@ -730,33 +794,11 @@ func (a *Account) PublishEnv(ctx context.Context, project, env, reason string) (
 			return err
 		}
 		out = &PublishResult{PublicKey: pub}
-		var grants []*envelope.Envelope
-		for _, m := range next.ActiveMembers() {
-			if m.User == a.State.User || !m.Has(env) {
-				continue
-			}
-			g, _, err := t.grant(next, m.User, []string{env})
-			if err != nil {
-				return err
-			}
-			if g != nil {
-				grants = append(grants, g)
-				out.Sent = append(out.Sent, m.Login)
-			}
+		grants, sent, err := t.grantsOf(next, env)
+		if err != nil {
+			return err
 		}
-		for _, m := range next.ActiveMachines() {
-			if !m.Has(env) {
-				continue
-			}
-			g, missing, err := t.grant(next, m.ID, m.Envs)
-			if err != nil {
-				return err
-			}
-			if g != nil && len(missing) == 0 {
-				grants = append(grants, g)
-				out.Sent = append(out.Sent, m.Name)
-			}
-		}
+		out.Sent = sent
 		if err := t.commit(next, []*envelope.Envelope{e}, grants); err != nil {
 			return err
 		}
@@ -764,6 +806,49 @@ func (a *Account) PublishEnv(ctx context.Context, project, env, reason string) (
 		return t.ackOwn(next)
 	})
 	return out, err
+}
+
+// grantsOf seals the current key of env to everyone in st who reads it
+// but this account, and names them.
+func (t *teamCtx) grantsOf(st *team.State, env string) ([]*envelope.Envelope, []string, error) {
+	var grants []*envelope.Envelope
+	var sent []string
+	for _, m := range st.ActiveMembers() {
+		if m.User == t.a.State.User || !m.Has(env) {
+			continue
+		}
+		g, _, err := t.grant(st, m.User, []string{env})
+		if err != nil {
+			return nil, nil, err
+		}
+		if g != nil {
+			grants, sent = append(grants, g), append(sent, m.Login)
+		}
+	}
+	for _, m := range st.ActiveMachines() {
+		if !m.Has(env) {
+			continue
+		}
+		g, missing, err := t.grant(st, m.ID, m.Envs)
+		if err != nil {
+			return nil, nil, err
+		}
+		if g != nil && len(missing) == 0 {
+			grants, sent = append(grants, g), append(sent, m.Name)
+		}
+	}
+	for _, pg := range st.ActiveGroups() {
+		if !pg.Has(env) {
+			continue
+		}
+		// A group's machines need the new key at once; a group this device
+		// cannot read is left to its admins' next sync.
+		g, missing, err := t.grant(st, team.GroupHolder(pg.Group), pg.Envs)
+		if err == nil && g != nil && len(missing) == 0 {
+			grants, sent = append(grants, g), append(sent, "group "+pg.Group)
+		}
+	}
+	return grants, sent, nil
 }
 
 // SharedRole reports whether project is shared and whether this account is
@@ -829,6 +914,11 @@ type TeamSyncResult struct {
 	// Problems lists projects that could not be synced, such as a chain
 	// that does not verify.
 	Problems []string
+	// GroupTodos lists machine groups with machines waiting to join or web
+	// changes waiting to be signed; GroupRotations those whose key a
+	// removed machine still holds.
+	GroupTodos     []GroupTodo
+	GroupRotations []string
 }
 
 // TeamSync imports keys waiting for this account and, as an admin, sends
@@ -839,6 +929,7 @@ func (a *Account) TeamSync(ctx context.Context, opts TeamSyncOptions) (*TeamSync
 		if err := t.importGrants(res, opts); err != nil {
 			return err
 		}
+		t.fulfilGroups(res)
 		err := t.fulfil(res)
 		res.Elsewhere = t.elsewhere
 		return err
@@ -929,6 +1020,13 @@ func describeLink(st *team.State, l team.Link) string {
 		if m := st.Machines[b.ID]; m != nil {
 			return "removed the machine " + m.Name
 		}
+	case team.TypeGroupSet:
+		var g team.GroupSetBody
+		_ = json.Unmarshal(l.Body, &g)
+		if len(g.Envs) == 0 {
+			return "took away the machine group " + g.Group + "'s access"
+		}
+		return "let the machine group " + g.Group + " read " + strings.Join(g.Envs, ", ")
 	}
 	return l.Type
 }
@@ -1053,9 +1151,9 @@ func (t *teamCtx) fulfil(res *TeamSyncResult) error {
 		if err := t.ackMissingOwn(st, p.ID); err != nil {
 			return err
 		}
-		for _, e := range st.Rotations() {
-			if st.HasAccess(t.a.State.User, e.Name) {
-				res.Rotations[p.ID] = append(res.Rotations[p.ID], e.Name)
+		for _, n := range t.rotations(st) {
+			if st.HasAccess(t.a.State.User, n) {
+				res.Rotations[p.ID] = append(res.Rotations[p.ID], n)
 			}
 		}
 		if !st.Admin(t.a.State.User) {
@@ -1097,10 +1195,21 @@ func (t *teamCtx) fulfilProject(st *team.State, res *TeamSyncResult) error {
 			want, name = m.Envs, m.Name
 		} else if mem, ok := st.Members[h.ID]; ok {
 			name = mem.Login
+		} else if id, ok := strings.CutPrefix(h.ID, team.GroupHolderPrefix); ok {
+			pg, ok := st.Group(id)
+			if !ok {
+				continue
+			}
+			// So does a group's.
+			want, name, isMachine = pg.Envs, "group "+id, true
 		}
 		sort.Strings(want)
 		g, missing, err := t.grant(st, h.ID, want)
 		if err != nil {
+			if strings.HasPrefix(h.ID, team.GroupHolderPrefix) {
+				res.Unsent = append(res.Unsent, fmt.Sprintf("%s: %s: %v", name, st.Project, err))
+				continue
+			}
 			return err
 		}
 		if len(missing) > 0 {

@@ -128,6 +128,12 @@ func (c *TeamShowCmd) Run(ctx *cliCtx) error {
 			fmt.Printf("  %-20s reads %-20s %s; %s\n", safetext.Clean(m.Name), strings.Join(m.Envs, ", "), keyStates(keys[m.ID]), from)
 		}
 	}
+	if gs := st.ActiveGroups(); len(gs) > 0 {
+		fmt.Println("Machine groups:")
+		for _, g := range gs {
+			fmt.Printf("  %-20s reads %-20s %s\n", g.Group, strings.Join(g.Envs, ", "), keyStates(keys[team.GroupHolder(g.Group)]))
+		}
+	}
 	for _, e := range st.Rotations() {
 		var who []string
 		for _, x := range e.Exposed {
@@ -135,7 +141,22 @@ func (c *TeamShowCmd) Run(ctx *cliCtx) error {
 		}
 		fmt.Printf("! %s needs a new key: %s may still hold it. Run in the repository: esec vault env rotate %s\n", e.Name, strings.Join(who, ", "), e.Name)
 	}
+	for _, n := range team.SortEnvs(mapKeys(v.GroupExposed)) {
+		var who []string
+		for _, x := range v.GroupExposed[n] {
+			who = append(who, safetext.Clean(x.Name)+" ("+x.Reason+")")
+		}
+		fmt.Printf("! %s needs a new key: %s may still hold it. Run in the repository: esec vault env rotate %s\n", n, strings.Join(who, ", "), n)
+	}
 	return nil
+}
+
+func mapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func keyStates(m map[string]string) string {
@@ -420,7 +441,13 @@ func printTeamSync(res *account.TeamSyncResult) {
 			fmt.Printf("  ! %s: %s need(s) a new key, since someone who could read it left; an admin replaces it\n", p, strings.Join(res.Rotations[p], ", "))
 		}
 	}
-	if len(res.Imported)+len(res.Sent)+len(res.Conflicts)+len(res.Dropped)+len(res.Unsent)+len(res.Rotations)+len(res.Invites)+len(res.Problems) == 0 {
+	for _, g := range res.GroupTodos {
+		fmt.Printf("  ! %s: %s; approve on this device with: esec vault group approve %s\n", g.Group, groupTodoText(g), g.Group)
+	}
+	for _, g := range res.GroupRotations {
+		fmt.Printf("  ! %s: a removed machine still holds the group key: esec vault group rotate %s\n", g, g)
+	}
+	if len(res.Imported)+len(res.Sent)+len(res.Conflicts)+len(res.Dropped)+len(res.Unsent)+len(res.Rotations)+len(res.Invites)+len(res.Problems)+len(res.GroupTodos)+len(res.GroupRotations) == 0 {
 		fmt.Println("✓ Shared projects are up to date.")
 	}
 }

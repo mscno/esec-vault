@@ -76,14 +76,15 @@ func TestMachines(t *testing.T) { //nolint:gocyclo,maintidx // one sequential st
 	if err != nil {
 		t.Fatal(err)
 	}
-	if keys.Keys["dev"] != devPriv || keys.Name != "ci" {
-		t.Fatalf("machine keys: %+v", keys.Keys)
+	if keys.Projects[project]["dev"] != devPriv || keys.Name != "ci" {
+		t.Fatalf("machine keys: %+v", keys.Projects)
 	}
-	env, err := keys.Environ(nil, nil)
-	if err != nil || len(env) != 1 || env[0] != "ESEC_PRIVATE_KEY_DEV="+devPriv {
+	devPub, _ := team.PublicHex(devPriv)
+	env, err := keys.Environ(nil, "", nil)
+	if err != nil || len(env) != 2 || env[0] != "ESEC_PRIVATE_KEY_DEV="+devPriv || env[1] != team.PubKeyEntry(devPub)+"="+devPriv {
 		t.Fatalf("environ: %v %v", env, err)
 	}
-	if _, err := keys.Environ(nil, []string{"prod"}); err == nil {
+	if _, err := keys.Environ(nil, "", []string{"prod"}); err == nil {
 		t.Fatal("a machine was given an environment it cannot read")
 	}
 
@@ -210,7 +211,7 @@ func TestMachines(t *testing.T) { //nolint:gocyclo,maintidx // one sequential st
 		t.Fatalf("publish: %+v", res)
 	}
 	keys, err = machine.Fetch(ctx, deploy, tok)
-	if err != nil || keys.Keys["dev"] != priv {
+	if err != nil || keys.Projects[project]["dev"] != priv {
 		t.Fatalf("machine after rotation: %v", err)
 	}
 	v, err = a.Team(ctx, project)

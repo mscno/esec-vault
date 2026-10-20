@@ -19,6 +19,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,11 +35,16 @@ const KeyEnv = "ESEC_VAULT_MACHINE_KEY"
 
 // Keys are a machine's environment keys.
 type Keys struct {
+	// Project is set for a project machine, Group for a group's machine or
+	// token.
 	Project string
+	Group   string
 	Machine string
 	Name    string
-	// Keys maps environment names to hex private keys.
-	Keys map[string]string
+	// Projects maps project ids to environment names to hex private keys.
+	Projects map[string]map[string]string
+	// Problems lists projects of a group whose keys did not verify.
+	Problems []string
 }
 
 // Load reads the machine key from KeyEnv, or from the file it names when it
@@ -121,7 +128,7 @@ func Verify(key *team.MachineKey, resp *wire.MachineKeys) (*Keys, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the machine's keys do not verify: %w", err)
 	}
-	return &Keys{Project: key.Project, Machine: key.ID, Name: m.Name, Keys: keys}, nil
+	return &Keys{Project: key.Project, Machine: key.ID, Name: m.Name, Projects: map[string]map[string]string{key.Project: keys}}, nil
 }
 
 // GitHubToken returns a GitHub Actions OIDC token for audience, or "" when
@@ -166,38 +173,78 @@ func GitHubToken(ctx context.Context, audience string) (string, error) {
 	return out.Value, nil
 }
 
-// Environ returns env with the keys added as ESEC_PRIVATE_KEY_<ENV>
-// variables, limited to only when it is not empty.
-func (k *Keys) Environ(env []string, only []string) ([]string, error) {
+// Environ returns env with the keys added: every key as
+// ESEC_PRIVATE_KEY_<PUBLIC KEY>, which esec finds by a file's public key,
+// and the keys of one project also as ESEC_PRIVATE_KEY_<ENV>. That project
+// is project, or the only one; only limits it to some environments.
+func (k *Keys) Environ(env []string, project string, only []string) ([]string, error) {
+	sel, err := k.Select(project)
+	if err != nil && (len(only) > 0 || project != "") {
+		return nil, err
+	}
 	out := append([]string(nil), env...)
-	for _, n := range only {
-		if _, ok := k.Keys[n]; !ok {
-			return nil, fmt.Errorf("this machine cannot read %s (it reads %s)", n, strings.Join(k.Names(), ", "))
+	if sel != "" {
+		keys := k.Projects[sel]
+		for _, n := range only {
+			if _, ok := keys[n]; !ok {
+				return nil, fmt.Errorf("this machine cannot read %s of %s (it reads %s)", n, sel, strings.Join(k.Names(sel), ", "))
+			}
+		}
+		for _, n := range k.Names(sel) {
+			if len(only) == 0 || slices.Contains(only, n) {
+				out = append(out, team.EnvKey(n)+"="+keys[n])
+			}
 		}
 	}
-	for _, n := range k.Names() {
-		if len(only) > 0 && !contains(only, n) {
-			continue
+	for _, p := range k.ProjectIDs() {
+		for _, n := range k.Names(p) {
+			if p == sel && len(only) > 0 && !slices.Contains(only, n) {
+				continue
+			}
+			pub, err := team.PublicHex(k.Projects[p][n])
+			if err != nil {
+				continue
+			}
+			out = append(out, team.PubKeyEntry(pub)+"="+k.Projects[p][n])
 		}
-		out = append(out, team.EnvKey(n)+"="+k.Keys[n])
 	}
 	return out, nil
 }
 
-// Names lists the environments, sorted.
-func (k *Keys) Names() []string {
-	out := make([]string, 0, len(k.Keys))
-	for n := range k.Keys {
+// Select returns project if the machine reads it, the only project when
+// project is "", or an error.
+func (k *Keys) Select(project string) (string, error) {
+	if project != "" {
+		if _, ok := k.Projects[project]; !ok {
+			return "", fmt.Errorf("this machine reads nothing of %s (it reads %s)", project, strings.Join(k.ProjectIDs(), ", "))
+		}
+		return project, nil
+	}
+	ids := k.ProjectIDs()
+	switch len(ids) {
+	case 0:
+		return "", errors.New("this machine reads no project yet")
+	case 1:
+		return ids[0], nil
+	}
+	return "", fmt.Errorf("this machine reads several projects (%s); name one with --project", strings.Join(ids, ", "))
+}
+
+// ProjectIDs lists the projects, sorted.
+func (k *Keys) ProjectIDs() []string {
+	out := make([]string, 0, len(k.Projects))
+	for p := range k.Projects {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Names lists the environments of a project, sorted.
+func (k *Keys) Names(project string) []string {
+	out := make([]string, 0, len(k.Projects[project]))
+	for n := range k.Projects[project] {
 		out = append(out, n)
 	}
 	return team.SortEnvs(out)
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }

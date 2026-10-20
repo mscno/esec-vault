@@ -36,6 +36,8 @@ thead th { font-weight: 500; color: var(--muted); font-size: 0.8125rem; text-tra
 .scroll { overflow-x: auto; }
 form { margin: 0.5rem 0; }
 form.inline button { margin-right: 0.5rem; }
+label.check { display: inline-flex; align-items: center; gap: 0.3rem; margin: 0 0.75rem 0.25rem 0; white-space: nowrap; }
+label.check input { padding: 0; }
 .actions { white-space: nowrap; }
 .actions form { margin: 0 0 0.25rem; }
 td button { font-size: 0.875rem; padding: 0.2rem 0.6rem; }

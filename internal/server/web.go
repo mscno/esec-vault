@@ -156,6 +156,12 @@ func safeNext(next string) string {
 	if id, ok := strings.CutPrefix(u.Path, "/teams/"); ok && team.ValidProject(id) == nil {
 		return u.Path
 	}
+	if u.Path == "/groups" {
+		return u.Path
+	}
+	if id, ok := strings.CutPrefix(u.Path, "/groups/"); ok && team.ValidGroup(id) == nil {
+		return u.Path
+	}
 	return "/account"
 }
 

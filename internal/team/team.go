@@ -47,6 +47,7 @@ const (
 	TypeEnvSet        = "env_set"
 	TypeMachineAdd    = "machine_add"
 	TypeMachineRemove = "machine_remove"
+	TypeGroupSet      = "group_set"
 )
 
 // How an admin checked that a new member's account is theirs.
@@ -161,6 +162,32 @@ type MachineRemoveBody struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// GroupSetBody grants a machine group the listed environments, or with
+// none, takes them away. Root is the hash of the group chain's first link.
+type GroupSetBody struct {
+	Group string   `json:"group"`
+	Root  string   `json:"root"`
+	Envs  []string `json:"envs"`
+}
+
+// ProjectGroupState is a machine group as the verified project chain sees
+// it.
+type ProjectGroupState struct {
+	Group      string    `json:"group"`
+	Root       string    `json:"root"`
+	Envs       []string  `json:"envs"`
+	Active     bool      `json:"active"`
+	AddedBy    string    `json:"added_by"`
+	AddedSeq   uint64    `json:"added_seq"`
+	Since      time.Time `json:"since"`
+	RemovedSeq uint64    `json:"removed_seq,omitempty"`
+	// EnvSince is when the group was granted each environment it reads.
+	EnvSince map[string]time.Time `json:"env_since"`
+}
+
+// Has reports whether the group may read env.
+func (g *ProjectGroupState) Has(env string) bool { return g.Active && slices.Contains(g.Envs, env) }
+
 // MemberState is a member as the verified chain sees them.
 type MemberState struct {
 	Person
@@ -228,7 +255,9 @@ type State struct {
 	Members  map[string]*MemberState
 	Envs     map[string]*EnvState
 	Machines map[string]*MachineState
-	Links    []Link
+	// Groups maps group ids to the machine groups granted environments.
+	Groups map[string]*ProjectGroupState
+	Links  []Link
 	// signerSeqs is each signer's latest user chain position.
 	signerSeqs map[string]uint64
 }
@@ -340,7 +369,7 @@ func ValidateMachine(m Machine) error {
 
 // New returns the empty state of a project.
 func New(project string) *State {
-	return &State{Project: project, Members: map[string]*MemberState{}, Envs: map[string]*EnvState{}, Machines: map[string]*MachineState{}, signerSeqs: map[string]uint64{}}
+	return &State{Project: project, Members: map[string]*MemberState{}, Envs: map[string]*EnvState{}, Machines: map[string]*MachineState{}, Groups: map[string]*ProjectGroupState{}, signerSeqs: map[string]uint64{}}
 }
 
 // Verify checks a complete project chain from its first link.
@@ -460,8 +489,34 @@ func (s *State) Access(holder string) []string {
 	return out
 }
 
-// HasAccess reports whether an active member or machine may read env.
+// ActiveGroups returns the groups granted environments, sorted by id.
+func (s *State) ActiveGroups() []*ProjectGroupState {
+	var out []*ProjectGroupState
+	for _, g := range s.Groups {
+		if g.Active {
+			out = append(out, g)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Group < out[j].Group })
+	return out
+}
+
+// Group returns a group granted environments.
+func (s *State) Group(id string) (*ProjectGroupState, bool) {
+	g, ok := s.Groups[id]
+	if !ok || !g.Active {
+		return nil, false
+	}
+	return g, true
+}
+
+// HasAccess reports whether an active member, machine or group (by its
+// holder id, GroupHolder) may read env.
 func (s *State) HasAccess(holder, env string) bool {
+	if id, ok := strings.CutPrefix(holder, GroupHolderPrefix); ok {
+		g, ok := s.Groups[id]
+		return ok && g.Has(env)
+	}
 	if m, ok := s.Members[holder]; ok {
 		return m.Has(env)
 	}
@@ -583,8 +638,8 @@ func (s *State) step(e *envelope.Envelope, chains Chains) error {
 	if err := s.apply(*l); err != nil {
 		return err
 	}
-	if len(s.Members) > MaxMembers || len(s.Machines) > MaxMachines || len(s.Envs) > MaxEnvs {
-		return fmt.Errorf("the project has too many members, machines or environments")
+	if len(s.Members) > MaxMembers || len(s.Machines) > MaxMachines || len(s.Envs) > MaxEnvs || len(s.Groups) > MaxProjectGroups {
+		return fmt.Errorf("the project has too many members, machines, groups or environments")
 	}
 	s.signerSeqs[l.Signer] = l.SignerSeq
 	s.Seq = l.Seq
@@ -646,6 +701,8 @@ func (s *State) apply(l Link) error {
 		return s.applyMachineAdd(l)
 	case TypeMachineRemove:
 		return s.applyMachineRemove(l)
+	case TypeGroupSet:
+		return s.applyGroupSet(l)
 	}
 	return fmt.Errorf("unknown link type %q", l.Type)
 }
@@ -804,6 +861,56 @@ func (s *State) applyMachineRemove(l Link) error {
 	return nil
 }
 
+func (s *State) applyGroupSet(l Link) error {
+	var b GroupSetBody
+	if err := decodeBody(l, &b); err != nil {
+		return err
+	}
+	if err := ValidGroup(b.Group); err != nil {
+		return err
+	}
+	if !rootPattern.MatchString(b.Root) {
+		return fmt.Errorf("invalid group root")
+	}
+	envs, err := s.checkAccess(false, b.Envs)
+	if err != nil {
+		return err
+	}
+	old, ok := s.Group(b.Group)
+	if !ok {
+		if len(envs) == 0 {
+			return fmt.Errorf("the group %s reads nothing yet", b.Group)
+		}
+		since := map[string]time.Time{}
+		for _, n := range envs {
+			since[n] = l.CTime
+		}
+		s.Groups[b.Group] = &ProjectGroupState{Group: b.Group, Root: b.Root, Envs: envs, Active: true, AddedBy: l.Signer, AddedSeq: l.Seq, Since: l.CTime, EnvSince: since}
+		return nil
+	}
+	if old.Root != b.Root {
+		return fmt.Errorf("the group %s was recreated; take its access away first", b.Group)
+	}
+	for _, n := range old.Envs {
+		if !slices.Contains(envs, n) {
+			s.expose(n, GroupHolder(b.Group), b.Group, l, "group access to "+n+" removed")
+		}
+	}
+	if len(envs) == 0 {
+		old.Active, old.RemovedSeq = false, l.Seq
+		return nil
+	}
+	since := map[string]time.Time{}
+	for _, n := range envs {
+		since[n] = l.CTime
+		if t, ok := old.EnvSince[n]; ok && slices.Contains(old.Envs, n) {
+			since[n] = t
+		}
+	}
+	old.Envs, old.EnvSince = envs, since
+	return nil
+}
+
 // setEnv adds an environment or replaces its key. A replaced key is
 // retired, and the exposures of the old key no longer matter.
 func (s *State) setEnv(e Env, l Link, allowReplace bool) error {
@@ -896,6 +1003,16 @@ func (s *State) clone() *State {
 		c.Retired = append([]string(nil), v.Retired...)
 		c.Exposed = append([]Exposure(nil), v.Exposed...)
 		n.Envs[k] = &c
+	}
+	n.Groups = make(map[string]*ProjectGroupState, len(s.Groups))
+	for k, v := range s.Groups {
+		c := *v
+		c.Envs = append([]string(nil), v.Envs...)
+		c.EnvSince = make(map[string]time.Time, len(v.EnvSince))
+		for e, t := range v.EnvSince {
+			c.EnvSince[e] = t
+		}
+		n.Groups[k] = &c
 	}
 	n.Machines = make(map[string]*MachineState, len(s.Machines))
 	for k, v := range s.Machines {

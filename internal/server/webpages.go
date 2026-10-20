@@ -171,7 +171,7 @@ func (s *Server) webAccount(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	teamNotices, err := s.teamNotices(ctx, ws.user.ID)
+	teamNotices, err := s.sharedNotices(ctx, ws.user.ID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -576,6 +576,12 @@ func (s *Server) webAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data["Teams"] = teams
+	groups, err := s.groupSummaries(ctx, "")
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	data["Groups"] = groups
 	s.render(w, http.StatusOK, "admin.html", data)
 }
 

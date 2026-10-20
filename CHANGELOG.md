@@ -1,3 +1,47 @@
+# v0.8.0
+
+Machine groups: run a fleet of machines that read the same environments.
+
+- **Machine groups.** `esec vault group create acme/production` and
+  `group grant acme/production --project acme/store --env prod` give a set
+  of machines the environments of one or more shared projects. Each machine
+  has its own key; the projects' keys are sealed once, to the group's key,
+  so a new machine reads them at once, without an admin's device online.
+  Both sides agree to each project: the project's admins grant it, the
+  group's admins list it, and machines accept keys only from projects their
+  group's signed chain lists.
+- **Three ways in.** An enrollment token (`group token NAME --expires 90d`,
+  optionally bound to GitHub Actions) works directly as a CI job's
+  `ESEC_VAULT_MACHINE_KEY`, and enrolls machines on its own:
+  `ESEC_VAULT_ENROLL_TOKEN=… esec-vault machine join`. Or a machine asks to
+  join (`machine join GROUP --server URL`), shows six words, and an admin
+  lets it in with `group approve` after checking them; `--fingerprint`
+  pins the group. Or `group add-machine` makes a key to copy over.
+- `esec-vault machine run` and `machine env` work with group keys and with a
+  joined machine's key file (`/etc/esec-vault/machine.key` as root on Linux).
+  Keys are set by public key, so files of any project the group reads
+  decrypt; the current directory's project also gets them by name.
+  `machine whoami` shows the machine, its group and what it reads.
+- `group remove` stops a machine or token at once, gives the group a new key
+  sealed to everyone left, re-seals the projects you administer, and lists
+  the environments to rotate; `--destroyed` (deleted with its disk) needs no
+  rotation. `group rotate`, `group admin LOGIN [--remove]`, `group show` and
+  `group` round it off. Admins' background services re-send missing keys,
+  rotate a group key someone who left still holds, and notify when machines
+  wait to join.
+- **Web.** A **Machines** page lists groups; each group's page shows its
+  machines (last use and address), tokens, a project × environment table,
+  history and log. Ticking environments, removing a machine or turning a
+  join request away works there; removal blocks the machine on the server at
+  once, and an admin's device signs the change (`group approve`). Project
+  pages list the groups that read them; the overview and admin pages show
+  groups and what waits.
+- Alerts `group.machine_added`, `group.machine_removed` and
+  `group.admin_added` go to the group's admins.
+- Fix: a machine's per-machine rate limit (project machines too) is
+  counted only after its request's signature checks, so someone who knows
+  a machine's id can no longer use it up.
+
 # v0.7.0
 
 Shared projects and machine identities.

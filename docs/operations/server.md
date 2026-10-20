@@ -13,6 +13,8 @@ response for `esec-vault-server`. For the design, see
 | Master-wrapped identity | No. Needs your recovery phrase. |
 | SSH-agent unlock slots | No. Needs a signature from your SSH key. |
 | Device chain (devices, key versions) | Yes, public metadata. Signed; clients verify it. |
+| Project and machine group chains (members, machines, who reads what) | Yes, metadata. Signed by their admins; clients and machines verify them. |
+| Grants and group key grants (environment and group keys) | No. Sealed to each recipient's key. |
 | Project index (project ids, environment names, public keys) | Yes, if devices publish it (`esec vault index`). |
 | Sessions, audit log, IP addresses, GitHub ids and logins | Yes. |
 
@@ -238,6 +240,8 @@ everyone who checks them.
 | GitHub account taken over | The attacker can create pending devices but cannot decrypt anything without approval, the recovery phrase, or an SSH-agent slot. Secure the GitHub account, then suspend any unknown devices. |
 | Someone leaves a team | An admin runs `esec vault team remove LOGIN`, then `esec vault env rotate ENV` in the repository for each environment it lists, and changes the secret values they may have seen. The project page shows what is left. |
 | Machine key leaked | `esec vault machine remove NAME`: the server stops handing it keys at once. Rotate the environments it could read. A machine bound to GitHub Actions is useless outside its repository and refs even before that. |
+| Group machine or enrollment token leaked | Remove it on the group's web page (it is blocked at once), or `esec vault group remove GROUP NAME`. The group gets a new key; rotate the environments `group show` lists. Machines it enrolled are listed with it on the group page: remove those you do not recognise. |
+| Unknown machine asks to join a group | Turn it away on the group's page, or answer `no` in `esec vault group approve`. If the words a machine shows do not match the ones your device shows, do not let it in, and delete the machine's key file: the server may be lying to it. |
 
 ## Close the server to new devices during an attack
 
@@ -305,8 +309,10 @@ Each post is JSON:
 
 `type` is `device.registered`, `device.added`, `device.suspended`,
 `device.revoked`, `web.new_browser`, `project.member_added`,
-`project.member_removed`, `project.machine_added` or
-`project.machine_removed`; project alerts also carry `project`. `text` is the whole message, so a
+`project.member_removed`, `project.machine_added`,
+`project.machine_removed`, `group.machine_added`, `group.machine_removed`
+or `group.admin_added`; project alerts also carry `project`, and group
+alerts `group`. `text` is the whole message, so a
 Slack incoming webhook shows it as is. The headers are
 `X-Esec-Vault-Event` (the type), `X-Esec-Vault-Delivery` (the id),
 `X-Esec-Vault-Timestamp` (Unix seconds) and, with a secret,
@@ -355,6 +361,31 @@ repository, its id, the ref and the deployment environment the machine
 allows. Requests are limited to 600 an hour per machine and per address.
 Each use is in the project's log on its page, with the repository, ref and
 run of an OIDC job; refused tokens are logged too.
+
+## Machine groups
+
+Machine groups need nothing to set up either. A group's chain records its
+admins, machines, enrollment tokens, its key and the projects it takes keys
+from; the server checks it with the same rules machines use. Machines use
+four endpoints without a session, each signed by the machine's or token's
+own key:
+
+| Endpoint | What | Limit |
+|---|---|---|
+| `POST /v1/fleet/keys` | a machine's group key and its projects' keys, all sealed | 600 an hour per machine; 1200 an hour per address |
+| `POST /v1/fleet/enroll` | a token adds a machine (signed link and key grant) | 300 an hour per token and per address |
+| `POST /v1/fleet/join` | a machine asks to join | 30 an hour per address; 100 waiting per group and 10 per address, each for 24 hours |
+| `POST /v1/fleet/join/status` | whether it was let in | 1200 an hour per address |
+
+A token or machine bound to GitHub Actions is checked like a project
+machine (above). The server refuses removed, expired and blocked machines
+and tokens; removing one on the web page blocks it at once, before an
+admin's device signs the removal. Every fetch, enrollment, refusal and
+join request is in the group's log on its page. A group's page, chain and
+log are shown to its admins and to members of the projects it takes keys
+from; addresses, join requests and the log only to its admins and server
+admins. Machines' join requests,
+web changes and the log are deleted after 7 days, 90 days and a year.
 
 ## Monitor
 

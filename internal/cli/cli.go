@@ -61,6 +61,7 @@ type cli struct {
 	Index       IndexCmd       `cmd:"" help:"Publish project and environment names (no secrets) for the web UI: on or off."`
 	Team        TeamCmd        `cmd:"" help:"Share projects with your team through the vault server."`
 	Machine     MachineCmd     `cmd:"" help:"Give CI jobs and apps their own keys to a shared project."`
+	Group       GroupCmd       `cmd:"" help:"Machine groups: production or staging machines that read the same environments."`
 
 	Version kong.VersionFlag `help:"Show version"`
 	Debug   bool             `help:"Enable debug logging" env:"ESEC_DEBUG"`
@@ -130,7 +131,7 @@ func Execute(version string) {
 // isMutation reports whether a command changes keyrings, so it runs under the
 // keyring lock and is followed by a snapshot and a server push.
 func isMutation(command string) bool {
-	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "sync", "restore", "team sync"} {
+	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "sync", "restore", "team sync", "group sync"} {
 		if strings.HasPrefix(command, prefix) {
 			return true
 		}

@@ -289,6 +289,76 @@ func (c *Client) MachineKeys(ctx context.Context, req wire.MachineKeysRequest) (
 	return &out, c.do(ctx, http.MethodPost, "/v1/machines/keys", unsigned, req, &out)
 }
 
+// Groups lists the machine groups this account administers or whose
+// machines read its projects.
+func (c *Client) Groups(ctx context.Context) ([]wire.GroupSummary, error) {
+	var out wire.Groups
+	err := c.do(ctx, http.MethodGet, "/v1/groups", authenticated, nil, &out)
+	return out.Groups, err
+}
+
+func groupPath(group string) string {
+	org, name, _ := strings.Cut(group, "/")
+	return "/v1/groups/" + url.PathEscape(org) + "/" + url.PathEscape(name)
+}
+
+// GroupChain returns a group chain with its signers' user chains.
+func (c *Client) GroupChain(ctx context.Context, group string) (*wire.GroupChain, error) {
+	var out wire.GroupChain
+	return &out, c.do(ctx, http.MethodGet, groupPath(group)+"/chain", authenticated, nil, &out)
+}
+
+// GroupStatus returns the server's view of a group (admins only).
+func (c *Client) GroupStatus(ctx context.Context, group string) (*wire.GroupStatus, error) {
+	var out wire.GroupStatus
+	return &out, c.do(ctx, http.MethodGet, groupPath(group)+"/status", authenticated, nil, &out)
+}
+
+// GroupKeyGrants returns the grants of the group key to this account.
+func (c *Client) GroupKeyGrants(ctx context.Context, group string) ([]*envelope.Envelope, error) {
+	var out wire.GroupKeyGrants
+	err := c.do(ctx, http.MethodGet, groupPath(group)+"/key", authenticated, nil, &out)
+	return out.Grants, err
+}
+
+// GroupCommit appends links and stores key grants.
+func (c *Client) GroupCommit(ctx context.Context, group string, cm *wire.GroupCommit) (*wire.GroupCommitResult, error) {
+	var out wire.GroupCommitResult
+	return &out, c.do(ctx, http.MethodPost, groupPath(group)+"/commit", authenticated, cm, &out)
+}
+
+// RejectJoin turns down a machine's join request.
+func (c *Client) RejectJoin(ctx context.Context, group, id string) error {
+	return c.do(ctx, http.MethodPost, groupPath(group)+"/joins/"+url.PathEscape(id)+"/reject", authenticated, struct{}{}, nil)
+}
+
+// CloseProposal marks a web change applied or dismissed.
+func (c *Client) CloseProposal(ctx context.Context, group string, id int64, applied bool) error {
+	return c.do(ctx, http.MethodPost, groupPath(group)+"/changes/"+strconv.FormatInt(id, 10)+"/close", authenticated, wire.ProposalClose{Applied: applied}, nil)
+}
+
+// FleetJoin asks to join a group, or (status) whether this machine was let
+// in. It is signed by the machine key in the body.
+func (c *Client) FleetJoin(ctx context.Context, req wire.GroupJoin, status bool) (*wire.GroupJoinResult, error) {
+	path := "/v1/fleet/join"
+	if status {
+		path += "/status"
+	}
+	var out wire.GroupJoinResult
+	return &out, c.do(ctx, http.MethodPost, path, unsigned, req, &out)
+}
+
+// FleetEnroll adds a machine with an enrollment token.
+func (c *Client) FleetEnroll(ctx context.Context, req wire.GroupEnroll) error {
+	return c.do(ctx, http.MethodPost, "/v1/fleet/enroll", unsigned, req, nil)
+}
+
+// FleetKeys fetches a machine's or token's sealed keys.
+func (c *Client) FleetKeys(ctx context.Context, req wire.GroupKeysRequest) (*wire.GroupKeys, error) {
+	var out wire.GroupKeys
+	return &out, c.do(ctx, http.MethodPost, "/v1/fleet/keys", unsigned, req, &out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, m mode, in, out any) error {
 	var body []byte
 	if in != nil {

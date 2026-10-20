@@ -31,6 +31,12 @@ func (s *Server) queueProjectAlert(ctx context.Context, tx queryer, before, afte
 	a.Project, a.IP, a.URL = after.Project, ip, s.cfg.BaseURL+"/teams/"+after.Project
 	a.Title = projectAlertTitle(pa.kind, pa.subject)
 	a.Text, a.Advice = pa.text, pa.advice
+	return s.queueAlertTo(ctx, tx, a, pa.recipients)
+}
+
+// queueAlertTo queues a to the webhook and by email to recipients (account
+// ids) and the operator's addresses.
+func (s *Server) queueAlertTo(ctx context.Context, tx queryer, a *alert, recipients []string) error {
 	if s.cfg.Alerts.Webhook() {
 		if err := s.insertAlert(ctx, tx, a, channelWebhook, ""); err != nil {
 			return err
@@ -39,8 +45,8 @@ func (s *Server) queueProjectAlert(ctx context.Context, tx queryer, before, afte
 	if !s.cfg.Alerts.Email() {
 		return nil
 	}
-	to := make([]string, 0, len(pa.recipients)+len(s.cfg.Alerts.EmailTo))
-	for _, u := range pa.recipients {
+	to := make([]string, 0, len(recipients)+len(s.cfg.Alerts.EmailTo))
+	for _, u := range recipients {
 		var addr string
 		err := tx.QueryRowContext(ctx, `SELECT alert_email FROM users WHERE id = ?`, u).Scan(&addr)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {

@@ -38,10 +38,6 @@ func (s *Server) apiMachineKeys(w http.ResponseWriter, r *http.Request) { //noli
 		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
 		return
 	}
-	if !s.limits.allow("machine:"+req.Machine, 600, time.Hour, now) {
-		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests for this machine; try again later")
-		return
-	}
 	if err := s.proofClock(req.Timestamp); err != nil {
 		s.fail(w, r, err)
 		return
@@ -71,6 +67,11 @@ func (s *Server) apiMachineKeys(w http.ResponseWriter, r *http.Request) { //noli
 	}
 	if !ed25519.Verify(pub, team.KeysMessage(req.Machine, req.Project, req.Timestamp, req.Nonce, tokenHash), req.Sig) {
 		unknown()
+		return
+	}
+	// Counted once signed: machine ids are shown on the project's page.
+	if !s.limits.allow("machine:"+req.Machine, 600, time.Hour, now) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests for this machine; try again later")
 		return
 	}
 	if err := s.recordNonce(ctx, req.Machine, req.Nonce, now); err != nil {

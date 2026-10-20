@@ -207,6 +207,12 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /admin", s.webAdmin)
 	m.HandleFunc("GET /admin/users/{id}", s.webAdminUser)
 	m.HandleFunc("GET /teams/{org}/{repo}", s.webTeam)
+	m.HandleFunc("GET /groups", s.webGroups)
+	m.HandleFunc("GET /groups/{org}/{name}", s.webGroup)
+	m.HandleFunc("POST /groups/{org}/{name}/access", s.webGroupAccess)
+	m.HandleFunc("POST /groups/{org}/{name}/remove", s.webGroupRemove)
+	m.HandleFunc("POST /groups/{org}/{name}/joins/{id}/reject", s.webGroupRejectJoin)
+	m.HandleFunc("POST /groups/{org}/{name}/changes/{id}/dismiss", s.webGroupDismiss)
 
 	// API: device authorization grant.
 	m.HandleFunc("POST /v1/auth/device", s.apiDeviceRegister)
@@ -245,6 +251,17 @@ func (s *Server) routes() {
 	m.Handle("GET /v1/grants", s.api(false, s.apiGrants))
 	m.Handle("POST /v1/grants/ack", s.api(false, s.apiGrantAck))
 	m.HandleFunc("POST /v1/machines/keys", s.apiMachineKeys)
+	m.Handle("GET /v1/groups", s.api(false, s.apiGroups))
+	m.Handle("GET /v1/groups/{org}/{name}/chain", s.api(false, s.apiGroupChain))
+	m.Handle("GET /v1/groups/{org}/{name}/status", s.api(false, s.apiGroupStatus))
+	m.Handle("GET /v1/groups/{org}/{name}/key", s.api(false, s.apiGroupKeyGrants))
+	m.Handle("POST /v1/groups/{org}/{name}/commit", s.api(false, s.apiGroupCommit))
+	m.Handle("POST /v1/groups/{org}/{name}/joins/{id}/reject", s.api(false, s.apiGroupRejectJoin))
+	m.Handle("POST /v1/groups/{org}/{name}/changes/{id}/close", s.api(false, s.apiGroupCloseProposal))
+	m.HandleFunc("POST /v1/fleet/join", s.apiFleetJoin)
+	m.HandleFunc("POST /v1/fleet/join/status", s.apiFleetJoinStatus)
+	m.HandleFunc("POST /v1/fleet/enroll", s.apiFleetEnroll)
+	m.HandleFunc("POST /v1/fleet/keys", s.apiFleetKeys)
 	s.mux = m
 }
 

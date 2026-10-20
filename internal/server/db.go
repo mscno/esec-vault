@@ -225,6 +225,99 @@ var schema = []string{
 		root TEXT NOT NULL,
 		signature TEXT NOT NULL,
 		created_at INTEGER NOT NULL)`,
+	// Machine groups; see groupapi.go. group_links is the signed chain; the
+	// other tables mirror its verified state, or hold what the server alone
+	// knows: key grants waiting, join requests, use, web changes to sign.
+	`CREATE TABLE IF NOT EXISTS machine_groups (
+		id TEXT PRIMARY KEY,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		seq INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS group_links (
+		group_id TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		hash TEXT NOT NULL,
+		envelope BLOB NOT NULL,
+		signer TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (group_id, seq))`,
+	`CREATE TABLE IF NOT EXISTS group_admins (
+		group_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		login TEXT NOT NULL,
+		active INTEGER NOT NULL,
+		PRIMARY KEY (group_id, user_id))`,
+	`CREATE INDEX IF NOT EXISTS group_admins_user ON group_admins(user_id)`,
+	`CREATE TABLE IF NOT EXISTS group_creds (
+		group_id TEXT NOT NULL,
+		id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		name TEXT NOT NULL,
+		sign_pub TEXT NOT NULL,
+		active INTEGER NOT NULL,
+		suspended_at INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		last_ip TEXT NOT NULL DEFAULT '',
+		uses INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (group_id, id))`,
+	`CREATE TABLE IF NOT EXISTS group_access (
+		group_id TEXT NOT NULL,
+		project TEXT NOT NULL,
+		root TEXT NOT NULL,
+		PRIMARY KEY (group_id, project))`,
+	`CREATE INDEX IF NOT EXISTS group_access_project ON group_access(project)`,
+	`CREATE TABLE IF NOT EXISTS project_groups (
+		project TEXT NOT NULL,
+		group_id TEXT NOT NULL,
+		root TEXT NOT NULL,
+		envs TEXT NOT NULL,
+		active INTEGER NOT NULL,
+		PRIMARY KEY (project, group_id))`,
+	`CREATE INDEX IF NOT EXISTS project_groups_group ON project_groups(group_id)`,
+	`CREATE TABLE IF NOT EXISTS group_key_grants (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		group_id TEXT NOT NULL,
+		to_id TEXT NOT NULL,
+		version INTEGER NOT NULL,
+		envelope BLOB NOT NULL,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS group_key_grants_to ON group_key_grants(group_id, to_id)`,
+	`CREATE TABLE IF NOT EXISTS group_joins (
+		id TEXT PRIMARY KEY,
+		group_id TEXT NOT NULL,
+		machine_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		enc_pub TEXT NOT NULL,
+		sign_pub TEXT NOT NULL,
+		ip TEXT NOT NULL,
+		status TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS group_joins_group ON group_joins(group_id, status)`,
+	`CREATE TABLE IF NOT EXISTS group_proposals (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		group_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		project TEXT NOT NULL DEFAULT '',
+		envs TEXT NOT NULL DEFAULT '[]',
+		cred_id TEXT NOT NULL DEFAULT '',
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'open',
+		closed_at INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE INDEX IF NOT EXISTS group_proposals_group ON group_proposals(group_id, status)`,
+	`CREATE TABLE IF NOT EXISTS group_audit (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		group_id TEXT NOT NULL,
+		actor TEXT NOT NULL DEFAULT '',
+		ip TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL,
+		detail TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS group_audit_group ON group_audit(group_id, id)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 
@@ -256,6 +349,9 @@ func addColumn(db *sql.DB, table, column, def string) error {
 // keeps transactions simple and is ample for a personal or small-team server.
 type DB struct {
 	sql *sql.DB
+	// groups caches verified group chains by their head, since machines
+	// and pages read them far more often than they change.
+	groups groupCache
 }
 
 // OpenDB opens (and migrates) the database at path.
@@ -579,6 +675,9 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		{`DELETE FROM alert_outbox WHERE (sent_at > 0 OR failed_at > 0) AND created_at < ?`, []any{unix(now.Add(-alertKeep))}},
 		{`UPDATE users SET alert_email_pending = '', alert_email_token = '', alert_email_expires = 0 WHERE alert_email_expires > 0 AND alert_email_expires < ?`, []any{unix(now)}},
 		{`DELETE FROM project_audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
+		{`DELETE FROM group_audit WHERE created_at < ?`, []any{unix(now.Add(-365 * 24 * time.Hour))}},
+		{`DELETE FROM group_joins WHERE expires_at < ?`, []any{unix(now.Add(-7 * 24 * time.Hour))}},
+		{`DELETE FROM group_proposals WHERE status != 'open' AND closed_at < ?`, []any{unix(now.Add(-90 * 24 * time.Hour))}},
 	}
 	for _, s := range stmts {
 		if _, err := d.sql.ExecContext(ctx, s.q, s.args...); err != nil {

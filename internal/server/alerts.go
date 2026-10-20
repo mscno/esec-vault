@@ -45,6 +45,9 @@ const (
 	alertMemberRemoved    = "project.member_removed"
 	alertMachineAdded     = "project.machine_added"
 	alertMachineRemoved   = "project.machine_removed"
+	alertGroupMachine     = "group.machine_added"
+	alertGroupRemoved     = "group.machine_removed"
+	alertGroupAdmin       = "group.admin_added"
 	alertEmailConfirm     = "email.confirm"
 	alertEmailChanged     = "email.changed"
 	alertTest             = "test"
@@ -78,9 +81,11 @@ type alert struct {
 	Browser string       `json:"browser,omitempty"`
 	// Project is the shared project of a project.* alert.
 	Project string `json:"project,omitempty"`
-	Title   string `json:"title"`
-	Text    string `json:"text"`
-	URL     string `json:"url"`
+	// Group is the machine group of a group.* alert.
+	Group string `json:"group,omitempty"`
+	Title string `json:"title"`
+	Text  string `json:"text"`
+	URL   string `json:"url"`
 	// Advice says what to do if the event was not expected; email only.
 	Advice string `json:"-"`
 	// Link is an email confirmation link. Only email.confirm alerts carry

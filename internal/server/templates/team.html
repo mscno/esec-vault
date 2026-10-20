@@ -75,6 +75,30 @@
   <p class="muted">With <code>--github-repo</code>, the server hands the sealed keys only to GitHub Actions jobs of that repository (and ref) that prove it with an OIDC token, so a leaked secret alone is not enough. Remove a machine with <code>esec vault machine remove NAME</code>.</p>
 </details>
 
+<h2 id="groups">Machine groups</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Group</th><th>Reads</th><th>Machines</th><th>Added</th></tr></thead>
+  <tbody>
+  {{range .Groups}}
+  <tr>
+    <td><a href="/groups/{{.Group}}"><strong>{{.Group}}</strong></a>{{if not .Trusted}} <span class="badge status-pending">the group has not agreed yet</span>{{end}}{{if .Rotate}}<br><span class="badge status-pending">rotate {{range $i, $e := .Rotate}}{{if $i}}, {{end}}{{$e}}{{end}}: a removed machine may hold it</span>{{end}}</td>
+    <td>{{range $env, $state := .Keys}}{{key $env $state}} {{end}}</td>
+    <td>{{plural .Machines "machine"}}, {{plural .Tokens "token"}}</td>
+    <td>{{when .AddedAt}}<br><span class="muted">by {{.AddedBy}}</span></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="4" class="muted">No machine group reads this project. A group gives many machines (production servers, say) the same environments, each machine with its own key.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<details class="help">
+  <summary>Let a machine group read this project</summary>
+  {{template "cmd" (printf "esec vault group grant acme/production --project %s --env prod" .Project)}}
+  <p class="muted">An admin of the project and an admin of the group both agree: one command does both sides when you administer both.</p>
+</details>
+
 <h2 id="envs">Environments</h2>
 <div class="scroll">
 <table>

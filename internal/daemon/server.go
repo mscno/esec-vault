@@ -140,7 +140,7 @@ func (s *Server) handleEvents(ctx context.Context, a *account.Account, events []
 			s.announcePending(ctx, a, e.Detail, seenPending)
 		case e.Type == wire.EventDeviceStatus:
 			s.announceSuspended(ctx, a, e.Detail)
-		case e.Type == wire.EventProject || e.Type == wire.EventGrant:
+		case e.Type == wire.EventProject || e.Type == wire.EventGrant || e.Type == wire.EventGroup:
 			teamChanged = true
 		}
 	}
@@ -203,6 +203,7 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) {
 			Notifier("esec vault: added to a project", msg)
 		}
 	}
+	s.announceGroups(res)
 	for project, envs := range res.Rotations {
 		for _, env := range envs {
 			key := "rotate " + project + " " + env
@@ -216,6 +217,36 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) {
 			}
 			s.Logger.Warn("shared projects: " + msg)
 			Notifier("esec vault: rotate a key", msg)
+		}
+	}
+}
+
+// announceGroups notifies about machines waiting to join a group, web
+// changes waiting to be signed, and group keys a removed machine holds.
+func (s *Server) announceGroups(res *account.TeamSyncResult) {
+	for _, g := range res.GroupTodos {
+		// Machines waiting to join are announced at once, once per count.
+		key := fmt.Sprintf("group %s %d %d", g.Group, g.Joins, g.Changes)
+		if s.teamNoted[key] {
+			continue
+		}
+		s.teamNoted[key] = true
+		var parts []string
+		if g.Joins > 0 {
+			parts = append(parts, fmt.Sprintf("%d machine(s) ask to join", g.Joins))
+		}
+		if g.Changes > 0 {
+			parts = append(parts, fmt.Sprintf("%d change(s) made on the web wait to be signed", g.Changes))
+		}
+		msg := fmt.Sprintf("%s: %s. Run: esec vault group approve %s", g.Group, strings.Join(parts, ", "), g.Group)
+		s.Logger.Info("machine groups: " + msg)
+		Notifier("esec vault: machines waiting", msg)
+	}
+	for _, g := range res.GroupRotations {
+		if s.stillWaiting("group key " + g) {
+			msg := g + ": a removed machine still holds the group key. Run: esec vault group rotate " + g
+			s.Logger.Warn("machine groups: " + msg)
+			Notifier("esec vault: rotate a group key", msg)
 		}
 	}
 }

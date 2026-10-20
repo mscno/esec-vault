@@ -40,6 +40,7 @@ type ProjectSummary struct {
 	Envs      []string `json:"envs"`
 	Members   int      `json:"members"`
 	Machines  int      `json:"machines"`
+	Groups    int      `json:"groups"`
 	Rotations int      `json:"rotations"`
 }
 
@@ -80,7 +81,7 @@ const (
 // HolderStatus is the key delivery state of one member or machine.
 type HolderStatus struct {
 	ID string `json:"id"`
-	// Kind is "member" or "machine".
+	// Kind is "member", "machine" or "group".
 	Kind string `json:"kind"`
 	// UKeyVersion is a member's current user key version.
 	UKeyVersion uint64            `json:"ukey_version,omitempty"`

@@ -20,8 +20,10 @@ type MachineCmd struct {
 	Create MachineCreateCmd `cmd:"" help:"Give a CI job or app its own key to a shared project's environments."`
 	List   MachineListCmd   `cmd:"" help:"List a shared project's machines."`
 	Remove MachineRemoveCmd `cmd:"" help:"Remove a machine; its key stops working."`
-	Run    MachineRunCmd    `cmd:"" help:"(In the job) run a command with the machine's environment keys set."`
-	Env    MachineEnvCmd    `cmd:"" help:"(In the job) print the machine's environment keys as variables."`
+	Join   MachineJoinCmd   `cmd:"" help:"(On the machine) join a machine group: with an enrollment token at once, or by asking an admin."`
+	Whoami MachineWhoamiCmd `cmd:"" help:"(On the machine) show which machine this is and what it reads."`
+	Run    MachineRunCmd    `cmd:"" help:"(On the machine) run a command with the machine's environment keys set."`
+	Env    MachineEnvCmd    `cmd:"" help:"(On the machine) print the machine's environment keys as variables."`
 }
 
 // MachineCreateCmd creates a machine.
@@ -165,22 +167,42 @@ func (c *MachineRemoveCmd) Run(ctx *cliCtx) error {
 
 // fetchMachineKeys loads the machine key and fetches its keys.
 func fetchMachineKeys() (*machine.Keys, error) {
-	key, err := machine.Load()
+	cred, err := machine.LoadCredential()
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	token, err := machine.GitHubToken(ctx, key.Server)
+	token, err := machine.GitHubToken(ctx, cred.Server())
 	if err != nil {
 		return nil, err
 	}
-	return machine.Fetch(ctx, key, token)
+	keys, err := cred.Fetch(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range keys.Problems {
+		fmt.Fprintln(os.Stderr, "esec-vault: warning:", p)
+	}
+	return keys, nil
+}
+
+// machineProject is --project, else the nearest .esec-project, else "".
+func machineProject(flag string) string {
+	if flag != "" {
+		return flag
+	}
+	p, err := resolveProject("")
+	if err != nil {
+		return ""
+	}
+	return p
 }
 
 // MachineRunCmd runs a command with the machine's keys.
 type MachineRunCmd struct {
 	Env     []string `name:"env" sep:"," help:"Only these environments (default: every one the machine reads)"`
+	Project string   `help:"Project whose keys are also set by environment name (default: nearest .esec-project, or the only one)"`
 	Command []string `arg:"" passthrough:"" help:"Command to run"`
 }
 
@@ -190,7 +212,7 @@ func (c *MachineRunCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	env, err := keys.Environ(os.Environ(), c.Env)
+	env, err := keys.Environ(os.Environ(), machineProject(c.Project), c.Env)
 	if err != nil {
 		return err
 	}
@@ -208,8 +230,9 @@ func (c *MachineRunCmd) Run(ctx *cliCtx) error {
 
 // MachineEnvCmd prints the machine's keys.
 type MachineEnvCmd struct {
-	Env    []string `name:"env" sep:"," help:"Only these environments (default: every one the machine reads)"`
-	Format string   `default:"env" enum:"env,github" help:"env: NAME=value lines; github: append to $GITHUB_ENV and mask the values"`
+	Env     []string `name:"env" sep:"," help:"Only these environments (default: every one the machine reads)"`
+	Project string   `help:"Project whose keys are also set by environment name (default: nearest .esec-project, or the only one)"`
+	Format  string   `default:"env" enum:"env,github" help:"env: NAME=value lines; github: append to $GITHUB_ENV and mask the values"`
 }
 
 // Run implements machine env.
@@ -218,7 +241,7 @@ func (c *MachineEnvCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	lines, err := keys.Environ(nil, c.Env)
+	lines, err := keys.Environ(nil, machineProject(c.Project), c.Env)
 	if err != nil {
 		return err
 	}
@@ -244,6 +267,117 @@ func (c *MachineEnvCmd) Run(ctx *cliCtx) error {
 			return err
 		}
 		fmt.Fprintln(os.Stderr, "set", name)
+	}
+	return nil
+}
+
+// MachineJoinCmd joins this host to a machine group.
+type MachineJoinCmd struct {
+	Group       string `arg:"" optional:"" help:"Group to join, such as acme/production (not needed with --token)"`
+	Server      string `help:"Vault server URL (not needed with --token)" env:"ESEC_VAULT_SERVER"`
+	Name        string `help:"This machine's name (default: the host name)"`
+	Token       string `help:"Enrollment token from 'esec vault group token' (or @file): join at once, without an admin" env:"ESEC_VAULT_ENROLL_TOKEN"`
+	Fingerprint string `help:"The group's fingerprint words from 'esec vault group show', so the server cannot put this machine in a look-alike group"`
+	File        string `help:"Where to keep this machine's key (default: /etc/esec-vault/machine.key as root on Linux, else in the esec config directory)"`
+}
+
+// Run implements machine join.
+func (c *MachineJoinCmd) Run(ctx *cliCtx) error {
+	name := c.Name
+	if name == "" {
+		h, err := os.Hostname()
+		if err != nil {
+			return errors.New("name the machine with --name")
+		}
+		name = strings.Split(h, ".")[0]
+	}
+	file := c.File
+	if file == "" {
+		file = machine.DefaultFile()
+	}
+	if _, err := os.Stat(file); err == nil {
+		return fmt.Errorf("this host already has a machine key in %s; remove it to join again", file)
+	}
+	opts := machine.JoinOptions{Group: c.Group, Server: c.Server, Name: name, Fingerprint: c.Fingerprint}
+	bg, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	if c.Token != "" {
+		v := c.Token
+		if path, ok := strings.CutPrefix(v, "@"); ok {
+			data, err := os.ReadFile(path) //nolint:gosec // the operator names the file
+			if err != nil {
+				return err
+			}
+			v = string(data)
+		}
+		tok, err := team.ParseCredKey(v)
+		if err != nil {
+			return err
+		}
+		if c.Group != "" && c.Group != tok.Group {
+			return fmt.Errorf("the token is for %s, not %s", tok.Group, c.Group)
+		}
+		opts.Token, opts.Group = tok, tok.Group
+		if opts.OIDCToken, err = machine.GitHubToken(bg, tok.Server); err != nil {
+			return err
+		}
+	} else {
+		if c.Group == "" || c.Server == "" {
+			return errors.New("name the group and --server, or join with --token")
+		}
+		fmt.Fprintf(os.Stderr, "Asking to join %s as %s...\n", c.Group, name)
+		shown := false
+		opts.Wait = func(words string) bool {
+			if !shown {
+				fmt.Fprintf(os.Stderr, "\nAn admin of %s lets this machine in from their device with:\n\n  esec vault group approve %s\n\nand checks that it shows these words:\n\n  %s\n\nWaiting (Ctrl-C to stop)...\n", c.Group, c.Group, words)
+				shown = true
+			}
+			return true
+		}
+	}
+	key, err := machine.Join(bg, opts)
+	if err != nil {
+		return err
+	}
+	if err := machine.SaveKey(file, key); err != nil {
+		return err
+	}
+	fmt.Printf("✓ This machine is %s (%s) in %s. Its key is in %s.\n", name, key.ID, key.Group, file)
+	if file != machine.DefaultFile() {
+		fmt.Printf("  Point %s at it, or set %s=@%s.\n", machine.FileEnv, machine.KeyEnv, file)
+	}
+	fmt.Println("Run commands with its keys:  esec-vault machine run -- esec run prod -- ./your-command")
+	return nil
+}
+
+// MachineWhoamiCmd shows the machine and what it reads.
+type MachineWhoamiCmd struct{}
+
+// Run implements machine whoami.
+func (c *MachineWhoamiCmd) Run(ctx *cliCtx) error {
+	cred, err := machine.LoadCredential()
+	if err != nil {
+		return err
+	}
+	keys, err := fetchMachineKeys()
+	if err != nil {
+		return err
+	}
+	where := "project " + keys.Project
+	if keys.Group != "" {
+		kind := "machine"
+		if cred.Group.Kind() == team.KindToken {
+			kind = "token"
+		}
+		where = kind + " of the group " + keys.Group
+	}
+	fmt.Printf("%s (%s), %s, on %s\nKey from %s\n", safetext.Clean(keys.Name), keys.Machine, where, cred.Server(), cred.From)
+	ids := keys.ProjectIDs()
+	if len(ids) == 0 {
+		fmt.Println("It reads no project yet.")
+	}
+	for _, p := range ids {
+		fmt.Printf("  %-32s %s\n", p, strings.Join(keys.Names(p), ", "))
 	}
 	return nil
 }

@@ -960,9 +960,115 @@ machine keeps exactly one grant with all its environments; admins' devices
 send a new one after a rotation. Removing a machine stops the server from
 handing it keys and leaves its environments exposed.
 
+## 16. Machine groups
+
+A machine group (`acme/production`) gives many machines the same
+environments of one or more shared projects, each machine with its own key.
+Machines come and go all the time, so a new one must work without an
+admin's device being online, and removing one must not touch the others.
+
+### The group chain
+
+Each group has a chain like a project's, envelope kind `group-link`,
+signed by its admins' user keys with the same `signer_ukey_version` and
+`signer_seq` rules (§14):
+
+| Type | Signed by | Body |
+|---|---|---|
+| `init` | its creator, the first admin | creator; the group key, version 1 (X25519 public key) |
+| `admin_add` / `admin_remove` | an admin | the admin's account (checked like a project member), or who leaves |
+| `machine_add` | an admin, or an enrollment token | the machine's id, name, X25519 and Ed25519 public keys, optional OIDC policy, and the join request it answers |
+| `token_add` | an admin | a token's id, name, keys, expiry and optional OIDC policy |
+| `remove` | an admin | a machine or token; `destroyed` when its keys went with it |
+| `key_rotate` | an admin | the next group key version |
+| `access_add` / `access_remove` | an admin | a project, with the hash of its chain's first link |
+
+A token may sign only `machine_add`, before it expires, and the machine
+must carry the token's OIDC policy. A removed machine, token or admin (not
+destroyed) leaves the group key **exposed** until `key_rotate`.
+
+A project grants a group environments with a `group_set` link (group id,
+group root, environments; none removes it). Reducing them exposes the
+environments, like a member's. Both sides must agree: the project chain
+grants, and the group chain lists the project's root. A machine accepts a
+project's keys only from a project its group chain lists, verified from the
+root listed there, so neither the server nor another account can feed it
+keys of a look-alike project.
+
+### Keys
+
+The group key is sealed to every machine, token and admin in a **key
+grant** (kind `group-key`), signed by an admin or, for a machine it
+enrolls, a token. The key inside is checked against the public key the
+chain names, so whoever made the grant cannot hand out another key. Each
+project's admins seal the environments the group reads once, to the group
+key, in an ordinary grant to the holder `g:<group>` (§14). A machine fetches
+everything in one signed request: the group chain and its signers' user
+chains, its key grant, and for each project the group lists, the project
+chain and its grant to the group. It verifies the group chain from the
+root its key names, that it is an active member, opens the group key, then
+verifies each project chain and opens its grant.
+
+Removing a machine (not destroyed) rotates the group key in the same
+commit: the new key is sealed to everyone left, and the remover's device
+re-seals the projects it administers; other projects' admins' devices do
+the same when told. The removed machine may still hold earlier environment
+keys, so each environment the group read whose key was set before the
+removal is a rotation to-do of its project. Link times have whole seconds;
+a removal in the same second as a key counts as exposing it, and a device
+dates a new key after the removals it knows of. Admins' devices also
+re-send key grants the server reports missing, and rotate the group key on
+their own when someone who left still holds it, or when no admin can open
+it any more (their user keys changed).
+
+### Bringing machines in
+
+- **Enrollment token** (`esecg1_…`, holding the server, the group, its root,
+  the token id and its private keys). A job uses it directly. A machine
+  joins with it: it creates its own keys, signs `machine_add` with the
+  token, seals the group key (which the token opens) to itself, and sends
+  both to `POST /v1/fleet/enroll`. No admin needs to be online. The root
+  comes from the token, so the server cannot substitute a group.
+- **Join request.** The machine creates its keys and sends them to
+  `POST /v1/fleet/join`; the server answers with the group's root. The
+  machine shows six words over the group, that root and its keys. The admin's
+  device computes the words from the root it verified and the request; when
+  the person types matching words, it signs `machine_add` and a key grant.
+  The server cannot get its own key let in. The machine trusts the server's
+  root the first time unless it is given the group's fingerprint (8 words
+  over the group and its root, from `group show`), which it then checks.
+- **A key made on the admin's device**, copied to the machine.
+
+### Web changes
+
+The web pages show each group's machines, tokens, use and a project ×
+environment table. Changes made there are stored as **proposals**: who
+reads what, or removing a machine or token. The server cannot sign links,
+so an admin's device signs them (`group approve`), after showing each. A
+removal blocks the machine on the server at once, before it is signed;
+dismissing it lets the machine back in. A malicious server can always
+withhold keys, so blocking gives it nothing new. A new group key is not
+sealed to blocked machines or expired tokens.
+
+### Threats
+
+| Threat | Outcome |
+|---|---|
+| Server adds a machine | Refused: `machine_add` needs an admin's or a token's signature. |
+| Server feeds a machine keys of a project the group did not choose | Refused: the project must be in the group chain with its root. |
+| Server swaps a joining machine's key | The admin's words differ; it is not let in. |
+| Server puts a joining machine in a look-alike group | Only when the machine was given neither a token nor the fingerprint; the admin's words then differ, which tells them. |
+| Leaked token | Enrolls machines and reads the group's environments until removed or expired. With an OIDC policy, only from that repository. Remove it: the group key rotates; rotate the environments. |
+| Removed machine | Gets nothing from the server; holds the old group key, which no new grant uses; earlier environment keys are rotation to-dos. |
+| Another account grants a group from its own project, to see it | Refused: only the group's admins choose the projects it reads, and only members of those projects (and the admins) can read the group. A `group_set` needs the group to list the project. |
+| Web change invented by the server | Shown to the admin before signing; `approve --yes` signs only removals, never access. Only group admins, or admins of a project the group reads, can propose. |
+| Server freezes a project admin's view of a group | The admin's device pins the group chain as far as it saw it; a server that withholds a later removal and key rotation keeps the admin sealing to the old group key, which the removed machine could open with the server's help. The same withholding class as §14; group admins see the true state. |
+| Expired token | Refused by the server; a token signs `machine_add` only before its expiry, but its clock is its own, so expiry is the server's to enforce. |
+
 ## Later phases (sketch)
 
 - Passkey-PRF approval in the browser (requires trusting the JavaScript the
   server sends).
 - OIDC tokens of other platforms (Fly.io machines, GitLab, cloud workload
-  identity) for machines.
+  identity) for machines and enrollment tokens.
+- Machine heartbeats and stale-machine clean-up for groups.

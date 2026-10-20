@@ -91,6 +91,27 @@
 </table>
 </div>
 
+<h2 id="groups">Machine groups</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Group</th><th>Machines</th><th>Tokens</th><th>Reads</th><th>Needs</th><th>Last used</th></tr></thead>
+  <tbody>
+  {{range .Groups}}
+  <tr>
+    <td><a href="/groups/{{.ID}}"><strong>{{.ID}}</strong></a></td>
+    <td>{{.Machines}}</td>
+    <td>{{.Tokens}}</td>
+    <td>{{if .Projects}}{{range $i, $p := .Projects}}{{if $i}}, {{end}}{{$p}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{if .Pending}}<span class="badge status-pending">{{.Pending}} to approve</span> {{end}}{{if .KeyExposed}}<span class="badge status-pending">new group key</span>{{end}}{{if and (not .Pending) (not .KeyExposed)}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{when .LastUsed}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">No machine groups yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
 <h2 id="events">{{if .AllEvents}}All events{{else}}Security events{{end}}</h2>
 <nav class="filters" aria-label="Events">
   <a href="/admin#events"{{if not .AllEvents}} aria-current="true"{{end}}>Security events</a>

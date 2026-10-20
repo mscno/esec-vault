@@ -144,7 +144,7 @@ func (s *Server) apiProjects(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		if !ok {
 			continue
 		}
-		out.Projects = append(out.Projects, wire.ProjectSummary{ID: id, Seq: st.Seq, Admin: m.Admin, Envs: st.Access(c.user.ID), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Rotations: len(st.Rotations())})
+		out.Projects = append(out.Projects, wire.ProjectSummary{ID: id, Seq: st.Seq, Admin: m.Admin, Envs: st.Access(c.user.ID), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Groups: len(st.ActiveGroups()), Rotations: len(st.Rotations())})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -324,6 +324,9 @@ func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, proje
 		if err := checkNewMachine(ctx, tx, project, *l); err != nil {
 			return nil, nil, err
 		}
+		if err := s.checkGroupSet(ctx, tx, *l); err != nil {
+			return nil, nil, err
+		}
 		raw, err := json.Marshal(e)
 		if err != nil {
 			return nil, nil, err
@@ -435,6 +438,37 @@ func checkNewMachine(ctx context.Context, tx *sql.Tx, project string, l team.Lin
 	return nil
 }
 
+// checkGroupSet checks, for a group_set link granting environments, that
+// the group exists here with that root.
+func (s *Server) checkGroupSet(ctx context.Context, tx *sql.Tx, l team.Link) error {
+	if l.Type != team.TypeGroupSet {
+		return nil
+	}
+	var b team.GroupSetBody
+	if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+		return err
+	}
+	if len(b.Envs) == 0 {
+		return nil
+	}
+	var hash string
+	err := tx.QueryRowContext(ctx, `SELECT hash FROM group_links WHERE group_id = ? AND seq = 1`, b.Group).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && hash != b.Root) {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s is not a machine group with that root on this server", b.Group)
+	}
+	if err != nil {
+		return err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM group_access WHERE group_id = ? AND project = ?`, b.Group, l.Project).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return clientErr(http.StatusConflict, wire.ErrConflict, "the group %s does not take keys from %s yet; an admin of the group runs 'esec vault group grant' first", b.Group, l.Project)
+	}
+	return nil
+}
+
 // storeGrant checks a grant against the new state and stores it; it returns
 // the recipient.
 func (s *Server) storeGrant(ctx context.Context, tx *sql.Tx, c *reqCtx, caller *chain.State, st *team.State, e *envelope.Envelope, chains team.Chains, now time.Time) (string, error) {
@@ -484,13 +518,34 @@ func (s *Server) checkGrantRecipient(ctx context.Context, tx *sql.Tx, st *team.S
 		}
 		return s.supersede(ctx, tx, st.Project, g)
 	}
-	m, ok := st.Machine(g.To)
-	if !ok || g.ToKey != 0 || g.ToEncPub != m.EncPub {
-		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "grant to an unknown recipient")
-	}
 	names := make([]string, 0, len(g.Envs))
 	for _, env := range g.Envs {
 		names = append(names, env.Name)
+	}
+	if id, isGroup := strings.CutPrefix(g.To, team.GroupHolderPrefix); isGroup {
+		pg, ok := st.Group(id)
+		if !ok {
+			return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "grant to an unknown recipient")
+		}
+		gs, _, err := s.db.groupState(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if gs == nil || gs.Root() != pg.Root {
+			return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "the group %s is not the one the project names", id)
+		}
+		if g.ToKey != gs.Key.Version || g.ToEncPub != gs.Key.EncPub {
+			return clientErr(http.StatusConflict, wire.ErrConflict, "the group %s has a new key; refresh and retry", id)
+		}
+		if !slices.Equal(team.SortEnvs(names), pg.Envs) {
+			return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "a group's grant must carry all of its environments")
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM project_grants WHERE project = ? AND to_id = ?`, st.Project, g.To)
+		return err
+	}
+	m, ok := st.Machine(g.To)
+	if !ok || g.ToKey != 0 || g.ToEncPub != m.EncPub {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "grant to an unknown recipient")
 	}
 	if !slices.Equal(team.SortEnvs(names), m.Envs) {
 		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "a machine's grant must carry all of its environments")
@@ -658,6 +713,10 @@ func linkSummary(before, after *team.State, l team.Link) string {
 			return m.Name
 		}
 		return b.ID
+	case team.TypeGroupSet:
+		var b team.GroupSetBody
+		_ = json.Unmarshal(l.Body, &b)
+		return "group " + b.Group + " reads " + envList(b.Envs)
 	}
 	return strconv.FormatUint(l.Seq, 10)
 }

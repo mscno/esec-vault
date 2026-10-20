@@ -101,6 +101,7 @@ func (s *Server) teamNotices(ctx context.Context, user string) ([]notice, error)
 			}
 			out = append(out, n)
 		}
+		out = append(out, s.groupRotationNotices(ctx, st, user, admin, link)...)
 		status, err := s.db.projectStatus(ctx, st)
 		if err != nil {
 			return nil, err
@@ -126,6 +127,44 @@ func (s *Server) teamNotices(ctx context.Context, user string) ([]notice, error)
 	return out, nil
 }
 
+// groupRotationNotices lists the environments of st, that user reads,
+// whose key a machine removed from a group may still hold.
+func (s *Server) groupRotationNotices(ctx context.Context, st *team.State, user string, admin bool, link string) []notice {
+	var out []notice
+	for _, pg := range st.ActiveGroups() {
+		gs, err := s.listedGroup(ctx, pg.Group)
+		if err != nil || gs == nil {
+			continue
+		}
+		exposed := team.GroupExposures(st, gs)
+		for _, env := range team.SortEnvs(mapKeys(exposed)) {
+			if !st.HasAccess(user, env) {
+				continue
+			}
+			var who []string
+			for _, x := range exposed[env] {
+				who = append(who, x.Name)
+			}
+			n := notice{Level: "warn", Text: st.Project + " " + env + " needs a new key: " + strings.Join(who, ", ") + " left the group " + pg.Group + " but may still hold the current one.", Link: link, LinkTo: "Open project"}
+			if admin {
+				n.Command = "esec vault env rotate " + env + " --project " + st.Project
+			} else {
+				n.Level, n.Text = "info", n.Text+" An admin of the project replaces it."
+			}
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func mapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 type teamMemberView struct {
 	*team.MemberState
 
@@ -145,6 +184,18 @@ type teamMachineView struct {
 	LastUsed time.Time
 	LastIP   string
 	Uses     int
+	AddedAt  time.Time
+	AddedBy  string
+}
+
+type teamGroupView struct {
+	*team.ProjectGroupState
+
+	Keys     map[string]string
+	Machines int
+	Tokens   int
+	Trusted  bool
+	Rotate   []string
 	AddedAt  time.Time
 	AddedBy  string
 }
@@ -241,6 +292,8 @@ func (s *Server) teamPage(ctx context.Context, st *team.State, data map[string]a
 		u := used[m.ID]
 		machineViews = append(machineViews, teamMachineView{MachineState: m, Keys: keys[m.ID], Policy: m.OIDC.Describe(), LastUsed: u.last, LastIP: u.ip, Uses: u.uses, AddedAt: added[m.AddedSeq], AddedBy: loginOf(st, m.AddedBy)})
 	}
+	groups := st.ActiveGroups()
+	groupViews := s.teamGroups(ctx, st, keys, added)
 	envs := make([]teamEnvView, 0, len(st.Envs))
 	for _, n := range st.EnvNames() {
 		v := teamEnvView{EnvState: st.Envs[n]}
@@ -254,6 +307,11 @@ func (s *Server) teamPage(ctx context.Context, st *team.State, data map[string]a
 				v.Readers++
 			}
 		}
+		for _, g := range groups {
+			if g.Has(n) {
+				v.Readers++
+			}
+		}
 		envs = append(envs, v)
 	}
 	activity, err := s.teamActivity(ctx, st)
@@ -264,6 +322,7 @@ func (s *Server) teamPage(ctx context.Context, st *team.State, data map[string]a
 	data["State"] = st
 	data["Members"] = memberViews
 	data["Machines"] = machineViews
+	data["Groups"] = groupViews
 	data["Envs"] = envs
 	data["Rotations"] = st.Rotations()
 	data["History"] = teamHistoryOf(st)
@@ -271,6 +330,26 @@ func (s *Server) teamPage(ctx context.Context, st *team.State, data map[string]a
 	data["Created"] = st.Links[0].CTime
 	data["Creator"] = loginOf(st, st.Links[0].Signer)
 	return nil
+}
+
+// teamGroups describes the machine groups st grants environments.
+func (s *Server) teamGroups(ctx context.Context, st *team.State, keys map[string]map[string]string, added map[uint64]time.Time) []teamGroupView {
+	groups := st.ActiveGroups()
+	out := make([]teamGroupView, 0, len(groups))
+	for _, g := range groups {
+		v := teamGroupView{ProjectGroupState: g, Keys: keys[team.GroupHolder(g.Group)], AddedAt: added[g.AddedSeq], AddedBy: loginOf(st, g.AddedBy)}
+		if gs, err := s.listedGroup(ctx, g.Group); err == nil && gs != nil && gs.Root() == g.Root {
+			v.Machines = len(gs.ActiveCreds(team.KindMachine))
+			v.Tokens = len(gs.ActiveCreds(team.KindToken))
+			_, v.Trusted = gs.Access[st.Project]
+			for env := range team.GroupExposures(st, gs) {
+				v.Rotate = append(v.Rotate, env)
+			}
+			v.Rotate = team.SortEnvs(v.Rotate)
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // teamActivity lists key deliveries and machine use. Chain changes are
@@ -416,6 +495,13 @@ func linkText(st *team.State, l team.Link, seen map[string]bool) string {
 			return "removed the machine " + m.Name
 		}
 		return "removed a machine"
+	case team.TypeGroupSet:
+		var b team.GroupSetBody
+		_ = json.Unmarshal(l.Body, &b)
+		if len(b.Envs) == 0 {
+			return "took away the machine group " + b.Group + "'s access"
+		}
+		return "let the machine group " + b.Group + " read " + envList(b.Envs)
 	}
 	return l.Type
 }

@@ -152,6 +152,9 @@ func (d *DB) mirrorProject(ctx context.Context, tx *sql.Tx, st *team.State, now 
 			return err
 		}
 	}
+	if err := d.mirrorProjectGroups(ctx, tx, st); err != nil {
+		return err
+	}
 	// Grants and holdings of anyone who lost access are useless now.
 	for holder := range holders(st, false) {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM project_grants WHERE project = ? AND to_id = ?`, st.Project, holder); err != nil {
@@ -177,6 +180,11 @@ func holders(st *team.State, active bool) map[string]bool {
 	for id, m := range st.Machines {
 		if m.Active == active {
 			out[id] = true
+		}
+	}
+	for id, g := range st.Groups {
+		if g.Active == active {
+			out[team.GroupHolder(id)] = true
 		}
 	}
 	return out
@@ -269,6 +277,7 @@ func (d *DB) projectStatus(ctx context.Context, st *team.State) (*wire.ProjectSt
 		}
 		out.Holders = append(out.Holders, h)
 	}
+	out.Holders = append(out.Holders, d.groupHolders(ctx, st, waiting)...)
 	used, err := d.machineUse(ctx, st.Project)
 	if err != nil {
 		return nil, err
@@ -284,6 +293,29 @@ func (d *DB) projectStatus(ctx context.Context, st *team.State) (*wire.ProjectSt
 		out.Holders = append(out.Holders, h)
 	}
 	return out, nil
+}
+
+// groupHolders reports, for each group st grants environments, whether
+// they are sealed to the group's current key. waiting tells whether a grant
+// to a holder at a key version carries an environment's key.
+func (d *DB) groupHolders(ctx context.Context, st *team.State, waiting func(holder string, version uint64, env team.Env) bool) []wire.HolderStatus {
+	groups := st.ActiveGroups()
+	out := make([]wire.HolderStatus, 0, len(groups))
+	for _, g := range groups {
+		h := wire.HolderStatus{ID: team.GroupHolder(g.Group), Kind: "group", Envs: map[string]string{}}
+		var version uint64
+		if gs, _, err := d.groupState(ctx, d.sql, g.Group); err == nil && gs != nil && gs.Root() == g.Root {
+			version = gs.Key.Version
+		}
+		for _, n := range g.Envs {
+			h.Envs[n] = wire.KeyMissing
+			if version > 0 && waiting(h.ID, version, st.Envs[n].Env) {
+				h.Envs[n] = wire.KeyHeld
+			}
+		}
+		out = append(out, h)
+	}
+	return out
 }
 
 // holdings maps holders to the public keys they hold, by environment.

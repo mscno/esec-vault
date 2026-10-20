@@ -16,6 +16,7 @@ Both forms run the same program.
 - [Import existing project keys](#import-existing-project-keys).
 - [Share a project with your team through the server](#share-a-project-with-your-team).
 - [Give CI jobs and apps their own key](#give-ci-jobs-and-apps-their-own-key).
+- [Run a fleet of machines in groups](#run-a-fleet-of-machines-in-groups).
 - [Share keys with a teammate without a server](#share-project-keys-with-a-teammate).
 - [Run an application through the broker](#run-applications-through-the-broker).
 - [Set up a remote backup](#remote-configuration-file--wizard).
@@ -791,6 +792,103 @@ On Fly.io or another host, set the secret the same way
 `esec vault machine list` and `esec vault machine remove deploy`; removing
 one lists the environments to rotate.
 
+## Run a fleet of machines in groups
+
+A machine group is a set of machines, such as your production servers,
+that read the same environments of one or more shared projects. Each
+machine has its own key, so you can add and remove machines one at a time;
+the projects' keys are sealed once, to the group's key, so a new machine
+reads them the moment it is in the group, whether or not your laptop is on.
+
+### Step 1: Create a group and say what it reads
+
+On a device that holds the projects' keys (an admin of the projects):
+
+```sh
+esec vault group create acme/production
+esec vault group grant acme/production --project acme/store --env prod
+esec vault group grant acme/production --project acme/api --env prod
+```
+
+`group create` with a bare name (`production`) creates `LOGIN/production`.
+`group grant` again with other environments changes what the group reads;
+`group revoke` stops it reading a project. When the project's admins and the
+group's admins are different people, each side runs `group grant` to agree:
+the group's admins first, since they choose which projects it reads.
+
+### Step 2: Bring machines in
+
+Pick whatever suits the machine:
+
+- **An enrollment token**, for CI jobs, containers and autoscaled machines.
+  A job uses it directly as its secret `ESEC_VAULT_MACHINE_KEY`; a
+  long-lived machine joins with it once and keeps a key of its own:
+
+  ```sh
+  esec vault group token acme/production autoscale --expires 90d
+  # on each new machine, from its image or start-up script:
+  ESEC_VAULT_ENROLL_TOKEN=esecg1_... esec-vault machine join
+  ```
+
+  Bind a token to GitHub Actions with `--github-repo`, as for single
+  machines below: it then works, and enrolls machines, only from that
+  repository's jobs.
+
+- **On the machine itself**: it asks to join and shows six words; you let it
+  in from your device after checking the words match.
+
+  ```sh
+  # on the machine (group show prints the fingerprint):
+  esec-vault machine join acme/production --server https://vault.example.com \
+    --fingerprint WORD-WORD-WORD-WORD-WORD-WORD-WORD-WORD
+  # on your device:
+  esec vault group approve acme/production
+  ```
+
+  With `--fingerprint`, the machine refuses a server that names a different
+  group; without it, the machine trusts the server's word for the group
+  the first time, and only your word check protects it.
+
+- **A key you make yourself**, for a machine you set up by hand:
+  `esec vault group add-machine acme/production db-1`, then save the key it
+  prints as `/etc/esec-vault/machine.key` (mode 0600) on the machine.
+
+A joined machine keeps its key in `/etc/esec-vault/machine.key` (as root on
+Linux) or in the esec configuration directory; `ESEC_VAULT_MACHINE_FILE`
+points elsewhere.
+
+### Step 3: Run commands with the keys
+
+```sh
+esec-vault machine run -- esec run prod -- ./server
+esec-vault machine whoami      # which machine, which group, what it reads
+```
+
+Every key is set by public key, so esec finds the right one for any
+project's file. The keys of the project in the current directory (its
+`.esec-project`, or `--project`) are also set by environment name.
+
+### Watch and change the fleet
+
+```sh
+esec vault group show acme/production     # machines, last use, tokens, what it reads
+esec vault group remove acme/production web-3
+esec vault group remove acme/production web-4 --destroyed   # deleted with its disk
+```
+
+Removing a machine stops the server handing it keys at once, gives the
+group a new key sealed to the machines left, and lists the environments to
+rotate. With `--destroyed` (a VM or container deleted with its disk),
+nothing needs rotating.
+
+The group's web page (**Machines** in the menu) lists its machines with
+when and from where each last fetched its keys, its tokens, and a table of
+projects and environments. Ticking environments there, or removing a
+machine, proposes the change; removing blocks the machine on the server at
+once. Your device signs proposed changes with `esec vault group approve`,
+because the server holds no key it could sign them with. The background
+service tells you when machines wait to join or changes wait to be signed.
+
 ## Share project keys with a teammate
 
 This section shares keys without a vault server, through files committed to
@@ -1310,6 +1408,10 @@ Migration is explicit; installing the binary does not alter live keys.
 | See who reads what, and what needs doing | `esec vault team show` |
 | Receive and send team keys now | `esec vault team sync` |
 | List a project's machines | `esec vault machine list` |
+| List machine groups | `esec vault group` |
+| See a group's machines and what it reads | `esec vault group show acme/production` |
+| Let waiting machines in, sign web changes | `esec vault group approve acme/production` |
+| On a machine: what am I, what do I read | `esec-vault machine whoami` |
 | List proofs in the current project | `esec vault members list` |
 | Import a share after `git pull` | `esec vault sync` |
 | Reload policy after editing it | `esec vault daemon reload` |
@@ -1328,6 +1430,8 @@ same socket as an active managed daemon.
 
 | Problem | Check or action |
 |---|---|
+| A machine says the group key or a project's keys were not sent yet | An admin's device seals them on its next sync: `esec vault group sync`. `esec vault group show` says what is missing. |
+| A machine says it reads nothing of a project | The group and the project both have to agree: `esec vault group grant GROUP --project ORG/REPO --env ENV`, by an admin of each. |
 | `dev` cannot find a file | Check the current directory. Use `-f env` for `.env.dev`. Secrets files are not searched for in parent folders. |
 | No project marker is found | Add `.esec-project` with `ESEC_PROJECT=org/repo`. Use no quotes. The search stops at the Git root. |
 | A child file uses the wrong project | For core esec, pass `--key-dir services/api` from the root. For broker commands, change into the component directory. |

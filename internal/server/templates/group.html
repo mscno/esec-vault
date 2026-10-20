@@ -1,0 +1,188 @@
+{{template "head" .}}
+<p class="crumbs">{{if .Readable}}<a href="/groups">Machine groups</a>{{else}}<a href="/admin#groups">Admin</a>{{end}} › Machine group</p>
+<h1>{{.Group}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .Readable}}<span class="badge">reads your projects</span>{{else}}<span class="badge">read-only</span>{{end}}</h1>
+<p class="muted">Created by {{.Creator}} {{when .Created}}. Its admins, machines, tokens and the projects it takes keys from are recorded in a chain they sign; the server stores it but cannot change it. Machines check it from its first link, which their keys name.</p>
+
+{{if and .ShowOps (or .Joins .Proposals .State.KeyExposed)}}
+<section class="notices" aria-label="Needs attention">
+  {{if .Joins}}
+  <div class="notice notice-warn">
+    <p><strong>{{plural (len .Joins) "machine"}}</strong> ask to join. Let each in from your device: it shows the words the machine shows, worked out from the group chain your device checked, so compare them before you say yes.</p>
+    {{template "cmd" (printf "esec vault group approve %s" .Group)}}
+  </div>
+  {{end}}
+  {{if .Proposals}}
+  <div class="notice notice-info">
+    <p><strong>{{plural (len .Proposals) "change"}}</strong> made on this page wait to be signed by an admin's device. The server holds no key to sign them with.</p>
+    {{template "cmd" (printf "esec vault group approve %s" .Group)}}
+  </div>
+  {{end}}
+  {{if .State.KeyExposed}}
+  <div class="notice notice-warn">
+    <p>A removed machine still holds the group key: {{range $i, $e := .State.KeyExposed}}{{if $i}}, {{end}}{{$e.Name}} ({{$e.Reason}} {{ago $e.Time}}){{end}}.</p>
+    {{template "cmd" (printf "esec vault group rotate %s" .Group)}}
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+<section class="tiles" aria-label="Summary">
+  <a class="tile" href="#machines"><span class="tile-label">Machines</span><span class="tile-value">{{len .Machines}}</span><span class="tile-note">each with its own key</span></a>
+  <a class="tile" href="#tokens"><span class="tile-label">Tokens</span><span class="tile-value">{{len .Tokens}}</span><span class="tile-note">for CI and enrolling</span></a>
+  <a class="tile" href="#access"><span class="tile-label">Projects</span><span class="tile-value">{{len .State.Access}}</span><span class="tile-note">it takes keys from</span></a>
+  <a class="tile" href="#history"><span class="tile-label">Group key</span><span class="tile-value">v{{.State.Key.Version}}</span><span class="tile-note">since {{ago .State.KeySince}}</span></a>
+</section>
+
+{{if and .ShowOps .Joins}}
+<h2 id="joins">Waiting to join</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Machine</th><th>From</th><th>Asked</th><th></th></tr></thead>
+  <tbody>
+  {{range .Joins}}
+  <tr>
+    <td><strong>{{.Name}}</strong><br><span class="muted">{{.Machine}}</span></td>
+    <td>{{.IP}}</td>
+    <td>{{when .Created}}</td>
+    <td>{{if $.MyAdmin}}<form method="post" action="/groups/{{$.Group}}/joins/{{.ID}}/reject" data-confirm="Turn {{.Name}} away?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Turn away</button></form>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+<h2 id="machines">Machines</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Machine</th><th>Last used</th><th>Allowed from</th><th>Added</th><th></th></tr></thead>
+  <tbody>
+  {{range .Machines}}
+  <tr>
+    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{else if not .HasKey}} <span class="badge status-pending">key not sent</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
+    <td>{{when .LastUsed}}{{if and $.ShowOps .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "fetch"}}</span>{{end}}</td>
+    <td>{{with .Policy}}{{.}}{{else}}<span class="muted">anywhere with its key</span>{{end}}</td>
+    <td>{{when .AddedAt}}<br><span class="muted">{{if .Join}}asked to join; let in by {{.AddedBy}}{{else}}by {{.AddedBy}}{{end}}</span></td>
+    <td>{{if and $.MyAdmin (not .Suspended)}}<form method="post" action="/groups/{{$.Group}}/remove" data-confirm="Remove {{.Name}}? The server stops giving it keys at once; your device then signs the removal and gives the group a new key."><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="cred" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No machines yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<details class="help">
+  <summary>Add a machine</summary>
+  <p>On the machine, ask to join; an admin lets it in from a device:</p>
+  {{template "cmd" (printf "esec-vault machine join %s --server %s" .Group .BaseURL)}}
+  <p>Or join it at once with an enrollment token (for autoscaling, put the token in the machine image or its secrets):</p>
+  {{template "cmd" "ESEC_VAULT_ENROLL_TOKEN=esecg1_... esec-vault machine join"}}
+  <p>Or create its key on your device and copy it over:</p>
+  {{template "cmd" (printf "esec vault group add-machine %s web-1" .Group)}}
+  <p class="muted">The machine then runs commands with the keys of every project the group reads: <code>esec-vault machine run -- esec run prod -- ./server</code>. A machine deleted with its disk is removed with <code>--destroyed</code>, which leaves nothing to rotate.</p>
+</details>
+
+<h2 id="tokens">Enrollment tokens</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Token</th><th>Expires</th><th>Last used</th><th>Allowed from</th><th></th></tr></thead>
+  <tbody>
+  {{range .Tokens}}
+  <tr>
+    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
+    <td>{{if .Expires.IsZero}}<span class="muted">never</span>{{else}}{{when .Expires}}{{end}}</td>
+    <td>{{when .LastUsed}}{{if and $.ShowOps .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "use"}}</span>{{end}}</td>
+    <td>{{with .Policy}}{{.}}{{else}}<span class="muted">anywhere with the token</span>{{end}}</td>
+    <td>{{if and $.MyAdmin (not .Suspended)}}<form method="post" action="/groups/{{$.Group}}/remove" data-confirm="Remove the token {{.Name}}? It stops working at once, for jobs that use it too."><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="cred" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No tokens. <code>esec vault group token {{.Group}} autoscale --expires 90d</code> creates one.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2 id="access">What it reads</h2>
+<p class="muted">Both sides agree to each project: the group takes keys from it, and the project grants the group its environments. Ticking boxes here proposes a change; an admin's device signs it with <code>esec vault group approve {{.Group}}</code>, and seals the keys to the group.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Project</th><th>Environments</th><th>State</th></tr></thead>
+  <tbody>
+  {{range .Matrix}}
+  {{$row := .}}
+  <tr>
+    <td><strong>{{.Project}}</strong>{{if .Rotate}}<br><span class="badge status-pending">rotate {{range $i, $e := .Rotate}}{{if $i}}, {{end}}{{$e}}{{end}}</span>{{end}}</td>
+    <td>
+      {{if and .CanEdit .Envs}}
+      <form method="post" action="/groups/{{$.Group}}/access" class="inline">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="project" value="{{.Project}}">
+        {{range .Envs}}<label class="check"><input type="checkbox" name="env" value="{{.Name}}"{{if .Reads}} checked{{end}}> {{.Name}}</label> {{end}}
+        <button type="submit" class="secondary">Propose</button>
+      </form>
+      {{else if .Envs}}
+      {{range .Envs}}{{if .Reads}}<span class="badge status-active">{{.Name}}</span> {{end}}{{end}}
+      {{else}}<span class="muted">you are not a member of this project</span>{{end}}
+    </td>
+    <td>{{if .Pending}}<span class="badge status-pending">change waiting to be signed</span><br>{{end}}{{if .Trusted}}the group takes its keys{{else}}<span class="muted">the group does not take its keys yet</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="3" class="muted">Nothing yet. <code>esec vault group grant {{.Group}} --project ORG/REPO --env prod</code> lets it read a project.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+{{if and .ShowOps .Proposals}}
+<h2 id="changes">Changes waiting to be signed</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Change</th><th>By</th><th>When</th><th></th></tr></thead>
+  <tbody>
+  {{range .Proposals}}
+  <tr>
+    <td>{{if eq .Kind "access"}}read {{if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}nothing{{end}} of {{.Project}}{{else}}remove {{.Cred}}{{end}}</td>
+    <td>{{.By}}</td>
+    <td>{{when .Created}}</td>
+    <td>{{if $.MyAdmin}}<form method="post" action="/groups/{{$.Group}}/changes/{{.ID}}/dismiss"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+<h2>Admins</h2>
+<p>{{range $i, $a := .Admins}}{{if $i}}, {{end}}<strong>{{$a.Login}}</strong>{{end}}</p>
+<details class="help">
+  <summary>Add an admin</summary>
+  {{template "cmd" (printf "esec vault group admin %s LOGIN" .Group)}}
+</details>
+
+<h2 id="history">History</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Who</th><th>Change</th></tr></thead>
+  <tbody>
+  {{range .History}}
+  <tr><td class="nowrap">{{when .Time}}</td><td>{{.Actor}}</td><td><span class="event{{with .Tone}} tone-{{.}}{{end}}">{{.Text}}</span></td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+{{if .ShowOps}}
+<h2>Machine activity</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time</th><th>Event</th><th>By</th><th>Detail</th><th>Address</th></tr></thead>
+  <tbody>
+  {{range .Activity}}
+  <tr><td class="nowrap">{{when .Time}}</td><td><span class="event{{if or (eq .Action "keys_refused") (eq .Action "enroll_refused") (eq .Action "blocked")}} tone-bad{{end}}">{{.Label}}</span></td><td>{{or .ActorName .Actor}}</td><td>{{.Detail}}</td><td class="muted">{{.IP}}</td></tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No entries.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+{{template "foot" .}}
