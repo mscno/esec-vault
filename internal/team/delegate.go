@@ -135,6 +135,17 @@ func projectScope(st *State, l Link) (string, error) { //nolint:gocyclo // one c
 		if !b.Admin && b.Verified == VerifiedWeb {
 			return chain.ScopeManage, nil
 		}
+	case TypeArchive:
+		// Where a project moves (a new chain) is a device's to choose.
+		var b ArchiveBody
+		if err := decodeBody(l, &b); err != nil {
+			return "", err
+		}
+		if b.Successor == nil {
+			return chain.ScopeManage, nil
+		}
+	case TypeUnarchive:
+		return chain.ScopeManage, nil
 	}
 	return "", fmt.Errorf("%w: %s", errNotInScope, l.Type)
 }

@@ -27,6 +27,8 @@ type teamSummary struct {
 	Rotations int
 	Missing   int
 	Updated   time.Time
+	Archived  bool
+	Successor string
 }
 
 // teamSummaries summarizes projects for user (or every project for "").
@@ -54,7 +56,10 @@ func (s *Server) teamSummaries(ctx context.Context, user string) ([]teamSummary,
 		if err != nil {
 			return nil, err
 		}
-		sum := teamSummary{ID: id, Admin: st.Admin(user), Access: st.Access(user), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Rotations: len(st.Rotations()), Updated: st.LastTime}
+		sum := teamSummary{ID: id, Admin: st.Admin(user), Access: st.Access(user), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Rotations: len(st.Rotations()), Updated: st.LastTime, Archived: st.Archived}
+		if st.Successor != nil {
+			sum.Successor = st.Successor.Project
+		}
 		for _, h := range status.Holders {
 			for _, v := range h.Envs {
 				if v == wire.KeyMissing {
@@ -632,6 +637,15 @@ func teamHistoryOf(st *team.State) []teamHistory {
 // earlier links created.
 func linkText(st *team.State, l team.Link, seen map[string]bool) string {
 	switch l.Type {
+	case team.TypeArchive:
+		var b team.ArchiveBody
+		_ = json.Unmarshal(l.Body, &b)
+		if b.Successor != nil {
+			return "moved the project to " + b.Successor.Project
+		}
+		return "archived the project"
+	case team.TypeUnarchive:
+		return "unarchived the project"
 	case team.TypeInit:
 		var b team.InitBody
 		_ = json.Unmarshal(l.Body, &b)

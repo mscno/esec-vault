@@ -433,6 +433,11 @@ func (c *Client) RecordReview(ctx context.Context, project string, rv wire.Acces
 	return c.do(ctx, http.MethodPost, projectPath(project)+"/review", authenticated, rv, nil)
 }
 
+// DeleteProject deletes an archived project's data from the server.
+func (c *Client) DeleteProject(ctx context.Context, project string) error {
+	return c.do(ctx, http.MethodDelete, projectPath(project), authenticated, nil, nil)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, m mode, in, out any) error {
 	var body []byte
 	if in != nil {

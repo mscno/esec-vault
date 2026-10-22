@@ -5,12 +5,15 @@
 {{if eq .Device.Status "pending"}}
 <div class="notice notice-warn">
   <p>{{if .Expired}}This device's approval window has passed. It has to sign in again.{{else}}This device is waiting for approval until {{ts .Device.PendingExpires}}. On a trusted device, run the command below and type the words this device's own screen shows. If you did not start this sign-in, suspend it.{{end}}</p>
-  {{if not .Expired}}{{template "cmd" (printf "esec vault devices approve %s" .Device.ID)}}{{end}}
+  {{if not .Expired}}{{template "cmd" (printf "esec vault devices approve %s" .Device.ID)}}
+  <form method="post" action="/devices/{{.Device.ID}}/approve" {{dsPost (printf "/devices/%s/approve" .Device.ID)}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Ask my devices to approve it</button></form>
+  <p class="muted">Your devices then ask you, in esec vault changes, to type the words this device shows. Never type them on a web page.</p>{{end}}
 </div>
 {{else if and (eq .Device.Status "suspended") .Device.Method}}
 <div class="notice notice-warn">
   <p>This device is blocked. Revoke it from a trusted device to rotate your user key, so it can never read new secrets.</p>
   {{template "cmd" (printf "esec vault devices revoke %s" .Device.ID)}}
+  <form method="post" action="/devices/{{.Device.ID}}/revoke" data-confirm="Ask your devices to revoke {{.Device.Name}}? Your account gets a new user key." {{dsPost (printf "/devices/%s/revoke" .Device.ID)}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="danger">Ask my devices to revoke it</button></form>
 </div>
 {{else if eq .Device.Status "suspended"}}
 <div class="notice notice-info">
@@ -34,10 +37,15 @@
 </div>
 {{end}}
 {{if eq .Device.Status "active"}}
-<details class="help">
-  <summary>Rename or revoke from a terminal</summary>
-  <p>Rename:</p>{{template "cmd" (printf "esec vault devices rename %s NEW-NAME" .Device.ID)}}
-  <p>Revoke (rotates your user key):</p>{{template "cmd" (printf "esec vault devices revoke %s" .Device.ID)}}
+<details class="help" data-preserve-attr="open">
+  <summary>Rename or retire it</summary>
+  <form method="post" action="/devices/{{.Device.ID}}/rename" class="grid-form" {{dsPost (printf "/devices/%s/rename" .Device.ID)}}>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>New name <input name="name" required maxlength="64" value="{{.Device.Name}}" pattern="[A-Za-z0-9][A-Za-z0-9 ._()'-]{0,63}" autocomplete="off"></label>
+    <div><button type="submit" class="secondary">Rename</button></div>
+  </form>
+  <form method="post" action="/devices/{{.Device.ID}}/revoke" data-confirm="Ask your devices to revoke {{.Device.Name}}? Your account gets a new user key." {{dsPost (printf "/devices/%s/revoke" .Device.ID)}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="danger">Retire (revoke) it</button></form>
+  <p class="muted">Your user key signs both, so one of your devices does: it shows each change and signs it (esec vault changes, or its dialog). In a terminal: <code>esec vault devices rename {{.Device.ID}} NEW-NAME</code>, <code>esec vault devices revoke {{.Device.ID}}</code>.</p>
 </details>
 {{end}}
 

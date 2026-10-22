@@ -8,7 +8,7 @@
   <tbody>
   {{range .Teams}}
   <tr>
-    <td><a href="/teams/{{.ID}}"><strong>{{.ID}}</strong></a></td>
+    <td><a href="/teams/{{.ID}}"><strong>{{.ID}}</strong></a>{{if .Archived}} <span class="badge status-revoked">{{if .Successor}}moved to {{.Successor}}{{else}}archived{{end}}</span>{{end}}</td>
     <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .Access}}read {{range $i, $e := .Access}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">no environments</span>{{end}}</td>
     <td>{{.Members}}</td>
     <td>{{.Machines}}</td>

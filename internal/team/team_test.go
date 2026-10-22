@@ -395,3 +395,34 @@ func TestOIDCPolicy(t *testing.T) {
 		}
 	}
 }
+
+// An archived project changes in nothing but members leaving, until it is
+// unarchived; only an admin archives it, and a successor names a chain.
+func TestArchive(t *testing.T) {
+	owner, alice := newAcct(t, 1, "owner"), newAcct(t, 2, "alice")
+	w := newWorld(t, owner, alice)
+	pub, _ := newKey(t)
+	w.add(owner, team.TypeInit, team.InitBody{Creator: owner.person(), Envs: []team.Env{{Name: "dev", PublicKey: pub}}})
+	w.add(owner, team.TypeMemberAdd, team.MemberAddBody{Member: alice.person(), Envs: []string{"dev"}, Verified: team.VerifiedAccountKey})
+	w.reject("only an admin", alice, team.TypeArchive, team.ArchiveBody{})
+	w.reject("invalid successor", owner, team.TypeArchive, team.ArchiveBody{Successor: &team.ProjectRef{Project: project, Root: strings.Repeat("a", 64)}})
+	w.add(owner, team.TypeArchive, team.ArchiveBody{Reason: "done"})
+	if !w.st.Archived || w.st.Successor != nil {
+		t.Fatalf("archive: %+v", w.st)
+	}
+	pub2, _ := newKey(t)
+	w.reject("archived", owner, team.TypeEnvSet, team.EnvSetBody{Env: team.Env{Name: "dev", PublicKey: pub2}})
+	w.reject("archived", owner, team.TypeArchive, team.ArchiveBody{})
+	w.add(alice, team.TypeMemberRemove, team.MemberRemoveBody{User: alice.user})
+	w.add(owner, team.TypeUnarchive, team.UnarchiveBody{})
+	w.reject("not archived", owner, team.TypeUnarchive, team.UnarchiveBody{})
+	w.add(owner, team.TypeEnvSet, team.EnvSetBody{Env: team.Env{Name: "dev", PublicKey: pub2}})
+	next := &team.ProjectRef{Project: "acme/shop", Root: strings.Repeat("b", 64)}
+	w.add(owner, team.TypeArchive, team.ArchiveBody{Successor: next})
+	if !w.st.Archived || w.st.Successor == nil || *w.st.Successor != *next {
+		t.Fatalf("archive with a successor: %+v", w.st.Successor)
+	}
+	if again, err := team.Verify(project, w.links, w.chains); err != nil || !again.Archived {
+		t.Fatalf("reverify: %v", err)
+	}
+}

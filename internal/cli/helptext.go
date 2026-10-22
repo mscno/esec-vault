@@ -123,6 +123,27 @@ var commandDetails = map[string]string{
 		"esec vault org acme",
 		"esec vault org acme --json",
 	),
+	"access handover": `Only a device signs who is an admin. The web page's Hand over admin proposes the same changes for a device to sign.
+
+` + examples(
+		"esec vault access handover alice",
+		"esec vault access handover alice --step-down     # then you are a member who reads everything",
+	),
+	"access move": `Renames a project: a new chain under the new id, with the same environment keys (the encrypted files stay as they are) and people, who get the keys again; the old project is archived, naming the new one, and members' devices follow it. Groups you administer move too; machines, and other admins' groups, are listed to add again. Then set ESEC_PROJECT in the repository's .esec-project.
+
+` + examples(
+		"esec vault access move acme/shop",
+		"esec vault access move acme/shop --project acme/store --yes",
+	),
+	"access archive": `An archived project sends no keys and changes in nothing but members leaving; its keys stay in keyrings. Delete it from the server afterwards with access delete.
+
+` + examples(
+		"esec vault access archive --reason \"replaced by acme/shop\"",
+		"esec vault access archive --undo",
+	),
+	"access delete": examples(
+		"esec vault access archive && esec vault access delete --yes",
+	),
 	"access set": examples(
 		"esec vault access set alice --env dev,staging   # replaces what they read",
 		"esec vault access set alice --admin",

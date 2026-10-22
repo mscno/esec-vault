@@ -155,9 +155,27 @@ func changePasskey(ch wire.Change) (*chain.Delegate, error) {
 
 // ApplyChange signs a web change on this device and says what it did, one
 // line each. The caller showed the change (Describe) and the person agreed.
-func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, error) { //nolint:gocyclo // one case per kind of change
-	switch {
-	case ch.Scope == wire.ScopeAccount && ch.Kind == wire.ChangeDelegateAdd:
+func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, error) {
+	switch ch.Scope {
+	case wire.ScopeAccount:
+		return a.applyAccountChange(ctx, ch)
+	case wire.ScopeProject:
+		return a.applyProjectChange(ctx, ch)
+	case wire.ScopeGroup:
+		return a.applyGroupChange(ctx, ch)
+	}
+	return nil, errUnknownChange(ch)
+}
+
+func errUnknownChange(ch ChangeView) error {
+	return fmt.Errorf("this version cannot sign a %s change; update esec-vault", ch.Kind)
+}
+
+// applyAccountChange signs a change to this account: delegates, devices,
+// and leaving a project.
+func (a *Account) applyAccountChange(ctx context.Context, ch ChangeView) ([]string, error) {
+	switch ch.Kind {
+	case wire.ChangeDelegateAdd:
 		d, err := changePasskey(ch.Change)
 		if err != nil {
 			return nil, err
@@ -166,18 +184,108 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 			return nil, err
 		}
 		return []string{fmt.Sprintf("Added the passkey %s; it signs changes on the web pages.", d.Name)}, nil
-	case ch.Scope == wire.ScopeAccount && ch.Kind == wire.ChangeDelegateServer:
+	case wire.ChangeDelegateServer:
 		if err := a.AllowServer(ctx); err != nil {
 			return nil, err
 		}
 		return []string{"The server now signs removals made on the web pages for you."}, nil
-	case ch.Scope == wire.ScopeAccount && ch.Kind == wire.ChangeDelegateRemove:
+	case wire.ChangeDelegateRemove:
 		d, err := a.RemoveDelegate(ctx, ch.Subject)
 		if err != nil {
 			return nil, err
 		}
 		return []string{fmt.Sprintf("Removed %s; it signs nothing for you any more.", d.Name)}, nil
-	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeAccess:
+	case wire.ChangeProjectLeave:
+		if _, err := a.RemoveMember(ctx, ch.Project, a.State.Login, "left"); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Left %s.", ch.Project)}, nil
+	case wire.ChangeDeviceRename:
+		name, err := changeName(ch.Change)
+		if err != nil {
+			return nil, err
+		}
+		if err := a.Rename(ctx, ch.Subject, name); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Renamed %s to %q.", ch.Subject, name)}, nil
+	case wire.ChangeDeviceRevoke:
+		if ch.Subject == a.State.DeviceID {
+			return nil, errors.New("this is the device being revoked; sign it on another one")
+		}
+		res, err := a.Revoke(ctx, ch.Subject, "revoked on the web")
+		if err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Revoked %s; your user key is now version %d. Rotate the keys of projects it could read if it may be compromised.", res.Device.Name, res.UKeyVersion)}, nil
+	case wire.ChangeDeviceApprove:
+		return nil, errors.New("approving a device needs the words it shows: run 'esec vault changes' in a terminal")
+	}
+	return nil, errUnknownChange(ch)
+}
+
+// applyProjectChange signs a change to a shared project.
+func (a *Account) applyProjectChange(ctx context.Context, ch ChangeView) ([]string, error) {
+	switch ch.Kind {
+	case wire.ChangeMemberAdd:
+		res, err := a.AddMember(ctx, ch.Target, ch.Subject, ch.Admin, ch.Envs, "")
+		if errors.Is(err, ErrNoProof) {
+			return nil, fmt.Errorf("%w. Add them by hand with the account key words they read to you: esec vault access add %s --account-key '...' --project %s", err, ch.Subject, ch.Target)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Added %s to %s, checked with their GitHub SSH key.", res.Login, ch.Target)}, nil
+	case wire.ChangeMemberSet:
+		res, err := a.UpdateMember(ctx, ch.Target, ch.Subject, ch.Admin, ch.Envs)
+		if err != nil {
+			return nil, err
+		}
+		out := []string{fmt.Sprintf("%s now reads %s of %s.", ch.Subject, readsText(ch.Change), ch.Target)}
+		if len(res.Exposed) > 0 {
+			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Target))
+		}
+		return out, nil
+	case wire.ChangeProjectArchive:
+		if err := a.Archive(ctx, ch.Target, "archived on the web"); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Archived %s: no keys are sent for it until it is unarchived.", ch.Target)}, nil
+	case wire.ChangeProjectUnarchive:
+		if err := a.Unarchive(ctx, ch.Target, "unarchived on the web"); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Unarchived %s.", ch.Target)}, nil
+	case wire.ChangeProjectMove:
+		res, err := a.MoveProject(ctx, ch.Target, ch.Project)
+		if err != nil {
+			return nil, err
+		}
+		return res.Lines(ch.Target), nil
+	case wire.ChangeMachineRemove:
+		m, err := a.RemoveMachine(ctx, ch.Target, ch.Subject, "removed on the web")
+		if err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Removed the machine %s from %s. Rotate %s: it may still hold the keys.", m.Name, ch.Target, strings.Join(m.Envs, ", "))}, nil
+	case wire.ChangeMemberRemove:
+		envs, err := a.RemoveMember(ctx, ch.Target, ch.Subject, "removed on the web")
+		if err != nil {
+			return nil, err
+		}
+		out := []string{fmt.Sprintf("Removed %s from %s.", ch.Subject, ch.Target)}
+		if len(envs) > 0 {
+			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(envs, ", "), ch.Target))
+		}
+		return out, nil
+	}
+	return nil, errUnknownChange(ch)
+}
+
+// applyGroupChange signs a change to a group.
+func (a *Account) applyGroupChange(ctx context.Context, ch ChangeView) ([]string, error) {
+	switch ch.Kind {
+	case wire.ChangeAccess:
 		res, err := a.GrantGroup(ctx, ch.Target, ch.Project, ch.Envs)
 		if err != nil {
 			return nil, err
@@ -190,7 +298,7 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 			out = append(out, fmt.Sprintf("Rotate %s of %s: the group may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Project))
 		}
 		return out, nil
-	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeMemberAdd:
+	case wire.ChangeMemberAdd:
 		res, err := a.AddGroupMember(ctx, ch.Target, ch.Subject, "")
 		if errors.Is(err, ErrNoProof) {
 			return nil, fmt.Errorf("%w. Add them by hand with the account key words they read to you: esec vault group add %s %s --account-key '...'", err, ch.Target, ch.Subject)
@@ -199,7 +307,7 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 			return nil, err
 		}
 		return []string{fmt.Sprintf("Added %s to %s, checked with their GitHub SSH key.", res.Login, ch.Target)}, nil
-	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeMemberRemove:
+	case wire.ChangeMemberRemove:
 		res, err := a.RemoveGroupMember(ctx, ch.Target, ch.Subject, "removed on the web")
 		if err != nil {
 			return nil, err
@@ -209,7 +317,7 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(envs, ", "), p))
 		}
 		return out, nil
-	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeRemove:
+	case wire.ChangeRemove:
 		res, err := a.RemoveCred(ctx, ch.Target, ch.Subject, "removed on the web", false)
 		if err != nil {
 			return nil, err
@@ -219,43 +327,8 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 			out = append(out, fmt.Sprintf("Rotate %s of %s: it may still hold the keys.", strings.Join(envs, ", "), p))
 		}
 		return out, nil
-	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberAdd:
-		res, err := a.AddMember(ctx, ch.Target, ch.Subject, ch.Admin, ch.Envs, "")
-		if errors.Is(err, ErrNoProof) {
-			return nil, fmt.Errorf("%w. Add them by hand with the account key words they read to you: esec vault access add %s --account-key '...' --project %s", err, ch.Subject, ch.Target)
-		}
-		if err != nil {
-			return nil, err
-		}
-		return []string{fmt.Sprintf("Added %s to %s, checked with their GitHub SSH key.", res.Login, ch.Target)}, nil
-	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberSet:
-		res, err := a.UpdateMember(ctx, ch.Target, ch.Subject, ch.Admin, ch.Envs)
-		if err != nil {
-			return nil, err
-		}
-		out := []string{fmt.Sprintf("%s now reads %s of %s.", ch.Subject, readsText(ch.Change), ch.Target)}
-		if len(res.Exposed) > 0 {
-			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Target))
-		}
-		return out, nil
-	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMachineRemove:
-		m, err := a.RemoveMachine(ctx, ch.Target, ch.Subject, "removed on the web")
-		if err != nil {
-			return nil, err
-		}
-		return []string{fmt.Sprintf("Removed the machine %s from %s. Rotate %s: it may still hold the keys.", m.Name, ch.Target, strings.Join(m.Envs, ", "))}, nil
-	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberRemove:
-		envs, err := a.RemoveMember(ctx, ch.Target, ch.Subject, "removed on the web")
-		if err != nil {
-			return nil, err
-		}
-		out := []string{fmt.Sprintf("Removed %s from %s.", ch.Subject, ch.Target)}
-		if len(envs) > 0 {
-			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(envs, ", "), ch.Target))
-		}
-		return out, nil
 	}
-	return nil, fmt.Errorf("this version cannot sign a %s change; update esec-vault", ch.Kind)
+	return nil, errUnknownChange(ch)
 }
 
 // Narrows reports whether a change, checked against the verified chains,
@@ -293,6 +366,47 @@ func subsetOf(a, b []string) bool {
 	return true
 }
 
+// NeedsWords reports whether signing a change needs the person to type the
+// words another device shows: approving a new device.
+func (ch ChangeView) NeedsWords() bool { return ch.Kind == wire.ChangeDeviceApprove }
+
+// ApproveDevice signs a web change approving a new device, once the person
+// typed the words that device shows. The device and its words come from its
+// own signed proof, checked here.
+func (a *Account) ApproveDevice(ctx context.Context, ch ChangeView, typed string) ([]string, error) {
+	if !ch.NeedsWords() {
+		return nil, errors.New("not a device approval")
+	}
+	pending, err := a.PendingDevices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pending {
+		if p.Info.ID != ch.Subject {
+			continue
+		}
+		if normalizeWords(typed) != p.Words {
+			return nil, errors.New("those are not the words of the device waiting; it was not approved")
+		}
+		if err := a.Approve(ctx, p); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Approved %s (%s).", p.Proof.Device.Name, p.Proof.Device.Platform)}, nil
+	}
+	return nil, fmt.Errorf("the device %s is not waiting for approval any more", ch.Subject)
+}
+
+// changeName decodes the new name of a device rename.
+func changeName(c wire.Change) (string, error) {
+	var d struct {
+		Name string `json:"name"`
+	}
+	if err := envelope.DecodeStrict(c.Data, &d); err != nil || d.Name == "" {
+		return "", errors.New("the change names no new name")
+	}
+	return d.Name, nil
+}
+
 // Removes reports whether a change only takes access away.
 func (ch ChangeView) Removes() bool {
 	switch ch.Kind {
@@ -328,6 +442,9 @@ func (ch ChangeView) DescribeLines() []string {
 }
 
 func (ch ChangeView) describe() []string {
+	if lines, ok := ch.describeSettings(); ok {
+		return lines
+	}
 	switch ch.Kind {
 	case wire.ChangeAccess:
 		if len(ch.Envs) == 0 {
@@ -387,4 +504,29 @@ func orNothing(envs []string) string {
 		return "nothing"
 	}
 	return strings.Join(envs, ", ")
+}
+
+// describeSettings describes the changes to project settings and devices.
+func (ch ChangeView) describeSettings() ([]string, bool) {
+	switch ch.Kind {
+	case wire.ChangeProjectArchive:
+		return []string{fmt.Sprintf("%s: archive it (no keys are sent for it until it is unarchived)", ch.Target)}, true
+	case wire.ChangeProjectUnarchive:
+		return []string{fmt.Sprintf("%s: unarchive it", ch.Target)}, true
+	case wire.ChangeProjectMove:
+		return []string{fmt.Sprintf("%s: MOVE it to %s (a new project with the same keys and people; this one archived)", ch.Target, ch.Project)}, true
+	case wire.ChangeProjectLeave:
+		return []string{fmt.Sprintf("leave the project %s", ch.Project)}, true
+	case wire.ChangeDeviceRename:
+		name, err := changeName(ch.Change)
+		if err != nil {
+			return []string{"rename a device (damaged)"}, true
+		}
+		return []string{fmt.Sprintf("rename your device %s to %q", ch.Subject, name)}, true
+	case wire.ChangeDeviceRevoke:
+		return []string{fmt.Sprintf("REVOKE your device %s, and give your account a new user key", ch.Subject)}, true
+	case wire.ChangeDeviceApprove:
+		return []string{fmt.Sprintf("APPROVE a new device %s for your account: type the words it shows on its own screen", ch.Subject)}, true
+	}
+	return nil, false
 }

@@ -78,6 +78,14 @@ func (s *Server) askChanges(ctx context.Context) {
 			if seen && time.Since(last) < time.Hour {
 				continue
 			}
+			if ch.NeedsWords() {
+				// A yes in a dialog is not enough: the words are typed.
+				d.mu.Lock()
+				d.asked[ch.ID] = time.Now()
+				d.mu.Unlock()
+				note("esec vault: approve a new device", "A new device waits for your approval. Run esec vault changes and type the words it shows.")
+				continue
+			}
 			// The change first, whole; who asked, from the server, last.
 			text := strings.Join(ch.DescribeLines(), "\n") + "\n\nAsked on the web by " + ch.AskedBy() + ". Sign it with your user key on this device?"
 			answer, err := ask("esec vault: sign a change?", text, dialogTimeout)

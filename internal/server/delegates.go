@@ -152,6 +152,10 @@ func (s *Server) changeLinks(ctx context.Context, user string, cs *chain.State, 
 				return nil, err
 			}
 			typ, body = team.TypeMemberAdd, team.MemberAddBody{Member: p, Envs: team.SortEnvs(c.Envs), Verified: team.VerifiedWeb}
+		case wire.ChangeProjectArchive:
+			typ, body = team.TypeArchive, team.ArchiveBody{Reason: "archived on the web"}
+		case wire.ChangeProjectUnarchive:
+			typ, body = team.TypeUnarchive, team.UnarchiveBody{Reason: "unarchived on the web"}
 		case wire.ChangeMachineRemove:
 			if _, ok := st.Machine(c.Subject); !ok {
 				return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no such machine.")
@@ -173,6 +177,26 @@ func (s *Server) changeLinks(ctx context.Context, user string, cs *chain.State, 
 			return nil, errNeedsDevice
 		}
 		e, err := st.DelegateLink(typ, body, now, user, d.ID, seq)
+		if err != nil {
+			return nil, err
+		}
+		return []*envelope.Envelope{e}, nil
+	case wire.ScopeAccount:
+		if c.Kind != wire.ChangeProjectLeave || c.Target != user {
+			return nil, errNeedsDevice
+		}
+		st, _, err := s.db.projectState(ctx, s.db.sql, c.Project)
+		if err != nil {
+			return nil, err
+		}
+		if st == nil {
+			return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no shared project %s.", c.Project)
+		}
+		if m, ok := st.Member(user); !ok || m.Admin {
+			// An admin leaves from a device: the last one cannot at all.
+			return nil, errNeedsDevice
+		}
+		e, err := st.DelegateLink(team.TypeMemberRemove, team.MemberRemoveBody{User: user, Reason: "left on the web"}, now, user, d.ID, seq)
 		if err != nil {
 			return nil, err
 		}

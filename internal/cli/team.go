@@ -27,6 +27,10 @@ type TeamCmd struct {
 	Request  AccessRequestCmd  `cmd:"" help:"Ask a project's admins for environments."`
 	Requests AccessRequestsCmd `cmd:"" help:"List access requests; grant, turn down or withdraw one."`
 	Review   AccessReviewCmd   `cmd:"" help:"Review who reads a project: keep those who need it, remove the rest, and record it."`
+	Handover AccessHandoverCmd `cmd:"" help:"Make another member an admin (and, with --step-down, yourself a member)."`
+	Move     AccessMoveCmd     `cmd:"" help:"Rename a project: move it to a new id with the same keys and people."`
+	Archive  AccessArchiveCmd  `cmd:"" help:"Archive a project (no keys are sent for it), or with --undo unarchive it."`
+	Delete   AccessDeleteCmd   `cmd:"" help:"Delete an archived project from the server; keys stay in keyrings."`
 	Add      TeamAddCmd        `cmd:"" help:"Add a member and send them the keys they may read."`
 	Set      TeamSetCmd        `cmd:"" help:"Change what a member reads (replacing it), or make them an admin."`
 	Remove   TeamRemoveCmd     `cmd:"" help:"Remove a member."`
@@ -68,6 +72,12 @@ func (c *TeamListCmd) Run(ctx *cliCtx) error {
 		extra := ""
 		if p.Rotations > 0 {
 			extra = fmt.Sprintf("  %d key(s) to rotate", p.Rotations)
+		}
+		switch {
+		case p.Successor != "":
+			extra += "  moved to " + p.Successor
+		case p.Archived:
+			extra += "  archived"
 		}
 		fmt.Printf("%-32s %-24s %d member(s), %d machine(s)%s\n", p.ID, role, p.Members, p.Machines, extra)
 	}

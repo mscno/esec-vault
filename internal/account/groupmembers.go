@@ -257,7 +257,7 @@ func (t *teamCtx) importGroupProject(gs *team.GroupState, p wire.GroupProjectKey
 // a project someone added this account to, its first keys wait until the
 // person accepts them.
 func (t *teamCtx) acceptVia(st *team.State, group string, envs []string, res *TeamSyncResult, opts TeamSyncOptions) bool {
-	if t.pins.Accepted[st.Project] {
+	if t.pins.Accepted[st.Project] || t.followMoves(st) {
 		return true
 	}
 	inv := Invite{Project: st.Project, AddedBy: "the group " + group, Envs: envs, Group: group}

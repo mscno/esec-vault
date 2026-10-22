@@ -84,6 +84,30 @@ When the time comes, the server signs the removal for you if you let it
 (`esec vault delegate server`); otherwise it waits in `esec vault changes`
 (and `changes --yes` signs it, since it only takes access away).
 
+### Rename, archive or delete a project, hand over admin
+
+```sh
+esec vault access move acme/shop          # rename: same keys and people; members follow
+esec vault access archive                 # no keys are sent for it; --undo to restart
+esec vault access delete --yes            # an archived project, from the server
+esec vault access handover alice --step-down
+esec vault access leave
+```
+
+After a move, set `ESEC_PROJECT` in the repository's `.esec-project` to the
+new id and commit it; machines bound to the old project are listed to create
+again. On the web, the project's page › **Settings** proposes each of these
+for a passkey or device to sign (moving and handing over admin need a
+device), and a member leaves there.
+
+### Manage devices from the web
+
+A device's page (Overview › the device) asks your devices to approve a new
+device, rename one or retire (revoke) one. Your user key signs these, so one
+of your devices does it, in `esec vault changes` or its dialog. To approve, you
+type the words the new device shows into the approving device; the web page
+never takes them.
+
 ### Review who reads a project
 
 ```sh
@@ -1737,6 +1761,8 @@ Migration is explicit; installing the binary does not alter live keys.
 | Give access for a while | `esec vault access grant alice --env prod --for 8h` |
 | Ask for access, or answer requests | `esec vault access request --env staging`, `esec vault access requests` |
 | Review who reads a project | `esec vault access review` |
+| Rename, archive or delete a project | `esec vault access move NEW`, `esec vault access archive`, `esec vault access delete` |
+| Make someone else an admin | `esec vault access handover alice --step-down` |
 | See an organisation and its policy | `esec vault org acme` |
 | Receive and send team keys now | `esec vault access sync` |
 | List a project's machines | `esec vault machine list` |

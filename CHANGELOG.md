@@ -1,3 +1,34 @@
+# v0.16.0
+
+Project settings and device management on the web.
+
+- **Archive** a project (`esec vault access archive`, `--undo`), signed by a
+  passkey or a device: an archived project sends no keys, its machines get
+  none, and nothing in its chain changes but members leaving.
+- **Delete** an archived project from the server (`esec vault access
+  delete`, or the project's page): its chain, members and waiting keys go;
+  its log stays, and keys stay in keyrings. Devices forget it once gone, so
+  a project made again under the name is not taken for a rollback.
+- **Rename** a project (`esec vault access move acme/shop`): a new chain
+  with the same environment keys and people, who get the keys again; the
+  old project is archived, naming the new one, and members' devices follow
+  it without asking (unless they hold keys of the new name already). Groups
+  you administer move too; machines and other admins' groups are listed.
+- **Hand over admin** (`esec vault access handover alice --step-down`).
+- **On the web**, the project's page has a Settings section: archive,
+  unarchive, delete, rename and hand over admin (proposed for a passkey or a
+  device to sign; renaming and admin changes only a device signs), and
+  **Leave the project** for members (signed by the server or a passkey when
+  you let them, otherwise by your device).
+- **Devices on the web**: a device's page asks your devices to approve a new
+  device, rename one, or revoke one. Your user key signs these, so a device
+  does, in `esec vault changes`; to approve, you type the words the new
+  device shows into the approving device, never into the web page. The
+  background service's dialogs leave approvals to `esec vault changes`.
+
+Older versions cannot verify a project chain with an archive link in it:
+update esec-vault on every device of such a project.
+
 # v0.15.0
 
 Organisations, their policies, and access reviews.

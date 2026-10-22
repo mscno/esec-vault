@@ -98,6 +98,20 @@ const (
 	ChangeMemberRemove = "member_remove"
 	// ChangeMachineRemove removes a project's machine (Subject is its id).
 	ChangeMachineRemove = "machine_remove"
+	// ChangeProjectArchive and ChangeProjectUnarchive stop a project and
+	// start it again; ChangeProjectMove moves it to a new id (Project), on a
+	// device. In an account, ChangeProjectLeave leaves the project Project.
+	ChangeProjectArchive   = "project_archive"
+	ChangeProjectUnarchive = "project_unarchive"
+	ChangeProjectMove      = "project_move"
+	ChangeProjectLeave     = "project_leave"
+	// ChangeDeviceApprove, in an account, approves a new device (Subject is
+	// its id): the person types the words it shows on the approving device.
+	// ChangeDeviceRename renames one (Data is {"name": ...}), and
+	// ChangeDeviceRevoke revokes one.
+	ChangeDeviceApprove = "device_approve"
+	ChangeDeviceRename  = "device_rename"
+	ChangeDeviceRevoke  = "device_revoke"
 	// ChangeDelegateAdd, in an account, adds a passkey as a delegate (Data
 	// is the chain.Delegate); ChangeDelegateServer lets the server sign
 	// removals; ChangeDelegateRemove removes a delegate (Subject is its id).

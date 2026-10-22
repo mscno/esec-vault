@@ -92,6 +92,10 @@ func (s *Server) apiMachineKeys(w http.ResponseWriter, r *http.Request) { //noli
 		unknown()
 		return
 	}
+	if st.Archived {
+		writeErr(w, http.StatusForbidden, wire.ErrForbidden, req.Project+" is archived: it gives its machines no keys")
+		return
+	}
 	detail := m.Name
 	if m.OIDC != nil {
 		if req.OIDCToken == "" {

@@ -38,6 +38,10 @@ type Pin struct {
 	Seq  uint64 `toml:"seq"`
 	Head string `toml:"head"`
 	Root string `toml:"root"`
+	// Archived says the project was archived when last seen: once the
+	// server no longer has it (deleted), the pin is dropped, so a project
+	// made again under the name is not taken for a rollback.
+	Archived bool `toml:"archived,omitempty"`
 }
 
 // TeamPins is teams.toml.
@@ -202,6 +206,9 @@ func (t *teamCtx) state(project string) (*team.State, error) {
 	}
 	pc, err := t.a.Client.ProjectChain(t.ctx, project)
 	if client.IsCode(err, wire.ErrNotFound) {
+		if pin, ok := t.pins.Projects[project]; ok && pin.Archived {
+			delete(t.pins.Projects, project)
+		}
 		return nil, nil
 	}
 	if client.IsCode(err, wire.ErrForbidden) {
@@ -269,7 +276,7 @@ func (t *teamCtx) checkPin(pin Pin, pinned bool, id, kind string, c pinnedChain,
 var errNotMember = errors.New("you are not a member of")
 
 func (t *teamCtx) pin(st *team.State) {
-	t.pins.Projects[st.Project] = Pin{Seq: st.Seq, Head: st.Head(), Root: st.Root()}
+	t.pins.Projects[st.Project] = Pin{Seq: st.Seq, Head: st.Head(), Root: st.Root(), Archived: st.Archived}
 	t.states[st.Project] = st
 }
 
@@ -1084,6 +1091,10 @@ func (t *teamCtx) accept(st *team.State, res *TeamSyncResult, opts TeamSyncOptio
 	if !ok {
 		return false
 	}
+	// A project that one this device accepted moved to.
+	if t.followMoves(st) {
+		return true
+	}
 	inv := Invite{Project: st.Project, AddedBy: loginOf(st, m.AddedBy), Admin: m.Admin, Envs: st.Access(m.User)}
 	if opts.Accept == nil || !opts.Accept(inv) {
 		for _, seen := range res.Invites {
@@ -1188,7 +1199,7 @@ func (t *teamCtx) fulfil(res *TeamSyncResult) error {
 				res.Rotations[p.ID] = append(res.Rotations[p.ID], n)
 			}
 		}
-		if !st.Admin(t.a.State.User) {
+		if !st.Admin(t.a.State.User) || st.Archived {
 			continue
 		}
 		res.Admin[p.ID] = true

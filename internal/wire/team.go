@@ -42,6 +42,10 @@ type ProjectSummary struct {
 	Machines  int      `json:"machines"`
 	Groups    int      `json:"groups"`
 	Rotations int      `json:"rotations"`
+	// Archived says the project is stopped; Successor names where it
+	// moved, when it did.
+	Archived  bool   `json:"archived,omitempty"`
+	Successor string `json:"successor,omitempty"`
 }
 
 // Projects lists shared projects.

@@ -144,7 +144,11 @@ func (s *Server) apiProjects(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		if !ok {
 			continue
 		}
-		out.Projects = append(out.Projects, wire.ProjectSummary{ID: id, Seq: st.Seq, Admin: m.Admin, Envs: st.Access(c.user.ID), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Groups: len(st.ActiveGroups()), Rotations: len(st.Rotations())})
+		sum := wire.ProjectSummary{ID: id, Seq: st.Seq, Admin: m.Admin, Envs: st.Access(c.user.ID), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Groups: len(st.ActiveGroups()), Rotations: len(st.Rotations()), Archived: st.Archived}
+		if st.Successor != nil {
+			sum.Successor = st.Successor.Project
+		}
+		out.Projects = append(out.Projects, sum)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -495,6 +499,9 @@ func (s *Server) checkGroupSet(ctx context.Context, tx *sql.Tx, l team.Link) err
 // storeGrant checks a grant against the new state and stores it; it returns
 // the recipient.
 func (s *Server) storeGrant(ctx context.Context, tx *sql.Tx, c *reqCtx, caller *chain.State, st *team.State, e *envelope.Envelope, chains team.Chains, now time.Time) (string, error) {
+	if st.Archived {
+		return "", clientErr(http.StatusConflict, wire.ErrConflict, "%s is archived: it sends no keys", st.Project)
+	}
 	g, err := team.CheckGrant(e, st, chains)
 	if err != nil {
 		return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "grant rejected: %v", err)
@@ -696,6 +703,13 @@ func envsOf(hs []wire.Holding, project string) string {
 // linkSummary describes a link for the project audit log.
 func linkSummary(before, after *team.State, l team.Link) string {
 	switch l.Type {
+	case team.TypeArchive:
+		if after.Successor != nil {
+			return "moved to " + after.Successor.Project
+		}
+		return "archived"
+	case team.TypeUnarchive:
+		return "unarchived"
 	case team.TypeInit:
 		return "envs " + envList(after.EnvNames())
 	case team.TypeMemberAdd, team.TypeMemberUpdate:

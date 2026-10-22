@@ -54,6 +54,25 @@ func printChange(ch account.ChangeView) {
 	}
 }
 
+// approveWithWords signs a device approval once the person typed the words
+// the new device shows: typed here, from that device's own screen, never
+// taken from the server or a web page. It reports whether it signed.
+func approveWithWords(ctx context.Context, a *account.Account, ch account.ChangeView) (bool, error) {
+	typed, _ := promptLine("Type the words the new device shows to approve it (Enter skips): ")
+	if typed == "" {
+		return false, nil
+	}
+	lines, err := a.ApproveDevice(ctx, ch, typed)
+	if err != nil {
+		fmt.Println("  ! " + err.Error())
+		return false, nil //nolint:nilerr // shown; the next change is asked about
+	}
+	for _, l := range lines {
+		fmt.Println("  ✓ " + safetext.Clean(l))
+	}
+	return true, a.CloseChange(ctx, ch.ID, true)
+}
+
 // signChanges shows each change and, when the person agrees, signs it on
 // this device. The server stores the changes and could have invented any
 // of them, so nothing that gives access is signed unasked.
@@ -61,6 +80,16 @@ func signChanges(ctx context.Context, a *account.Account, list []account.ChangeV
 	unsigned := 0
 	for _, ch := range list {
 		printChange(ch)
+		if ch.NeedsWords() {
+			signed, err := approveWithWords(ctx, a, ch)
+			if err != nil {
+				return err
+			}
+			if !signed && unanswered {
+				unsigned++
+			}
+			continue
+		}
 		question := "Sign it?"
 		if ch.Kind == wire.ChangeDelegateAdd {
 			question = "Does the page that made it show the same fingerprint, and do you want it?"

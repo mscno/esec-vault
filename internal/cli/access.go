@@ -559,3 +559,140 @@ func (c *AccessRequestsCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // list, o
 	}
 	return nil
 }
+
+// AccessArchiveCmd archives a project.
+type AccessArchiveCmd struct {
+	Project string `help:"Project id (default: nearest .esec-project)"`
+	Reason  string `help:"Reason recorded in the project chain"`
+	Undo    bool   `help:"Unarchive it instead"`
+}
+
+// Run implements access archive.
+func (c *AccessArchiveCmd) Run(ctx *cliCtx) error {
+	project, err := projectFlag(c.Project)
+	if err != nil {
+		return err
+	}
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(time.Minute)
+	defer cancel()
+	if c.Undo {
+		if err := a.Unarchive(bg, project, c.Reason); err != nil {
+			return err
+		}
+		fmt.Printf("✓ Unarchived %s.\n", project)
+		return nil
+	}
+	if err := a.Archive(bg, project, c.Reason); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Archived %s: no keys are sent for it, and nothing changes in it but members leaving. Undo with: esec vault access archive --undo --project %s\n", project, project)
+	return nil
+}
+
+// AccessDeleteCmd deletes an archived project from the server.
+type AccessDeleteCmd struct {
+	Project string `help:"Project id (default: nearest .esec-project)"`
+	Yes     bool   `help:"Do not ask for confirmation"`
+}
+
+// Run implements access delete.
+func (c *AccessDeleteCmd) Run(ctx *cliCtx) error {
+	project, err := projectFlag(c.Project)
+	if err != nil {
+		return err
+	}
+	if !c.Yes && !confirm(fmt.Sprintf("Delete %s from the server for good? Its keys stay in keyrings.", project)) {
+		return errors.New("cancelled")
+	}
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(time.Minute)
+	defer cancel()
+	if err := a.DeleteProject(bg, project); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Deleted %s from the server. Its keys stay in your keyring, and the encrypted files in the repository.\n", project)
+	return nil
+}
+
+// AccessMoveCmd moves a project to a new id.
+type AccessMoveCmd struct {
+	To      string `arg:"" help:"New project id, org/repo"`
+	Project string `help:"Project id (default: nearest .esec-project)"`
+	Yes     bool   `help:"Do not ask for confirmation"`
+}
+
+// Run implements access move.
+func (c *AccessMoveCmd) Run(ctx *cliCtx) error {
+	project, err := projectFlag(c.Project)
+	if err != nil {
+		return err
+	}
+	if !c.Yes && !confirm(fmt.Sprintf("Move %s to %s? A new project with the same keys and people; %s is archived.", project, c.To, project)) {
+		return errors.New("cancelled")
+	}
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(10 * time.Minute)
+	defer cancel()
+	res, err := a.MoveProject(bg, project, c.To)
+	if err != nil {
+		return err
+	}
+	for i, l := range res.Lines(project) {
+		if i == 0 {
+			fmt.Println("✓ " + safetext.Clean(l))
+			continue
+		}
+		fmt.Println("  " + safetext.Clean(l))
+	}
+	return nil
+}
+
+// AccessHandoverCmd makes another member an admin, and this account a member.
+type AccessHandoverCmd struct {
+	Login    string `arg:"" help:"GitHub login of the member who becomes an admin"`
+	StepDown bool   `name:"step-down" help:"Then make yourself a member who reads every environment"`
+	Project  string `help:"Project id (default: nearest .esec-project)"`
+}
+
+// Run implements access handover.
+func (c *AccessHandoverCmd) Run(ctx *cliCtx) error {
+	project, err := projectFlag(c.Project)
+	if err != nil {
+		return err
+	}
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(2 * time.Minute)
+	defer cancel()
+	if strings.EqualFold(c.Login, a.State.Login) {
+		return errors.New("name someone else")
+	}
+	if _, err := a.UpdateMember(bg, project, c.Login, true, nil); err != nil {
+		return err
+	}
+	fmt.Printf("✓ %s is an admin of %s.\n", c.Login, project)
+	if !c.StepDown {
+		return nil
+	}
+	v, err := a.Team(bg, project)
+	if err != nil {
+		return err
+	}
+	if _, err := a.UpdateMember(bg, project, a.State.Login, false, v.State.EnvNames()); err != nil {
+		return err
+	}
+	fmt.Printf("✓ You are a member of %s who reads every environment, no longer an admin.\n", project)
+	return nil
+}

@@ -1,7 +1,8 @@
 {{template "head" .}}
 <p class="crumbs">{{if .Member}}<a href="/projects#shared">Projects</a> › <a href="/orgs/{{.Org}}">{{.Org}}</a>{{else}}<a href="/admin#projects">Admin</a>{{end}} › Shared project</p>
 {{if and .MyAdmin .ReviewStatus}}{{if .ReviewStatus.Due}}<div class="notice notice-info"><p>Time to review who reads this project. <a href="/teams/{{.Project}}/review">Review</a></p></div>{{end}}{{end}}
-<h1>{{.Project}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .Member}}<span class="badge">member</span>{{else}}<span class="badge">read-only</span>{{end}}</h1>
+<h1>{{.Project}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .Member}}<span class="badge">member</span>{{else}}<span class="badge">read-only</span>{{end}}{{if .State.Archived}} <span class="badge status-revoked">archived</span>{{end}}</h1>
+{{if .State.Archived}}<div class="notice notice-warn"><p>{{if .State.Successor}}This project moved to <a href="/teams/{{.State.Successor.Project}}">{{.State.Successor.Project}}</a>.{{else}}This project is archived: no keys are sent for it, and nothing changes in it but members leaving.{{end}}</p></div>{{end}}
 <p class="muted">Created by {{.Creator}} {{when .Created}}. Who may read which environment is recorded in a chain signed by the project's admins; the server stores it but cannot change it. Keys reach each member sealed to their own key.</p>
 <div id="live" {{dsLive (printf "/teams/%s/live" .Project) 15}}></div>
 {{template "team-alerts" .}}
@@ -60,6 +61,46 @@
 </table>
 </div>
 
+<h2 id="settings">Settings</h2>
+{{if .MyAdmin}}
+<div class="settings">
+{{if .State.Archived}}
+<form method="post" action="/teams/{{.Project}}/unarchive" {{dsPost (printf "/teams/%s/unarchive" .Project)}} class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Unarchive</button></form>
+<details class="help">
+  <summary>Delete it from the server</summary>
+  <form method="post" action="/teams/{{.Project}}/delete" class="grid-form">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Type <code>{{.Project}}</code> to confirm <input name="confirm" required autocomplete="off" spellcheck="false"></label>
+    <div><button type="submit" class="danger">Delete for good</button></div>
+  </form>
+  <p class="muted">Deletes its chain, members and waiting keys from this server; its log stays. The keys stay in everyone's keyrings, and the encrypted files in the repository.</p>
+</details>
+{{else}}
+<details class="help">
+  <summary>Hand over admin</summary>
+  <form method="post" action="/teams/{{.Project}}/handover" {{dsPost (printf "/teams/%s/handover" .Project)}} class="grid-form" data-confirm="Propose handing over admin?">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>New admin <select name="login">{{range .Members}}{{if ne .User $.User.ID}}<option value="{{.Login}}">{{.Login}}</option>{{end}}{{end}}</select></label>
+    <div><label class="check"><input type="checkbox" name="step_down"> and make me a member who reads every environment</label></div>
+    <div><button type="submit">Propose</button></div>
+  </form>
+  <p class="muted">Only a device signs who is an admin: <code>esec vault changes</code>.</p>
+</details>
+<details class="help">
+  <summary>Rename (move to a new id)</summary>
+  <form method="post" action="/teams/{{.Project}}/move" {{dsPost (printf "/teams/%s/move" .Project)}} class="grid-form" data-confirm="Propose moving the project?">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>New id <input name="project" required placeholder="acme/new-name" pattern="[A-Za-z0-9._-]+/[A-Za-z0-9._-]+" autocomplete="off" spellcheck="false"></label>
+    <div><button type="submit">Propose</button></div>
+  </form>
+  <p class="muted">A device makes the move: a new project with the same keys and people, and this one archived pointing there. Machines and groups are listed to add again. Then change <code>ESEC_PROJECT</code> in the repository's <code>.esec-project</code>. On a device: <code>esec vault access move acme/new-name</code>.</p>
+</details>
+<form method="post" action="/teams/{{.Project}}/archive" {{dsPost (printf "/teams/%s/archive" .Project)}} class="inline" data-confirm="Propose archiving {{.Project}}? No keys are sent for it once archived."><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Archive</button></form>
+{{end}}
+</div>
+{{else if .Member}}
+<form method="post" action="/teams/{{.Project}}/leave" data-confirm="Leave {{.Project}}? You keep the keys you have; its admins should replace them."><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="danger">Leave the project</button></form>
+{{end}}
 {{if .MyAdmin}}<p><a href="/teams/{{.Project}}/review">Review who reads it</a>{{with .ReviewStatus}}{{with .Last}} <span class="muted">(last reviewed by {{.By}} {{when .Reviewed}})</span>{{end}}{{end}}</p>{{end}}
 <h2 id="history">History</h2>
 <p class="muted">Export the whole history, signed changes and what the server recorded: <a href="/teams/{{.Project}}/export" download>CSV</a> · <a href="/teams/{{.Project}}/export?format=json" download>JSON</a></p>

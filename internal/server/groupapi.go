@@ -1030,7 +1030,7 @@ func (s *Server) fleetKeys(ctx context.Context, gs *team.GroupState, links []*en
 			s.log.Warn("shared project does not verify; leaving it out of a machine's keys", "project", p, "error", err)
 			continue
 		}
-		if ps == nil || ps.Root() != gs.Access[p] {
+		if ps == nil || ps.Root() != gs.Access[p] || ps.Archived {
 			continue
 		}
 		pg, ok := ps.Group(gs.Group)

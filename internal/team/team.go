@@ -48,6 +48,11 @@ const (
 	TypeMachineAdd    = "machine_add"
 	TypeMachineRemove = "machine_remove"
 	TypeGroupSet      = "group_set"
+	// TypeArchive stops the project: no keys are sent, and nothing changes
+	// but members leaving, until TypeUnarchive. With a successor, the
+	// project moved there (a new name).
+	TypeArchive   = "archive"
+	TypeUnarchive = "unarchive"
 )
 
 // How an admin checked that a new member's account is theirs.
@@ -173,6 +178,24 @@ type GroupSetBody struct {
 	Envs  []string `json:"envs"`
 }
 
+// ProjectRef names another project chain by id and the hash of its first
+// link.
+type ProjectRef struct {
+	Project string `json:"project"`
+	Root    string `json:"root"`
+}
+
+// ArchiveBody archives a project; Successor, when set, is where it moved.
+type ArchiveBody struct {
+	Reason    string      `json:"reason,omitempty"`
+	Successor *ProjectRef `json:"successor,omitempty"`
+}
+
+// UnarchiveBody makes an archived project active again.
+type UnarchiveBody struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 // ProjectGroupState is a machine group as the verified project chain sees
 // it.
 type ProjectGroupState struct {
@@ -260,7 +283,11 @@ type State struct {
 	Machines map[string]*MachineState
 	// Groups maps group ids to the machine groups granted environments.
 	Groups map[string]*ProjectGroupState
-	Links  []Link
+	// Archived says the project is stopped; Successor is where it moved,
+	// when it did.
+	Archived  bool
+	Successor *ProjectRef
+	Links     []Link
 	// signerSeqs is each signer's latest user chain position.
 	signerSeqs map[string]uint64
 }
@@ -726,7 +753,12 @@ func (s *State) apply(l Link) error {
 	if l.Type != TypeInit && l.Type != TypeMemberRemove && !s.Admin(l.Signer) {
 		return fmt.Errorf("only an admin can make a %s link", l.Type)
 	}
+	if s.Archived && l.Type != TypeUnarchive && l.Type != TypeMemberRemove {
+		return fmt.Errorf("%s is archived: unarchive it first", s.Project)
+	}
 	switch l.Type {
+	case TypeArchive, TypeUnarchive:
+		return s.applyArchive(l)
 	case TypeInit:
 		return s.applyInit(l)
 	case TypeMemberAdd:
@@ -752,6 +784,42 @@ func (s *State) apply(l Link) error {
 		return s.applyGroupSet(l)
 	}
 	return fmt.Errorf("unknown link type %q", l.Type)
+}
+
+func (s *State) applyArchive(l Link) error {
+	if l.Type == TypeUnarchive {
+		var b UnarchiveBody
+		if err := decodeBody(l, &b); err != nil {
+			return err
+		}
+		if err := validReason(b.Reason); err != nil {
+			return err
+		}
+		if !s.Archived {
+			return fmt.Errorf("%s is not archived", s.Project)
+		}
+		s.Archived, s.Successor = false, nil
+		return nil
+	}
+	var b ArchiveBody
+	if err := decodeBody(l, &b); err != nil {
+		return err
+	}
+	if err := validReason(b.Reason); err != nil {
+		return err
+	}
+	if b.Successor != nil {
+		if err := ValidProject(b.Successor.Project); err != nil {
+			return err
+		}
+		if b.Successor.Project == s.Project || !rootPattern.MatchString(b.Successor.Root) {
+			return errors.New("invalid successor project")
+		}
+		ref := *b.Successor
+		s.Successor = &ref
+	}
+	s.Archived = true
+	return nil
 }
 
 func (s *State) applyInit(l Link) error {
