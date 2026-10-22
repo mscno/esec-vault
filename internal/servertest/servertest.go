@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -187,7 +188,17 @@ func StartConfig(t *testing.T, opts []server.Option, edit func(*server.Config), 
 	}
 	t.Cleanup(func() { db.Close() })
 	h := &Harness{GitHub: gh, DB: db, clock: clock}
-	h.ts = httptest.NewUnstartedServer(nil)
+	// The server's URL goes into its config, so it starts before the
+	// handler exists; requests that come early (a client of an earlier
+	// test on a reused port) get 503 rather than racing the assignment.
+	var handler atomic.Pointer[http.Handler]
+	h.ts = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hp := handler.Load(); hp != nil {
+			(*hp).ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "starting", http.StatusServiceUnavailable)
+	}))
 	h.ts.Start()
 	t.Cleanup(h.ts.Close)
 	h.URL = h.ts.URL
@@ -217,7 +228,8 @@ func StartConfig(t *testing.T, opts []server.Option, edit func(*server.Config), 
 		t.Fatal(err)
 	}
 	h.Server = srv
-	h.ts.Config.Handler = srv.Handler()
+	srvHandler := srv.Handler()
+	handler.Store(&srvHandler)
 	return h
 }
 
