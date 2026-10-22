@@ -151,8 +151,18 @@ func groupScope(l GroupLink) (string, error) {
 		if !b.Destroyed {
 			return chain.ScopeRemove, nil
 		}
-	case GroupAccessRemove:
+	case GroupAccessRemove, GroupMemberRemove:
 		return chain.ScopeRemove, nil
+	case GroupMemberAdd:
+		var b GroupMemberAddBody
+		if err := decodeGroupBody(l, &b); err != nil {
+			return "", err
+		}
+		// Like a project member added on the web: admins' devices check the
+		// account before sealing the group key to it.
+		if b.Verified == VerifiedWeb {
+			return chain.ScopeManage, nil
+		}
 	}
 	// Which projects a group trusts (by their roots) is a device's to
 	// choose: machines take keys from them.

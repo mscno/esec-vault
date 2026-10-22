@@ -1,6 +1,10 @@
 package cli
 
-import "github.com/alecthomas/kong"
+import (
+	"strings"
+
+	"github.com/alecthomas/kong"
+)
 
 // commandDetails are the explanations and examples "esec vault <command>
 // --help" shows below a command's one-line help, by command path. Kept
@@ -49,42 +53,64 @@ var commandDetails = map[string]string{
 		"esec vault run dev -- npm start",
 		"esec vault run prod -- ./deploy.sh",
 	),
-	"team list": examples(
-		"esec vault team                   # your shared projects",
-		"esec vault team list --json",
+	"access list": examples(
+		"esec vault access                 # your shared projects",
+		"esec vault access list --json",
 	),
-	"team show": examples(
-		"esec vault team show                       # in the repository",
-		"esec vault team show --project acme/api --json",
+	"access show": examples(
+		"esec vault access show            # in the repository",
+		"esec vault access show --project acme/api --json",
 	),
-	"team create": `Run it in the repository. You become the project's first admin, and every environment key in your keyring for it becomes the project's.
+	"access create": `Run it in the repository. You become the project's first admin, and every environment key in your keyring for it becomes the project's.
 
 ` + examples(
-		"esec vault team create",
-		"esec vault team create --env dev,prod",
+		"esec vault access create",
+		"esec vault access create --env dev,prod",
 	),
-	"team add": `The person signs in first (esec vault login SERVER) and proves their GitHub account (esec vault team prove). Their devices get the keys at their next sync.
+	"access add": `The person signs in first (esec vault login SERVER) and proves their GitHub account (esec vault access prove). Their devices get the keys at their next sync.
 
 ` + examples(
-		"esec vault team add alice --env dev",
-		"esec vault team add bob --admin",
-		"esec vault team add carol --env dev --account-key WORD-WORD-...   # without a GitHub SSH key",
+		"esec vault access add alice --env dev",
+		"esec vault access add bob --admin",
+		"esec vault access add carol --env dev --account-key WORD-WORD-...   # without a GitHub SSH key",
 	),
-	"team set": examples(
-		"esec vault team set alice --env dev,staging   # replaces what she reads",
-		"esec vault team set alice --admin",
-		"esec vault team set alice --no-admin --env dev --yes",
-	),
-	"team remove": `They stop getting keys at once. Keys they already read stay with them: rotate what they read (team show lists it).
+	"access grant": `A GitHub login adds or extends a person; an org/name adds or extends a group, whose people and machines then read the environments too. New environments are added to what they read already.
 
 ` + examples(
-		"esec vault team remove alice",
-		"esec vault team remove alice --yes --reason \"left the team\"",
+		"esec vault access grant alice --env dev",
+		"esec vault access grant alice --env staging       # now dev and staging",
+		"esec vault access grant bob --admin",
+		"esec vault access grant acme/backend --env dev,staging",
+		"esec vault access grant acme/production --env prod --project acme/api --json",
+	),
+	"access revoke": `Without --env, the person leaves the project, or the group stops reading it. Keys they read before stay with them: rotate those environments (the command lists them).
+
+` + examples(
+		"esec vault access revoke alice --env prod",
+		"esec vault access revoke alice --yes --reason \"left the team\"",
+		"esec vault access revoke acme/backend --yes",
+	),
+	"access offboard": `Lists every project and group the person reads from that you can see, takes them out of each one you administer, and lists the environments to rotate.
+
+` + examples(
+		"esec vault access offboard alice --dry-run",
+		"esec vault access offboard alice --yes --json",
+	),
+	"access set": examples(
+		"esec vault access set alice --env dev,staging   # replaces what they read",
+		"esec vault access set alice --admin",
+		"esec vault access set alice --no-admin --env dev --yes",
+	),
+	"access remove": `They stop getting keys at once. Keys they already read stay with them: rotate what they read (access show lists it).
+
+` + examples(
+		"esec vault access remove alice",
+		"esec vault access remove alice --yes --reason \"left the team\"",
 		"esec vault env rotate dev",
 	),
-	"team sync": `The background service does this by itself; run it to see the result at once.
+	"access sync": `The background service does this by itself; run it to see the result at once.
 
-` + examples("esec vault team sync"),
+` + examples("esec vault access sync"),
 	"changes": `Changes made on the vault's web pages are signed by one of your devices before they take effect, since the server could have invented them. Each is shown and asked about; --yes signs removals without asking, never anything that gives access.
 
 ` + examples(
@@ -148,12 +174,20 @@ var commandDetails = map[string]string{
 		"esec vault group show acme/production",
 		"esec vault group show acme/production --json",
 	),
-	"group create": `Then let it read a project (group grant) and add machines (group token, group add-machine, or machine join on the machine).
+	"group create": `A group holds people (a team, such as acme/backend), machines (servers, such as acme/production), or both. Then let it read a project (access grant) and add people (group add) or machines (group token, group add-machine, or machine join on the machine).
 
 ` + examples(
-		"esec vault group create acme/production",
-		"esec vault group grant acme/production --env prod     # in the project's repository",
+		"esec vault group create acme/backend",
+		"esec vault group add acme/backend alice",
+		"esec vault access grant acme/backend --env dev,staging   # in the project's repository",
 	),
+	"group add": `The person signs in first and proves their GitHub account (esec vault access prove). The group key is sealed to them; their devices then take in the keys of every project the group reads, after they accept each project once.
+
+` + examples(
+		"esec vault group add acme/backend alice",
+		"esec vault group add acme/backend carol --account-key WORD-WORD-...",
+	),
+	"group leave": examples("esec vault group leave acme/backend"),
 	"group grant": `Run as an admin of both the project and the group. --env replaces what the group read before.
 
 ` + examples(
@@ -173,9 +207,10 @@ var commandDetails = map[string]string{
 		"esec vault group approve acme/production",
 		"esec vault group approve acme/production --words WORD-WORD-...   # the words the machine shows",
 	),
-	"group remove": `The group gets a new key at once. Rotate the environments the machine read, unless it was destroyed with its disk (--destroyed).
+	"group remove": `Removes a person (by GitHub login) or a machine or token. The group gets a new key at once. Rotate the environments they read, unless a machine was destroyed with its disk (--destroyed).
 
 ` + examples(
+		"esec vault group remove acme/backend alice",
 		"esec vault group remove acme/production web-3",
 		"esec vault group remove acme/production web-4 --destroyed --yes",
 	),
@@ -195,7 +230,7 @@ var commandDetails = map[string]string{
 func addDetails(app *kong.Application) {
 	var walk func(n *kong.Node)
 	walk = func(n *kong.Node) {
-		if d, ok := commandDetails[n.Path()]; ok {
+		if d, ok := commandDetails[commandPath(n)]; ok {
 			n.Detail = d
 		}
 		for _, c := range n.Children {
@@ -203,6 +238,16 @@ func addDetails(app *kong.Application) {
 		}
 	}
 	walk(app.Node)
+}
+
+// commandPath is a command's path by name ("access add"), without the
+// aliases kong's Path adds.
+func commandPath(n *kong.Node) string {
+	var parts []string
+	for ; n != nil && n.Type == kong.CommandNode; n = n.Parent {
+		parts = append([]string{n.Name}, parts...)
+	}
+	return strings.Join(parts, " ")
 }
 
 // examples formats command lines as an indented block.

@@ -1,3 +1,42 @@
+# v0.13.0
+
+Teams: groups of people, one command to grant and revoke, and offboarding.
+
+- **Groups hold people.** A group (`acme/backend`) now holds people as well
+  as machines. `esec vault group add acme/backend alice` checks alice's
+  account like a new project member and seals the group's key to her; her
+  devices then take in the keys of every project the group reads, verified
+  like a machine of the group verifies them, after she accepts each project
+  once. `group remove` takes a person out (the group gets a new key at
+  once), and `group leave` lets a member go (an admin's device gives the
+  group a new key on its next sync). Removed members show up in each
+  project's rotation to-do. Group admins manage a group without reading
+  through it.
+- **`team` is now `access`.** `esec vault access ...` is the new name;
+  `esec vault team ...` still works.
+- **`access grant` and `access revoke`** take a GitHub login or a group:
+  `access grant alice --env staging` adds staging to what alice reads (and
+  adds her if she is new), `access grant acme/backend --env dev` does the
+  same for a group, and `access revoke` takes environments, or everything,
+  away, listing what to rotate. Both take `--json`.
+- **`access offboard alice`** lists every project and group alice reads
+  that you can see (`--dry-run` stops there), takes her out of each one you
+  administer, and lists the environments to rotate. With `--json`.
+- **The web pages** show each group's people. Admins add a person (signed
+  with a passkey or on a device, which checks the person's GitHub proof
+  before it seals the group key to them) and remove one: the server stops
+  giving them keys at once, and the server or a passkey signs the removal.
+  The signer page describes these changes. Pages say "group" instead of
+  "machine group", and project pages list each group's people.
+- `access show` lists each group's people and machines; `group list` and
+  `group show` list people; the help puts `group` with `access`.
+- The server stores group members, gives a member the group's keys
+  (`GET /v1/groups/{org}/{name}/keys`), and alerts on members added and
+  removed.
+
+Older versions cannot verify a group chain with members in it: update
+esec-vault on every device and machine of such a group.
+
 # v0.12.1
 
 - `status --json` now fills in `daemon.cli_version` and

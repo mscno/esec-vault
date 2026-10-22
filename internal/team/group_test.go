@@ -289,3 +289,88 @@ func TestCredKeyAndJoinWords(t *testing.T) {
 		t.Fatalf("join words %q %q", a, b)
 	}
 }
+
+// People in a group: an admin adds them, the group key is sealed to their
+// user key, they may leave by themselves but change nothing else, and a
+// member who leaves exposes the group key and the environments it read.
+func TestGroupMembers(t *testing.T) { //nolint:gocyclo // one sequential story
+	alice, bob, carol := newAcct(t, 1, "alice"), newAcct(t, 2, "bob"), newAcct(t, 3, "carol")
+	w := newWorld(t, alice, bob, carol)
+	g := newGroupWorld(t, w, alice)
+	pub, envPriv := newKey(t)
+	w.add(alice, team.TypeInit, team.InitBody{Creator: alice.person(), Envs: []team.Env{{Name: "prod", PublicKey: pub}}})
+	g.add(alice, team.GroupAccessAdd, team.GroupAccessBody{Project: project, Root: w.st.Root()})
+	w.add(alice, team.TypeGroupSet, team.GroupSetBody{Group: group, Root: g.st.Root(), Envs: []string{"prod"}})
+
+	// Only an admin adds a member, and only once.
+	if err := g.apply(g.link(bob, team.GroupMemberAdd, team.GroupMemberAddBody{Member: bob.person(), Verified: team.VerifiedAccountKey})); err == nil {
+		t.Fatal("a non-admin added themselves")
+	}
+	g.add(alice, team.GroupMemberAdd, team.GroupMemberAddBody{Member: bob.person(), Verified: team.VerifiedGitHubSSH})
+	if !g.st.Member(bob.user) || g.st.Admin(bob.user) || !g.st.HoldsKey(bob.user) || len(g.st.KeyHolders()) != 2 {
+		t.Fatalf("member: %+v", g.st.Members)
+	}
+	if err := g.apply(g.link(alice, team.GroupMemberAdd, team.GroupMemberAddBody{Member: bob.person(), Verified: team.VerifiedGitHubSSH})); err == nil {
+		t.Fatal("added a member twice")
+	}
+	if err := g.apply(g.link(alice, team.GroupMemberAdd, team.GroupMemberAddBody{Member: alice.person(), Verified: team.VerifiedGitHubSSH})); err == nil {
+		t.Fatal("added an admin as a member")
+	}
+	// A member added on the web needs a delegate's signature.
+	if err := g.apply(g.link(alice, team.GroupMemberAdd, team.GroupMemberAddBody{Member: carol.person(), Verified: team.VerifiedWeb})); err == nil {
+		t.Fatal("a device added a member checked on the web")
+	}
+
+	// The group key reaches the member, and through it the project's keys.
+	kg, err := team.NewKeyGrant(g.st, alice.user, alice.st.UKeyVersion, alice.u.Sign, bob.recipient(), g.key, w.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gpriv, err := team.OpenKeyGrant(kg, g.st, w.chains, bob.recipient(), bob.u.Private)
+	if err != nil || gpriv != g.key {
+		t.Fatalf("member opens the group key: %v", err)
+	}
+	gpub, _ := chain.ParseKey32(g.st.Key.EncPub)
+	holder := team.Recipient{ID: team.GroupHolder(group), Version: g.st.Key.Version, EncPub: gpub}
+	gr, err := team.NewGrant(w.st, alice.user, alice.st.UKeyVersion, alice.u.Sign, holder, map[string]string{"prod": envPriv}, w.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, keys, err := team.Open(gr, w.st, w.chains, holder, gpriv); err != nil || keys["prod"] != envPriv {
+		t.Fatalf("member opens the project's keys: %v", err)
+	}
+
+	// A member changes nothing but their own membership.
+	if err := g.apply(g.link(bob, team.GroupAccessRemove, team.GroupAccessRemoveBody{Project: project})); err == nil {
+		t.Fatal("a member changed the group")
+	}
+	g.add(alice, team.GroupMemberAdd, team.GroupMemberAddBody{Member: carol.person(), Verified: team.VerifiedAccountKey})
+	if err := g.apply(g.link(bob, team.GroupMemberRemove, team.GroupMemberRemoveBody{User: carol.user})); err == nil {
+		t.Fatal("a member removed another member")
+	}
+	g.add(bob, team.GroupMemberRemove, team.GroupMemberRemoveBody{User: bob.user, Reason: "moved teams"})
+	if g.st.HoldsKey(bob.user) || len(g.st.KeyExposed) != 1 || g.st.KeyExposed[0].Reason != "member left" {
+		t.Fatalf("leave: %+v", g.st.KeyExposed)
+	}
+	if ex := team.GroupExposures(w.st, g.st)["prod"]; len(ex) != 1 || ex[0].Holder != bob.user {
+		t.Fatalf("project exposure: %+v", ex)
+	}
+	if _, err := team.CheckKeyGrant(kg, g.st, w.chains); !errors.Is(err, team.ErrStale) {
+		t.Fatalf("a former member's key grant: %v", err)
+	}
+	// Once gone, they sign nothing, not even their own removal.
+	if err := g.apply(g.link(bob, team.GroupMemberRemove, team.GroupMemberRemoveBody{User: bob.user})); err == nil {
+		t.Fatal("a former member signed a link")
+	}
+	g.add(alice, team.GroupMemberRemove, team.GroupMemberRemoveBody{User: carol.user})
+	if g.st.KeyExposed[1].Reason != "member removed" {
+		t.Fatalf("removal reason: %+v", g.st.KeyExposed)
+	}
+	// They may come back.
+	g.add(alice, team.GroupMemberAdd, team.GroupMemberAddBody{Member: bob.person(), Verified: team.VerifiedAccountKey})
+
+	again, err := team.VerifyGroup(group, g.links, w.chains)
+	if err != nil || again.Head() != g.st.Head() || !again.Member(bob.user) {
+		t.Fatalf("reverify: %v", err)
+	}
+}

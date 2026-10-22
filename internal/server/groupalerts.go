@@ -52,6 +52,29 @@ func (s *Server) queueGroupAlert(ctx context.Context, tx queryer, before, after 
 		}
 		kind, title = alertGroupAdmin, b.Admin.Login+" became an admin of "+after.Group
 		text = fmt.Sprintf("%s made %s an admin of the machine group %s. Admins add and remove its machines.", actor, b.Admin.Login, after.Group)
+	case team.GroupMemberAdd:
+		var b team.GroupMemberAddBody
+		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+			return err
+		}
+		kind, title = alertGroupMember, b.Member.Login+" joined "+after.Group
+		text = fmt.Sprintf("%s added %s to the group %s. They read every environment the group reads.", actor, b.Member.Login, after.Group)
+		advice = "If this was not expected, remove them with 'esec vault group remove " + after.Group + " " + b.Member.Login + "'."
+	case team.GroupMemberRemove:
+		var b team.GroupMemberRemoveBody
+		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+			return err
+		}
+		m := before.Members[b.User]
+		if m == nil {
+			return nil
+		}
+		kind, title = alertGroupMemberGone, m.Login+" left "+after.Group
+		text = fmt.Sprintf("%s removed %s from the group %s. They could read the group's environments, so their keys need replacing.", actor, m.Login, after.Group)
+		if l.Signer == b.User {
+			text = fmt.Sprintf("%s left the group %s. They could read the group's environments, so their keys need replacing.", m.Login, after.Group)
+		}
+		advice = "Project admins run 'esec vault env rotate ENV' for each environment the group reads; 'esec vault group show " + after.Group + "' lists them."
 	default:
 		return nil
 	}
@@ -78,6 +101,9 @@ func (s *Server) queueGroupAlert(ctx context.Context, tx queryer, before, after 
 func groupActor(gs *team.GroupState, signer string) string {
 	if a := gs.Admins[signer]; a != nil {
 		return a.Login
+	}
+	if m := gs.Members[signer]; m != nil {
+		return m.Login
 	}
 	if c := gs.Creds[signer]; c != nil {
 		return "the enrollment token " + quoteName(c.Name)

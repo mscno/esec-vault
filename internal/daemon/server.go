@@ -179,7 +179,7 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) {
 	}
 	for _, c := range res.Conflicts {
 		if s.stillWaiting("conflict " + c) {
-			Notifier("esec vault: key not replaced", c+": the team sent a key, but this device holds another. Run: esec vault team sync")
+			Notifier("esec vault: key not replaced", c+": the team sent a key, but this device holds another. Run: esec vault access sync")
 		}
 	}
 	for _, d := range res.Dropped {
@@ -198,7 +198,7 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) {
 	}
 	for _, inv := range res.Invites {
 		if s.stillWaiting("invite " + inv.Project) {
-			msg := fmt.Sprintf("%s added you to the shared project %s. To take in its keys, run: esec vault team sync", inv.AddedBy, inv.Project)
+			msg := fmt.Sprintf("%s added you to the shared project %s. To take in its keys, run: esec vault access sync", inv.AddedBy, inv.Project)
 			s.Logger.Info("shared projects: " + msg)
 			Notifier("esec vault: added to a project", msg)
 		}

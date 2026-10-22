@@ -48,6 +48,8 @@ const (
 	alertGroupMachine     = "group.machine_added"
 	alertGroupRemoved     = "group.machine_removed"
 	alertGroupAdmin       = "group.admin_added"
+	alertGroupMember      = "group.member_added"
+	alertGroupMemberGone  = "group.member_removed"
 	alertEmailConfirm     = "email.confirm"
 	alertEmailChanged     = "email.changed"
 	alertTest             = "test"

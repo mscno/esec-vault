@@ -1,13 +1,14 @@
 package team
 
-// Machine groups. A group (such as "acme/production") is a set of machines
-// that read the same environments: its own signed chain records its admins,
-// its machines and enrollment tokens, its encryption key, and the projects
-// it trusts. A project grants environments to a group with a group_set link;
+// Groups. A group (such as "acme/production" or "acme/backend") is a set of
+// machines and people that read the same environments: its own signed chain
+// records its admins, its members (people), its machines and enrollment
+// tokens, its encryption key, and the projects it trusts. A project grants environments to a group with a group_set link;
 // an admin of the project seals those keys once, to the group's key. Every
 // machine and token of the group gets the group's private key sealed to its
 // own key, so a new machine reads the group's environments as soon as it is
-// in the group, without an admin's device having to be online.
+// in the group, without an admin's device having to be online. Members and
+// admins get it sealed to their user key the same way.
 //
 // A machine verifies the group chain from its first link, which its key
 // names, and accepts environment keys only from projects the group chain
@@ -54,6 +55,8 @@ const (
 	GroupKeyRotate    = "key_rotate"
 	GroupAccessAdd    = "access_add"
 	GroupAccessRemove = "access_remove"
+	GroupMemberAdd    = "member_add"
+	GroupMemberRemove = "member_remove"
 )
 
 // Credential kinds: a machine is one host; a token is a shared secret for
@@ -66,6 +69,7 @@ const (
 // Bounds of a group.
 const (
 	MaxGroupAdmins   = 50
+	MaxGroupMembers  = 500
 	MaxGroupCreds    = 1000
 	MaxGroupProjects = 200
 	MaxProjectGroups = 50
@@ -186,9 +190,20 @@ type (
 	GroupAccessRemoveBody struct {
 		Project string `json:"project"`
 	}
+	// GroupMemberAddBody adds a person who reads what the group reads.
+	GroupMemberAddBody struct {
+		Member   Person `json:"member"`
+		Verified string `json:"verified"`
+	}
+	// GroupMemberRemoveBody removes a member; a member may remove themselves.
+	GroupMemberRemoveBody struct {
+		User   string `json:"user"`
+		Reason string `json:"reason,omitempty"`
+	}
 )
 
-// GroupAdminState is an admin as the verified group chain sees them.
+// GroupAdminState is an admin or member as the verified group chain sees
+// them.
 type GroupAdminState struct {
 	Person
 
@@ -229,6 +244,9 @@ type GroupState struct {
 	LastTime time.Time
 	Links    []GroupLink
 	Admins   map[string]*GroupAdminState
+	// Members are people who read what the group reads, without managing
+	// it.
+	Members  map[string]*GroupAdminState
 	Creds    map[string]*CredState
 	Key      GroupKey
 	KeySince time.Time
@@ -245,7 +263,7 @@ type GroupState struct {
 
 // NewGroup returns the empty state of a group.
 func NewGroup(group string) *GroupState {
-	return &GroupState{Group: group, Admins: map[string]*GroupAdminState{}, Creds: map[string]*CredState{}, Access: map[string]string{}, retired: map[string]bool{}, signerSeqs: map[string]uint64{}}
+	return &GroupState{Group: group, Admins: map[string]*GroupAdminState{}, Members: map[string]*GroupAdminState{}, Creds: map[string]*CredState{}, Access: map[string]string{}, retired: map[string]bool{}, signerSeqs: map[string]uint64{}}
 }
 
 // VerifyGroup checks a complete group chain from its first link.
@@ -302,10 +320,49 @@ func (s *GroupState) Admin(user string) bool {
 	return ok && a.Active
 }
 
+// Member reports whether user is an active member (not counting admins).
+func (s *GroupState) Member(user string) bool {
+	m, ok := s.Members[user]
+	return ok && m.Active
+}
+
+// HoldsKey reports whether user is an active admin or member: one of the
+// people the group key is sealed to.
+func (s *GroupState) HoldsKey(user string) bool { return s.Admin(user) || s.Member(user) }
+
+// Person returns an active admin or member.
+func (s *GroupState) Person(user string) (*GroupAdminState, bool) {
+	if a, ok := s.Admins[user]; ok && a.Active {
+		return a, true
+	}
+	if m, ok := s.Members[user]; ok && m.Active {
+		return m, true
+	}
+	return nil, false
+}
+
 // ActiveAdmins returns the active admins sorted by login.
-func (s *GroupState) ActiveAdmins() []*GroupAdminState {
+func (s *GroupState) ActiveAdmins() []*GroupAdminState { return activePeople(s.Admins) }
+
+// ActiveMembers returns the active members (not admins) sorted by login.
+func (s *GroupState) ActiveMembers() []*GroupAdminState { return activePeople(s.Members) }
+
+// KeyHolders returns the active admins and members, sorted by login: the
+// people the group key is sealed to.
+func (s *GroupState) KeyHolders() []*GroupAdminState {
+	out := s.ActiveAdmins()
+	for _, m := range s.ActiveMembers() {
+		if !s.Admin(m.User) {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Login) < strings.ToLower(out[j].Login) })
+	return out
+}
+
+func activePeople(m map[string]*GroupAdminState) []*GroupAdminState {
 	var out []*GroupAdminState
-	for _, a := range s.Admins {
+	for _, a := range m {
 		if a.Active {
 			out = append(out, a)
 		}
@@ -424,8 +481,8 @@ func (s *GroupState) step(e *envelope.Envelope, chains Chains) error {
 	if err := s.apply(*l); err != nil {
 		return err
 	}
-	if len(s.Admins) > MaxGroupAdmins || s.active > MaxGroupCreds || len(s.Access) > MaxGroupProjects {
-		return errors.New("the group has too many admins, machines or projects")
+	if len(s.Admins) > MaxGroupAdmins || len(s.Members) > MaxGroupMembers || s.active > MaxGroupCreds || len(s.Access) > MaxGroupProjects {
+		return errors.New("the group has too many admins, members, machines or projects")
 	}
 	if l.SignerSeq > 0 {
 		s.signerSeqs[l.Signer] = l.SignerSeq
@@ -442,6 +499,10 @@ func (s *GroupState) step(e *envelope.Envelope, chains Chains) error {
 // covers the link.
 func (s *GroupState) checkSigner(e *envelope.Envelope, l *GroupLink, chains Chains) error {
 	if l.SignerDelegate == "" {
+		var add GroupMemberAddBody
+		if l.Type == GroupMemberAdd && decodeGroupBody(*l, &add) == nil && add.Verified == VerifiedWeb {
+			return errors.New("only a delegate's link adds a member checked on the web")
+		}
 		pub, err := s.signerKey(l, chains)
 		if err != nil {
 			return err
@@ -505,7 +566,12 @@ func (s *GroupState) signerKey(l *GroupLink, chains Chains) (ed25519.PublicKey, 
 	} else {
 		a, ok := s.Admins[l.Signer]
 		if !ok || !a.Active {
-			return nil, fmt.Errorf("%s is not an admin of the group", l.Signer)
+			// A member signs one link only: leaving the group.
+			m, member := s.Members[l.Signer]
+			if !member || !m.Active || l.Type != GroupMemberRemove {
+				return nil, fmt.Errorf("%s is not an admin of the group", l.Signer)
+			}
+			a = m
 		}
 		root = a.Root
 	}
@@ -544,6 +610,10 @@ func (s *GroupState) apply(l GroupLink) error {
 		return s.applyKeyRotate(l)
 	case GroupAccessAdd, GroupAccessRemove:
 		return s.applyAccess(l)
+	case GroupMemberAdd:
+		return s.applyMemberAdd(l)
+	case GroupMemberRemove:
+		return s.applyMemberRemove(l)
 	}
 	return fmt.Errorf("unknown link type %q", l.Type)
 }
@@ -665,6 +735,50 @@ func (s *GroupState) applyAdminRemove(l GroupLink) error {
 	return nil
 }
 
+func (s *GroupState) applyMemberAdd(l GroupLink) error {
+	var b GroupMemberAddBody
+	if err := decodeGroupBody(l, &b); err != nil {
+		return err
+	}
+	if err := validPerson(b.Member); err != nil {
+		return err
+	}
+	if b.Verified != VerifiedGitHubSSH && b.Verified != VerifiedAccountKey && b.Verified != VerifiedWeb {
+		return fmt.Errorf("unknown verification %q", b.Verified)
+	}
+	if s.HoldsKey(b.Member.User) {
+		return fmt.Errorf("%s is already in the group", b.Member.Login)
+	}
+	// A former member comes back as a new entry, like in a project.
+	s.Members[b.Member.User] = &GroupAdminState{Person: b.Member, Active: true, Verified: b.Verified, AddedBy: l.Signer, AddedSeq: l.Seq}
+	return nil
+}
+
+func (s *GroupState) applyMemberRemove(l GroupLink) error {
+	var b GroupMemberRemoveBody
+	if err := decodeGroupBody(l, &b); err != nil {
+		return err
+	}
+	if err := validReason(b.Reason); err != nil {
+		return err
+	}
+	m, ok := s.Members[b.User]
+	if !ok || !m.Active {
+		return fmt.Errorf("%s is not a member of the group", b.User)
+	}
+	if !s.Admin(l.Signer) && l.Signer != b.User {
+		return errors.New("a member can only remove themselves")
+	}
+	m.Active, m.RemovedSeq, m.RemovedTime = false, l.Seq, l.CTime
+	why := "member removed"
+	if l.Signer == b.User {
+		why = "member left"
+	}
+	// The member held the group key.
+	s.KeyExposed = append(s.KeyExposed, Exposure{Holder: m.User, Name: m.Login, Seq: l.Seq, Time: l.CTime, Reason: why})
+	return nil
+}
+
 func (s *GroupState) addCred(c Credential, kind, join string, l GroupLink) error {
 	if err := ValidCredID(c.ID); err != nil {
 		return err
@@ -771,6 +885,11 @@ func (s *GroupState) clone() *GroupState {
 		c := *v
 		n.Admins[k] = &c
 	}
+	n.Members = make(map[string]*GroupAdminState, len(s.Members))
+	for k, v := range s.Members {
+		c := *v
+		n.Members[k] = &c
+	}
 	n.Creds = make(map[string]*CredState, len(s.Creds))
 	for k, v := range s.Creds {
 		c := *v
@@ -812,10 +931,15 @@ func GroupExposures(ps *State, gs *GroupState) map[string][]Exposure {
 				out[env] = append(out[env], Exposure{Holder: c.ID, Name: gs.Group + " " + c.Name, Seq: c.RemovedSeq, Time: c.RemovedTime, Reason: c.Kind + " removed from the group"})
 			}
 		}
-		// A former admin held the group key too.
+		// A former admin or member held the group key too.
 		for _, a := range gs.Admins {
 			if !a.Active && exposed(a.RemovedTime) {
 				out[env] = append(out[env], Exposure{Holder: a.User, Name: gs.Group + " admin " + a.Login, Seq: a.RemovedSeq, Time: a.RemovedTime, Reason: "admin removed from the group"})
+			}
+		}
+		for _, m := range gs.Members {
+			if !m.Active && exposed(m.RemovedTime) {
+				out[env] = append(out[env], Exposure{Holder: m.User, Name: gs.Group + " member " + m.Login, Seq: m.RemovedSeq, Time: m.RemovedTime, Reason: "member removed from the group"})
 			}
 		}
 	}
@@ -824,7 +948,8 @@ func GroupExposures(ps *State, gs *GroupState) map[string][]Exposure {
 
 // ---- group key grants ----
 
-// KeyGrant carries the group's private key to a machine, token or admin,
+// KeyGrant carries the group's private key to a machine, token, admin or
+// member,
 // sealed to its key. The key inside is checked against the group key the
 // chain names, so whoever made the grant cannot hand out another key.
 type KeyGrant struct {
@@ -835,8 +960,8 @@ type KeyGrant struct {
 	// machine it enrolls, a token's id.
 	From    string `json:"from"`
 	FromKey uint64 `json:"from_ukey_version,omitempty"`
-	// To is a machine or token id, or an admin's user id; ToKey is the
-	// admin's user key version and ToEncPub the key the box is sealed to.
+	// To is a machine or token id, or an admin's or member's user id; ToKey
+	// is their user key version and ToEncPub the key the box is sealed to.
 	To       string    `json:"to"`
 	ToKey    uint64    `json:"to_ukey_version,omitempty"`
 	ToEncPub string    `json:"to_enc_pub"`
@@ -886,7 +1011,8 @@ func PeekKeyGrant(e *envelope.Envelope) (*KeyGrant, error) {
 // CheckKeyGrant verifies a key grant against the verified group state:
 // signed by an admin (with any user key they had) or an active token, for
 // the current group key, to an active machine or token at the key the chain
-// names, or to an admin. It returns ErrStale (wrapped) for an earlier key.
+// names, or to an admin or member. It returns ErrStale (wrapped) for an
+// earlier key.
 func CheckKeyGrant(e *envelope.Envelope, gs *GroupState, chains Chains) (*KeyGrant, error) {
 	g, err := PeekKeyGrant(e)
 	if err != nil {
@@ -914,7 +1040,7 @@ func CheckKeyGrant(e *envelope.Envelope, gs *GroupState, chains Chains) (*KeyGra
 		}
 		return g, nil
 	}
-	if !gs.Admin(g.To) {
+	if !gs.HoldsKey(g.To) {
 		return nil, fmt.Errorf("%w: %s is no longer in the group", ErrStale, g.To)
 	}
 	if _, err := chain.ParseKey32(g.ToEncPub); err != nil {

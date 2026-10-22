@@ -35,19 +35,33 @@ func (t *teamCtx) group(id string) (*team.GroupState, error) {
 	if err != nil {
 		return nil, err
 	}
-	for u, links := range gc.Chains {
-		t.given[u] = links
-	}
-	gs, err := team.VerifyGroup(id, gc.Links, t.chains)
+	return t.verifyGroup(id, gc.Links, gc.Chains)
+}
+
+// verifyGroup verifies a group chain the server sent, with the user chains
+// it sent along, against this device's pin, and moves the pin.
+func (t *teamCtx) verifyGroup(id string, links []*envelope.Envelope, chains map[string][]*envelope.Envelope) (*team.GroupState, error) {
+	t.give(chains)
+	gs, err := team.VerifyGroup(id, links, t.chains)
 	if err != nil {
 		return nil, fmt.Errorf("the server's chain for the group %s does not verify: %w", id, err)
 	}
-	pin, ok := t.pins.Groups[id]
-	if err := t.checkPin(pin, ok, id, "group", gs, gs.Hashes, func(i uint64) (string, string) { return gs.Links[i].Signer, describeGroupLink(gs, gs.Links[i]) }); err != nil {
+	if err := t.moveGroupPin(gs); err != nil {
 		return nil, err
 	}
-	t.gpin(gs)
 	return gs, nil
+}
+
+// moveGroupPin checks a verified group chain against this device's pin of
+// it, and moves the pin.
+func (t *teamCtx) moveGroupPin(gs *team.GroupState) error {
+	pin, ok := t.pins.Groups[gs.Group]
+	describe := func(i uint64) (string, string) { return gs.Links[i].Signer, describeGroupLink(gs, gs.Links[i]) }
+	if err := t.checkPin(pin, ok, gs.Group, "group", gs, gs.Hashes, describe); err != nil {
+		return err
+	}
+	t.gpin(gs)
+	return nil
 }
 
 func (t *teamCtx) gpin(gs *team.GroupState) {
@@ -172,7 +186,7 @@ func (t *teamCtx) gcommit(next *team.GroupState, links, grants []*envelope.Envel
 	return nil
 }
 
-// keyGrant seals the group key to a machine, token or admin of gs.
+// keyGrant seals the group key to a machine, token, admin or member of gs.
 func (t *teamCtx) keyGrant(gs *team.GroupState, to string, key [32]byte) (*envelope.Envelope, error) {
 	var r team.Recipient
 	if c, ok := gs.Cred(to); ok {
@@ -186,7 +200,7 @@ func (t *teamCtx) keyGrant(gs *team.GroupState, to string, key [32]byte) (*envel
 		if err != nil {
 			return nil, err
 		}
-		if a := gs.Admins[to]; a == nil || cs.Root() != a.Root {
+		if p, ok := gs.Person(to); !ok || cs.Root() != p.Root {
 			return nil, fmt.Errorf("the account of %s is not the one the group recorded", to)
 		}
 		r = team.Recipient{ID: to, Version: cs.UKeyVersion, EncPub: cs.EncPub}
@@ -194,7 +208,7 @@ func (t *teamCtx) keyGrant(gs *team.GroupState, to string, key [32]byte) (*envel
 	return team.NewKeyGrant(gs, t.a.State.User, t.own.UKeyVersion, t.id.Sign, r, key, t.a.Now())
 }
 
-// keyGrantsAll seals key to every machine, token and admin of gs, but
+// keyGrantsAll seals key to every machine, token, admin and member of gs, but
 // expired tokens and machines blocked on the web: a new key cuts them off.
 func (t *teamCtx) keyGrantsAll(gs *team.GroupState, key [32]byte) ([]*envelope.Envelope, error) {
 	blocked := map[string]bool{}
@@ -214,7 +228,10 @@ func (t *teamCtx) keyGrantsAll(gs *team.GroupState, key [32]byte) ([]*envelope.E
 		}
 		out = append(out, g)
 	}
-	for _, a := range gs.ActiveAdmins() {
+	for _, a := range gs.KeyHolders() {
+		if t.uncheckedWebMember(gs, a.User) {
+			continue
+		}
 		g, err := t.keyGrant(gs, a.User, key)
 		if err != nil {
 			return nil, err
@@ -222,6 +239,14 @@ func (t *teamCtx) keyGrantsAll(gs *team.GroupState, key [32]byte) ([]*envelope.E
 		out = append(out, g)
 	}
 	return out, nil
+}
+
+// uncheckedWebMember reports whether user is a member a passkey added whose
+// GitHub SSH proof this device could not check: the group key is not sealed
+// to them until it can.
+func (t *teamCtx) uncheckedWebMember(gs *team.GroupState, user string) bool {
+	m, ok := gs.Members[user]
+	return ok && m.Active && m.Verified == team.VerifiedWeb && t.checkWebPerson(m.Person) != nil
 }
 
 // ---- operations ----
@@ -381,22 +406,14 @@ func (a *Account) AddGroupAdmin(ctx context.Context, id, login, accountKey strin
 		if err != nil {
 			return err
 		}
-		p, err := a.Client.Person(ctx, login)
+		person, cs, proof, err := t.lookupPerson(login)
 		if err != nil {
 			return err
 		}
-		if !strings.EqualFold(p.User.Login, login) || p.User.ID != fmt.Sprintf("gh:%d", p.User.GitHubID) {
-			return fmt.Errorf("the server returned the account of %q for %q; not adding it", p.User.Login, login)
-		}
-		cs, err := t.peer(p.User.ID, p.Links)
-		if err != nil {
-			return err
-		}
-		person := team.Person{User: p.User.ID, Login: p.User.Login, Root: cs.Root()}
 		if gs.Admin(person.User) {
 			return fmt.Errorf("%s is already an admin of %s", person.Login, id)
 		}
-		verified, err := checkPerson(person, p.Proof, cs, accountKey)
+		verified, err := checkPerson(person, proof, cs, accountKey)
 		if err != nil {
 			return err
 		}
@@ -795,7 +812,7 @@ func (a *Account) GrantGroup(ctx context.Context, id, project string, envs []str
 			return err
 		}
 		if st == nil {
-			return fmt.Errorf("%s is not a shared project; share it first with 'esec vault team create'", project)
+			return fmt.Errorf("%s is not a shared project; share it first with 'esec vault access create'", project)
 		}
 		for _, n := range envs {
 			if _, ok := st.Envs[n]; !ok {
@@ -994,6 +1011,10 @@ func (t *teamCtx) fulfilGroup(id string, res *TeamSyncResult) error {
 	}
 	var grants []*envelope.Envelope
 	for _, to := range want {
+		if t.uncheckedWebMember(gs, to) {
+			res.Unsent = append(res.Unsent, fmt.Sprintf("%s: the group key to %s (added on the web): %v", id, gs.Members[to].Login, t.checkWebPerson(gs.Members[to].Person)))
+			continue
+		}
 		g, err := t.keyGrant(gs, to, key)
 		if err != nil {
 			res.problem(id, err)
@@ -1011,7 +1032,7 @@ func (t *teamCtx) fulfilGroup(id string, res *TeamSyncResult) error {
 	return nil
 }
 
-// lackingKey lists the machines, tokens and admins of gs that no grant of
+// lackingKey lists the machines, tokens and people of gs that no grant of
 // the current group key waits for. A machine blocked on the web is left
 // out.
 func lackingKey(gs *team.GroupState, status *wire.GroupStatus, now time.Time) []string {
@@ -1028,7 +1049,7 @@ func lackingKey(gs *team.GroupState, status *wire.GroupStatus, now time.Time) []
 			want = append(want, c.ID)
 		}
 	}
-	for _, a := range gs.ActiveAdmins() {
+	for _, a := range gs.KeyHolders() {
 		if !has[a.User] {
 			want = append(want, a.User)
 		}
@@ -1060,6 +1081,10 @@ func describeGroupLink(gs *team.GroupState, l team.GroupLink) string {
 		return "removed an admin"
 	case team.GroupAccessAdd, team.GroupAccessRemove:
 		return "changed the projects " + gs.Group + " takes keys from"
+	case team.GroupMemberAdd:
+		return "added a member"
+	case team.GroupMemberRemove:
+		return "removed a member"
 	}
 	return l.Type
 }

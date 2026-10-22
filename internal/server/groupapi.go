@@ -59,7 +59,7 @@ func (s *Server) apiGroups(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		if gs == nil {
 			continue
 		}
-		sum := wire.GroupSummary{ID: id, Seq: gs.Seq, Admin: gs.Admin(c.user.ID), Machines: len(gs.ActiveCreds(team.KindMachine)), Tokens: len(gs.ActiveCreds(team.KindToken)), Projects: gs.Projects(), KeyExposed: len(gs.KeyExposed)}
+		sum := wire.GroupSummary{ID: id, Seq: gs.Seq, Admin: gs.Admin(c.user.ID), Member: gs.Member(c.user.ID) && !gs.Admin(c.user.ID), People: len(gs.KeyHolders()), Machines: len(gs.ActiveCreds(team.KindMachine)), Tokens: len(gs.ActiveCreds(team.KindToken)), Projects: gs.Projects(), KeyExposed: len(gs.KeyExposed)}
 		if sum.Admin {
 			joins, err := s.db.pendingJoins(ctx, id, s.now())
 			if err != nil {
@@ -166,6 +166,21 @@ func (s *Server) apiGroupStatus(w http.ResponseWriter, r *http.Request, c *reqCt
 	writeJSON(w, http.StatusOK, status)
 }
 
+// keyHolderGroup loads a group the caller is an admin or member of.
+func (s *Server) keyHolderGroup(ctx context.Context, group, user string) (*team.GroupState, []*envelope.Envelope, error) {
+	gs, links, err := s.db.groupState(ctx, s.db.sql, group)
+	if err != nil {
+		return nil, nil, err
+	}
+	if gs == nil {
+		return nil, nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "no group %s", group)
+	}
+	if !gs.HoldsKey(user) {
+		return nil, nil, clientErr(http.StatusForbidden, wire.ErrForbidden, "you are not an admin or member of %s", group)
+	}
+	return gs, links, nil
+}
+
 // apiGroupKeyGrants returns the caller's own grant of the group key.
 func (s *Server) apiGroupKeyGrants(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 	group, err := groupParam(r)
@@ -174,7 +189,7 @@ func (s *Server) apiGroupKeyGrants(w http.ResponseWriter, r *http.Request, c *re
 		return
 	}
 	ctx := r.Context()
-	if _, err := s.adminGroup(ctx, group, c.user.ID); err != nil {
+	if _, _, err := s.keyHolderGroup(ctx, group, c.user.ID); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -186,6 +201,38 @@ func (s *Server) apiGroupKeyGrants(w http.ResponseWriter, r *http.Request, c *re
 	out := wire.GroupKeyGrants{Grants: []*envelope.Envelope{}}
 	for _, g := range rows {
 		out.Grants = append(out.Grants, g.Env)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// apiGroupKeys gives an admin or member what a machine of the group gets:
+// the group chain, their grant of the group key, and each project's keys
+// sealed to the group. Their device verifies all of it like a machine does.
+func (s *Server) apiGroupKeys(w http.ResponseWriter, r *http.Request, c *reqCtx) {
+	group, err := groupParam(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, err.Error())
+		return
+	}
+	ctx := r.Context()
+	gs, links, err := s.keyHolderGroup(ctx, group, c.user.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	var blocked int64
+	if err := s.db.sql.QueryRowContext(ctx, `SELECT suspended_at FROM group_members WHERE group_id = ? AND user_id = ?`, group, c.user.ID).Scan(&blocked); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		s.internalError(w, r, err)
+		return
+	}
+	if blocked != 0 && !gs.Admin(c.user.ID) {
+		writeErr(w, http.StatusForbidden, wire.ErrForbidden, "an admin of "+group+" is removing you from it")
+		return
+	}
+	out, err := s.fleetKeys(ctx, gs, links, c.user.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -246,7 +293,10 @@ func (s *Server) groupCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, group s
 		return 0, nil, fmt.Errorf("stored chain of group %s does not verify: %w", group, err)
 	}
 	if gs.Seq > 0 && !gs.Admin(c.user.ID) {
-		return 0, nil, clientErr(http.StatusForbidden, wire.ErrForbidden, "you are not an admin of %s", group)
+		// A member may only leave; the chain checks that their link does.
+		if !gs.Member(c.user.ID) || len(req.KeyGrants) > 0 {
+			return 0, nil, clientErr(http.StatusForbidden, wire.ErrForbidden, "you are not an admin of %s", group)
+		}
 	}
 	if gs.Seq == 0 && len(req.Links) == 0 {
 		return 0, nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "no machine group %s", group)
@@ -360,6 +410,12 @@ func (s *Server) checkGroupLink(ctx context.Context, tx *sql.Tx, gs *team.GroupS
 			return err
 		}
 		return s.checkPersonHere(ctx, tx, b.Admin, chains)
+	case team.GroupMemberAdd:
+		var b team.GroupMemberAddBody
+		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+			return err
+		}
+		return s.checkPersonHere(ctx, tx, b.Member, chains)
 	case team.GroupMachineAdd:
 		var b team.GroupMachineAddBody
 		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
@@ -437,7 +493,7 @@ func (s *Server) storeKeyGrant(ctx context.Context, tx *sql.Tx, gs *team.GroupSt
 	if g.CTime.After(now.Add(10*time.Minute)) || g.CTime.Before(now.Add(-24*time.Hour)) {
 		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "key grant time is too far from the server's clock")
 	}
-	if gs.Admin(g.To) {
+	if gs.HoldsKey(g.To) {
 		cs, err := chains(g.To)
 		if err != nil {
 			return err
@@ -458,13 +514,17 @@ func (s *Server) storeKeyGrant(ctx context.Context, tx *sql.Tx, gs *team.GroupSt
 	return err
 }
 
-// groupWake queues group events for the group's admins and, when the
-// group's key or machines changed, for the admins of the projects granting
-// it environments, whose devices seal those keys to the group's key.
+// groupWake queues group events for the group's admins and members and,
+// when the group's key or machines changed, for the admins of the projects
+// granting it environments, whose devices seal those keys to the group's
+// key.
 func (s *Server) groupWake(ctx context.Context, tx *sql.Tx, before, after *team.GroupState, now time.Time) ([]string, error) {
 	wake := map[string]bool{}
 	for _, a := range after.Admins {
 		wake[a.User] = true
+	}
+	for _, m := range after.Members {
+		wake[m.User] = true
 	}
 	if before.Key != after.Key || before.Seq == 0 || !slices.Equal(before.Projects(), after.Projects()) {
 		projects, err := s.db.projectsGranting(ctx, tx, after.Group)
@@ -954,7 +1014,7 @@ func (s *Server) fleetKeys(ctx context.Context, gs *team.GroupState, links []*en
 		}
 	}
 	if kg == nil {
-		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "the group key was not sent to this machine yet; an admin's device sends it (esec vault group sync)")
+		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "the group key was not sent to it yet; an admin's device sends it (esec vault group sync)")
 	}
 	out := &wire.GroupKeys{Links: links, Chains: map[string][]*envelope.Envelope{}, KeyGrant: kg, Projects: []wire.GroupProjectKeys{}}
 	signers := groupSigners(gs)
@@ -1019,6 +1079,15 @@ func groupLinkSummary(before, after *team.GroupState, l team.GroupLink) string {
 			return a.Login
 		}
 		return b.User
+	case team.GroupMemberAdd:
+		var m team.GroupMemberAddBody
+		_ = json.Unmarshal(l.Body, &m)
+		return m.Member.Login
+	case team.GroupMemberRemove:
+		if m := before.Members[b.User]; m != nil {
+			return m.Login
+		}
+		return b.User
 	case team.GroupMachineAdd:
 		return b.Machine.Name + " " + b.Machine.ID
 	case team.GroupTokenAdd:
@@ -1034,4 +1103,25 @@ func groupLinkSummary(before, after *team.GroupState, l team.GroupLink) string {
 		return b.Project
 	}
 	return fmt.Sprint(after.Seq)
+}
+
+// groupPeople queues a group event for the admins and members of a group
+// that takes keys from project, whose devices then fetch the keys a project
+// commit sealed to the group. It returns them.
+func (s *Server) groupPeople(ctx context.Context, tx *sql.Tx, group, project string, now time.Time) ([]string, error) {
+	gs, _, err := s.db.groupState(ctx, tx, group)
+	if err != nil || gs == nil {
+		return nil, err
+	}
+	if _, trusted := gs.Access[project]; !trusted {
+		return nil, nil
+	}
+	var out []string
+	for _, p := range gs.KeyHolders() {
+		if err := s.db.addEvent(ctx, tx, p.User, wire.EventGroup, group, now); err != nil {
+			return nil, err
+		}
+		out = append(out, p.User)
+	}
+	return out, nil
 }

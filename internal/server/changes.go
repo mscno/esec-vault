@@ -198,6 +198,11 @@ func (s *Server) closeChange(ctx context.Context, id int64, applied bool, user, 
 				return err
 			}
 		}
+		if scope == wire.ScopeGroup && kind == wire.ChangeMemberRemove && !applied {
+			if _, err := tx.ExecContext(ctx, `UPDATE group_members SET suspended_at = 0 WHERE group_id = ? AND login = ? COLLATE NOCASE`, target, subject); err != nil {
+				return err
+			}
+		}
 		return s.changeAudit(ctx, tx, scope, target, user, ip, "change_"+status, kind+" "+subject, now)
 	})
 }

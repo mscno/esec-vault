@@ -43,7 +43,8 @@ type cli struct {
 	Run     RunCmd     `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
 	Keyring KeyringCmd `cmd:"" group:"secrets" help:"Manage the global keyring store."`
 
-	Team        TeamCmd        `cmd:"" group:"team" help:"Share projects with your team through the vault server."`
+	Access      TeamCmd        `cmd:"" name:"access" aliases:"team" group:"team" help:"Who reads which environments of a shared project: share it, grant, revoke, offboard."`
+	Group       GroupCmd       `cmd:"" group:"team" help:"Groups of people or machines that read the same environments (acme/backend, acme/production)."`
 	Changes     ChangesCmd     `cmd:"" group:"team" help:"Sign the changes made on the web pages (members, access, machines)."`
 	Delegate    DelegateCmd    `cmd:"" group:"team" help:"Passkeys and the server, which may sign some changes for you on the web."`
 	Devices     DevicesCmd     `cmd:"" group:"team" help:"List, approve, revoke and rename your devices."`
@@ -51,7 +52,6 @@ type cli struct {
 	AgentUnlock AgentUnlockCmd `cmd:"" group:"team" name:"agent-unlock" help:"Let an SSH-agent key unlock new devices (optional)."`
 
 	Machine MachineCmd `cmd:"" group:"machines" help:"Give CI jobs and apps their own keys to a shared project."`
-	Group   GroupCmd   `cmd:"" group:"machines" help:"Machine groups: production or staging machines that read the same environments."`
 
 	Backup   BackupCmd   `cmd:"" group:"backup" help:"Seal all keyrings and your identity into the vault blob."`
 	Restore  RestoreCmd  `cmd:"" group:"backup" help:"Restore keyrings from the vault blob."`
@@ -79,8 +79,8 @@ type cli struct {
 var commandGroups = []kong.Group{
 	{Key: "start", Title: "Get started:"},
 	{Key: "secrets", Title: "Secrets in a project:"},
-	{Key: "team", Title: "Share with people (vault server):"},
-	{Key: "machines", Title: "Machines, CI jobs and servers:"},
+	{Key: "team", Title: "Share with people and machines (vault server):"},
+	{Key: "machines", Title: "On machines, CI jobs and servers:"},
 	{Key: "backup", Title: "Backup and recovery:"},
 	{Key: "service", Title: "Background service:"},
 	{Key: "git", Title: "Sharing through git, without a server:"},
@@ -93,8 +93,11 @@ Start here:
     esec vault setup                          # identity, backup and background service
     esec vault login https://vault.example.com
     esec vault project init acme/api          # in a repository: project file and env keys
-    esec vault team create                    # share it; you become its admin
-    esec vault team add alice --env dev       # alice's devices get the dev key
+    esec vault access create                  # share it; you become its admin
+    esec vault access grant alice --env dev   # alice's devices get the dev key
+    esec vault group create acme/backend      # a team: people who read the same things
+    esec vault group add acme/backend bob
+    esec vault access grant acme/backend --env dev,staging
 
 Scripts and agents: list and show commands take --json; commands that ask take --yes (or --force); "esec vault help <command>" explains one. Exit codes: 0 done, 1 failed, 80 bad usage; run and machine run return their command's code.`
 
@@ -181,7 +184,7 @@ func Execute(version string) {
 // isMutation reports whether a command changes keyrings, so it runs under the
 // keyring lock and is followed by a snapshot and a server push.
 func isMutation(command string) bool {
-	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "sync", "restore", "team sync", "group sync"} {
+	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "sync", "restore", "access sync", "group sync"} {
 		if strings.HasPrefix(command, prefix) {
 			return true
 		}

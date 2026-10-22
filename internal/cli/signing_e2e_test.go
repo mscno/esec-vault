@@ -53,7 +53,7 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // owner's device adds the passkey, the passkey signs two members in, and the
 // owner's sync sends keys to the one whose GitHub SSH proof checks out, not
 // to the one without a proof.
-func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential story with explicit checks
+func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential story with explicit checks
 	if testing.Short() {
 		t.Skip("builds binaries")
 	}
@@ -73,8 +73,9 @@ func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential s
 	owner := newMachine(t, bin, "owner").with(gh, "ESEC_VAULT_SIGNER="+e2eSigner)
 	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
 	repo := t.TempDir()
-	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev", "--format", "env")
+	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")
 	writeSecret(t, owner, repo, "dev", "DATABASE_URL=postgres://db-dev")
+	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
 	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "team", "create", p)
 
@@ -124,12 +125,11 @@ func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential s
 	}
 	pkID := strings.Fields(out)[0]
 
-	// The passkey adds alice and bob from the web pages.
-	for _, who := range []string{"alice", "bob"} {
-		if status, _, err := b.Post("/teams/acme/store/members", csrf, url.Values{"login": {who}, "env": {"dev"}}); err != nil || status != http.StatusOK {
-			t.Fatalf("propose %s: %d %v", who, status, err)
-		}
-		_, page, _ = b.Get("/changes")
+	// signWaiting signs the change waiting on the Changes page with the
+	// passkey, as the signer page does.
+	signWaiting := func() {
+		t.Helper()
+		_, page, _ := b.Get("/changes")
 		id := regexpFind(t, page, `/#change=([0-9]+)"`)
 		begin := signerPost(t, h, b, "/changes/"+id+"/begin", map[string]any{"delegate": pkID})
 		links := list(begin["links"])
@@ -142,6 +142,14 @@ func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential s
 			assertions = append(assertions, map[string]string{"credentialId": b64u(as.CredentialID), "authenticatorData": b64u(as.AuthenticatorData), "clientDataJSON": b64u(as.ClientDataJSON), "signature": b64u(as.Signature)})
 		}
 		signerPost(t, h, b, "/changes/"+id+"/finish", map[string]any{"delegate": pkID, "assertions": assertions})
+	}
+
+	// The passkey adds alice and bob from the web pages.
+	for _, who := range []string{"alice", "bob"} {
+		if status, _, err := b.Post("/teams/acme/store/members", csrf, url.Values{"login": {who}, "env": {"dev"}}); err != nil || status != http.StatusOK {
+			t.Fatalf("propose %s: %d %v", who, status, err)
+		}
+		signWaiting()
 	}
 	out = owner.run("", "team", "show", p)
 	if !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
@@ -160,6 +168,50 @@ func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential s
 	bob.run("y\n", "team", "sync")
 	if ok, _ := decrypts(bob, repo, "dev"); ok {
 		t.Fatal("bob got a key without a GitHub proof")
+	}
+
+	// --- The same for a group of people: the passkey adds them on the web,
+	// and the owner's device seals the group key only to proven accounts. ---
+	const g = "acme/backend"
+	owner.run("", "group", "create", g)
+	owner.run("", "access", "grant", g, "--env", "prod", p)
+	for _, who := range []string{"alice", "bob"} {
+		if status, page, err := b.Post("/groups/"+g+"/members", csrf, url.Values{"login": {who}}); err != nil || status != http.StatusOK {
+			t.Fatalf("propose %s for the group: %d %v\n%s", who, status, err, page)
+		}
+		signWaiting()
+	}
+	if out := owner.run("", "group", "show", g); !strings.Contains(out, "Members (2): alice, bob") {
+		t.Fatalf("group show after the web adds:\n%s", out)
+	}
+	out = owner.run("", "access", "sync")
+	if !strings.Contains(out, "the group key to 1 machine(s), token(s) or admin(s)") || !strings.Contains(out, "the group key to bob (added on the web)") {
+		t.Fatalf("owner sync for the group:\n%s", out)
+	}
+	if out := alice.run("y\n", "access", "sync"); !strings.Contains(out, "+ acme/store prod") {
+		t.Fatalf("alice sync through the group:\n%s", out)
+	}
+	bob.run("y\n", "access", "sync")
+	if ok, _ := decrypts(bob, repo, "prod"); ok {
+		t.Fatal("bob got prod through the group without a GitHub proof")
+	}
+	_, page, _ = b.Get("/groups/" + g)
+	if !strings.Contains(page, "alice") || !strings.Contains(page, "/groups/"+g+"/members/remove") {
+		t.Fatalf("group page lacks its people:\n%s", page)
+	}
+	// Removing bob on the web stops his keys at once; the passkey signs it.
+	if status, page, err := b.Post("/groups/"+g+"/members/remove", csrf, url.Values{"login": {"bob"}}); err != nil || status != http.StatusOK || !strings.Contains(page, "being removed") {
+		t.Fatalf("remove bob on the web: %d %v\n%s", status, err, page)
+	}
+	if out, err := bob.cmd(bob.home, "", "esec-vault", "access", "sync").CombinedOutput(); err != nil || !strings.Contains(string(out), "is removing you") {
+		t.Fatalf("bob while being removed: %v\n%s", err, out)
+	}
+	signWaiting()
+	if out := owner.run("", "group", "show", g); !strings.Contains(out, "Members (1): alice") {
+		t.Fatalf("group show after the web removal:\n%s", out)
+	}
+	if out := owner.run("", "access", "sync"); !strings.Contains(out, "a new group key, since bob left") {
+		t.Fatalf("owner sync after the web removal:\n%s", out)
 	}
 }
 

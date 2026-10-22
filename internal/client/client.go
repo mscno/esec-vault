@@ -321,6 +321,13 @@ func (c *Client) GroupKeyGrants(ctx context.Context, group string) ([]*envelope.
 	return out.Grants, err
 }
 
+// GroupKeys returns, for an admin or member of a group, the group chain,
+// their grant of the group key and each project's keys sealed to the group.
+func (c *Client) GroupKeys(ctx context.Context, group string) (*wire.GroupKeys, error) {
+	var out wire.GroupKeys
+	return &out, c.do(ctx, http.MethodGet, groupPath(group)+"/keys", authenticated, nil, &out)
+}
+
 // GroupCommit appends links and stores key grants.
 func (c *Client) GroupCommit(ctx context.Context, group string, cm *wire.GroupCommit) (*wire.GroupCommitResult, error) {
 	var out wire.GroupCommitResult

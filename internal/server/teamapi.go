@@ -288,6 +288,7 @@ func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, proje
 		return nil, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "the project chain is full")
 	}
 	wake := map[string]bool{}
+	var groupWoken []string
 	for m := range holders(st, true) {
 		wake[m] = true
 	}
@@ -336,8 +337,16 @@ func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, proje
 				return nil, nil, err
 			}
 		}
+		// Keys sealed to a group reach its people's devices too.
+		if id, isGroup := strings.CutPrefix(to, team.GroupHolderPrefix); isGroup {
+			people, err := s.groupPeople(ctx, tx, id, project, now)
+			if err != nil {
+				return nil, nil, err
+			}
+			groupWoken = append(groupWoken, people...)
+		}
 	}
-	var users []string
+	users := groupWoken
 	for u := range wake {
 		if _, isMember := st.Members[u]; !isMember {
 			continue

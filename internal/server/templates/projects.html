@@ -55,8 +55,8 @@
 <details class="help">
   <summary>Share a project with your team</summary>
   <p>In the project's repository, on a device that holds its keys:</p>
-  {{template "cmd" "esec vault team create"}}
-  {{template "cmd" "esec vault team add LOGIN --env dev"}}
+  {{template "cmd" "esec vault access create"}}
+  {{template "cmd" "esec vault access add LOGIN --env dev"}}
   <p class="muted">Members get the keys of the environments they may read, sealed to their own key, on their devices. The project's page then shows who reads what, and what to rotate when someone leaves.</p>
 </details>
 {{end}}

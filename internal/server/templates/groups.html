@@ -1,14 +1,16 @@
 {{template "head" .}}
-<h1>Machine groups</h1>
-<p class="muted">A machine group is a set of machines, such as production or staging servers, that read the same environments of one or more shared projects. Each machine has its own key; the projects' keys are sealed once, to the group's key, so a new machine reads them as soon as it is in the group.</p>
+<h1>Groups</h1>
+<p class="muted">A group is a set of people (a team, such as acme/backend) or machines (production or staging servers), or both, that read the same environments of one or more shared projects. The projects' keys are sealed once, to the group's key, which is sealed to each person and machine in it: whoever joins reads them at once, and whoever leaves gives the group a new key.</p>
 <div id="live" {{dsLive "/groups/live" 15}}></div>
 {{template "groups-list" .}}
 <details class="help"{{if not .Groups}} open{{end}}>
-  <summary>Set up a machine group</summary>
+  <summary>Set up a group</summary>
   <p>On a device that holds the project's keys:</p>
-  {{template "cmd" "esec vault group create acme/production"}}
-  {{template "cmd" "esec vault group grant acme/production --project acme/store --env prod"}}
-  <p>Then bring machines in, whichever suits them:</p>
+  {{template "cmd" "esec vault group create acme/backend"}}
+  {{template "cmd" "esec vault access grant acme/backend --project acme/store --env dev,staging"}}
+  <p>Add people; they read what the group reads:</p>
+  {{template "cmd" "esec vault group add acme/backend alice"}}
+  <p>Or bring machines in, whichever suits them:</p>
   <ul>
     <li><strong>An enrollment token</strong> for CI jobs and autoscaled machines: use it directly as their secret <code>ESEC_VAULT_MACHINE_KEY</code>, or let each machine join with it.
     {{template "cmd" "esec vault group token acme/production autoscale --expires 90d"}}</li>
@@ -22,12 +24,13 @@
 
 {{define "groups-list"}}<div id="groups-list" class="scroll">
 <table>
-  <thead><tr><th>Group</th><th>You</th><th>Machines</th><th>Tokens</th><th>Reads</th><th>Needs</th><th>Last used</th></tr></thead>
+  <thead><tr><th>Group</th><th>You</th><th>People</th><th>Machines</th><th>Tokens</th><th>Reads</th><th>Needs</th><th>Last used</th></tr></thead>
   <tbody>
   {{range .Groups}}
   <tr>
     <td><a href="/groups/{{.ID}}"><strong>{{.ID}}</strong></a></td>
-    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else}}<span class="muted">reads your projects</span>{{end}}</td>
+    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .Member}}<span class="badge status-active">member</span>{{else}}<span class="muted">reads your projects</span>{{end}}</td>
+    <td>{{if .People}}{{range $i, $p := .People}}{{if $i}}, {{end}}{{$p}}{{end}}{{else}}<span class="muted">—</span>{{end}}</td>
     <td>{{.Machines}}</td>
     <td>{{.Tokens}}</td>
     <td>{{if .Projects}}{{range $i, $p := .Projects}}{{if $i}}, {{end}}{{$p}}{{end}}{{else}}<span class="muted">nothing yet</span>{{end}}</td>
@@ -35,7 +38,7 @@
     <td>{{when .LastUsed}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="7" class="muted">No machine groups yet.</td></tr>
+  <tr><td colspan="8" class="muted">No groups yet.</td></tr>
   {{end}}
   </tbody>
 </table>

@@ -232,6 +232,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /groups/{org}/{name}/live", s.webGroupLive)
 	m.HandleFunc("POST /groups/{org}/{name}/access", s.webGroupAccess)
 	m.HandleFunc("POST /groups/{org}/{name}/remove", s.webGroupRemove)
+	m.HandleFunc("POST /groups/{org}/{name}/members", s.webGroupAddMember)
+	m.HandleFunc("POST /groups/{org}/{name}/members/remove", s.webGroupRemoveMember)
 	m.HandleFunc("POST /groups/{org}/{name}/joins/{id}/reject", s.webGroupRejectJoin)
 	m.HandleFunc("POST /groups/{org}/{name}/changes/{id}/dismiss", s.webGroupDismiss)
 
@@ -276,6 +278,7 @@ func (s *Server) routes() {
 	m.Handle("GET /v1/groups/{org}/{name}/chain", s.api(false, s.apiGroupChain))
 	m.Handle("GET /v1/groups/{org}/{name}/status", s.api(false, s.apiGroupStatus))
 	m.Handle("GET /v1/groups/{org}/{name}/key", s.api(false, s.apiGroupKeyGrants))
+	m.Handle("GET /v1/groups/{org}/{name}/keys", s.api(false, s.apiGroupKeys))
 	m.Handle("POST /v1/groups/{org}/{name}/commit", s.api(false, s.apiGroupCommit))
 	m.Handle("POST /v1/groups/{org}/{name}/joins/{id}/reject", s.api(false, s.apiGroupRejectJoin))
 	m.Handle("GET /v1/changes", s.api(false, s.apiChanges))

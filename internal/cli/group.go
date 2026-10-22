@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,18 +16,21 @@ import (
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
-// GroupCmd manages machine groups: sets of machines, such as production or
-// staging servers, that read the same environments of one or more projects.
+// GroupCmd manages groups: sets of people (a team such as acme/backend) or
+// machines (production or staging servers), or both, that read the same
+// environments of one or more projects.
 type GroupCmd struct {
-	List       GroupListCmd       `cmd:"" default:"withargs" help:"List machine groups (default)."`
-	Show       GroupShowCmd       `cmd:"" help:"Show a group: its machines, tokens, projects and what needs doing."`
-	Create     GroupCreateCmd     `cmd:"" help:"Create a machine group, with you as its admin."`
-	Grant      GroupGrantCmd      `cmd:"" help:"Let a group read environments of a shared project (or change which)."`
+	List       GroupListCmd       `cmd:"" default:"withargs" help:"List your groups (default)."`
+	Show       GroupShowCmd       `cmd:"" help:"Show a group: its people, machines, tokens, projects and what needs doing."`
+	Create     GroupCreateCmd     `cmd:"" help:"Create a group, with you as its admin."`
+	Add        GroupAddCmd        `cmd:"" help:"Add a person to a group: they read what it reads."`
+	Grant      GroupGrantCmd      `cmd:"" help:"Let a group read environments of a shared project (replacing what it read)."`
 	Revoke     GroupRevokeCmd     `cmd:"" help:"Stop a group reading a project."`
 	Token      GroupTokenCmd      `cmd:"" help:"Create an enrollment token: CI jobs use it directly, and machines join the group with it."`
 	AddMachine GroupAddMachineCmd `cmd:"" name:"add-machine" help:"Create a machine of the group and print its key, for a machine you set up yourself."`
 	Approve    GroupApproveCmd    `cmd:"" help:"Let in machines waiting to join, and sign changes made on the web pages."`
-	Remove     GroupRemoveCmd     `cmd:"" help:"Remove a machine or token; the group gets a new key."`
+	Remove     GroupRemoveCmd     `cmd:"" help:"Remove a person, machine or token; the group gets a new key."`
+	Leave      GroupLeaveCmd      `cmd:"" help:"Leave a group you are a member of."`
 	Rotate     GroupRotateCmd     `cmd:"" help:"Give the group a new key, sealed to every machine still in it."`
 	Admin      GroupAdminCmd      `cmd:"" help:"Make someone an admin of a group."`
 	Sync       TeamSyncCmd        `cmd:"" help:"Send keys machines and admins are missing (the background service does this too)."`
@@ -62,13 +66,16 @@ func (c *GroupListCmd) Run(ctx *cliCtx) error {
 		return printJSON(nonNil(list))
 	}
 	if len(list) == 0 {
-		fmt.Println("No machine groups. Create one with: esec vault group create production")
+		fmt.Println("No groups. Create one with: esec vault group create acme/backend (people) or acme/production (machines)")
 		return nil
 	}
 	for _, g := range list {
 		role := "reads your projects"
-		if g.Admin {
+		switch {
+		case g.Admin:
 			role = "admin"
+		case g.Member:
+			role = "member"
 		}
 		extra := ""
 		if g.Pending > 0 {
@@ -77,7 +84,7 @@ func (c *GroupListCmd) Run(ctx *cliCtx) error {
 		if g.KeyExposed > 0 {
 			extra += "  needs a new group key"
 		}
-		fmt.Printf("%-28s %-20s %d machine(s), %d token(s), reads %s%s\n", g.ID, role, g.Machines, g.Tokens, joinOr(g.Projects, "no projects"), extra)
+		fmt.Printf("%-28s %-20s %d people, %d machine(s), %d token(s), reads %s%s\n", g.ID, role, g.People, g.Machines, g.Tokens, joinOr(g.Projects, "no projects"), extra)
 	}
 	return nil
 }
@@ -121,6 +128,13 @@ func (c *GroupShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one report, 
 		admins = append(admins, safetext.Clean(ad.Login))
 	}
 	fmt.Println("Admins:", strings.Join(admins, ", "))
+	if ms := gs.ActiveMembers(); len(ms) > 0 {
+		var names []string
+		for _, m := range ms {
+			names = append(names, safetext.Clean(m.Login))
+		}
+		fmt.Printf("Members (%d): %s\n", len(ms), strings.Join(names, ", "))
+	}
 	for _, kind := range []string{team.KindMachine, team.KindToken} {
 		creds := gs.ActiveCreds(kind)
 		if len(creds) == 0 {
@@ -211,9 +225,10 @@ func (c *GroupCreateCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✓ Created the machine group %s, with you as its admin.\n", id)
+	fmt.Printf("✓ Created the group %s, with you as its admin.\n", id)
 	fmt.Println("Next:")
-	fmt.Printf("  let it read a project:   esec vault group grant %s --project ORG/REPO --env prod\n", id)
+	fmt.Printf("  let it read a project:   esec vault access grant %s --project ORG/REPO --env prod\n", id)
+	fmt.Printf("  add people:              esec vault group add %s LOGIN\n", id)
 	fmt.Printf("  a token for CI and new machines:  esec vault group token %s autoscale --expires 90d\n", id)
 	fmt.Printf("  or, on a machine:        esec-vault machine join %s --server %s --fingerprint %s\n", id, a.State.Server, team.GroupWords(id, gs.Root()))
 	return nil
@@ -485,10 +500,70 @@ func (c *GroupApproveCmd) Run(ctx *cliCtx) error {
 	return signChanges(bg, a, changes, c.Yes)
 }
 
-// GroupRemoveCmd removes a machine or token.
+// GroupAddCmd adds a person to a group.
+type GroupAddCmd struct {
+	Group      string `arg:"" help:"Group, such as acme/backend"`
+	Login      string `arg:"" help:"GitHub login of the person"`
+	AccountKey string `help:"Their account key words, read to you over another channel, instead of their GitHub SSH proof"`
+}
+
+// Run implements group add.
+func (c *GroupAddCmd) Run(ctx *cliCtx) error {
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	id, err := groupID(a, c.Group)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(2 * time.Minute)
+	defer cancel()
+	res, err := a.AddGroupMember(bg, id, c.Login, c.AccountKey)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✓ Added %s to %s (checked with %s; account key %s).\n", safetext.Clean(res.Login), id, verifiedText(res.Verified), res.AccountWords)
+	if len(res.Granted) > 0 {
+		fmt.Printf("  They read %s; their devices pick up the keys on their next sync.\n", strings.Join(res.Granted, ", "))
+	} else {
+		fmt.Printf("  The group reads nothing yet: esec vault access grant %s --project ORG/REPO --env dev\n", id)
+	}
+	return nil
+}
+
+// GroupLeaveCmd leaves a group.
+type GroupLeaveCmd struct {
+	Group string `arg:"" help:"Group, such as acme/backend"`
+	Yes   bool   `help:"Do not ask for confirmation"`
+}
+
+// Run implements group leave.
+func (c *GroupLeaveCmd) Run(ctx *cliCtx) error {
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	id, err := groupID(a, c.Group)
+	if err != nil {
+		return err
+	}
+	if !c.Yes && !confirm(fmt.Sprintf("Leave %s? You keep the keys you have; its admins should replace them.", id)) {
+		return errors.New("cancelled")
+	}
+	bg, cancel := timeout(2 * time.Minute)
+	defer cancel()
+	if _, err := a.RemoveGroupMember(bg, id, a.State.Login, "left"); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Left %s. Its admins' devices give it a new key, and they are told to replace the keys you read.\n", id)
+	return nil
+}
+
+// GroupRemoveCmd removes a person, machine or token.
 type GroupRemoveCmd struct {
 	Group     string `arg:"" help:"Group, such as acme/production"`
-	Machine   string `arg:"" help:"Machine or token, by name or id"`
+	Machine   string `arg:"" help:"Person (GitHub login), or machine or token (name or id)"`
 	Reason    string `help:"Reason recorded in the group chain"`
 	Destroyed bool   `help:"Its keys are gone with it (a deleted VM or container): nothing needs a new key"`
 	Yes       bool   `help:"Do not ask for confirmation"`
@@ -509,7 +584,19 @@ func (c *GroupRemoveCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(5 * time.Minute)
 	defer cancel()
-	res, err := a.RemoveCred(bg, id, c.Machine, c.Reason, c.Destroyed)
+	isPerson, err := groupPerson(bg, a, id, c.Machine)
+	if err != nil {
+		return err
+	}
+	var res *account.GroupRemoveResult
+	if isPerson {
+		if c.Destroyed {
+			return errors.New("--destroyed is for machines; a person keeps what they read")
+		}
+		res, err = a.RemoveGroupMember(bg, id, c.Machine, c.Reason)
+	} else {
+		res, err = a.RemoveCred(bg, id, c.Machine, c.Reason, c.Destroyed)
+	}
 	if err != nil {
 		return err
 	}
@@ -517,8 +604,39 @@ func (c *GroupRemoveCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
+// groupPerson reports whether name is a member of a group rather than one
+// of its machines or tokens, refusing a name that is both.
+func groupPerson(ctx context.Context, a *account.Account, id, name string) (bool, error) {
+	v, err := a.Group(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	person, machine := false, false
+	for _, m := range v.State.ActiveMembers() {
+		person = person || strings.EqualFold(m.Login, name)
+	}
+	for _, c := range v.State.ActiveCreds("") {
+		machine = machine || c.Name == name || c.ID == name
+	}
+	if person && machine {
+		return false, fmt.Errorf("%s names both a member and a machine of %s; remove the machine by its id", name, id)
+	}
+	if !person && !machine {
+		for _, ad := range v.State.ActiveAdmins() {
+			if strings.EqualFold(ad.Login, name) {
+				return false, fmt.Errorf("%s is an admin of %s; remove an admin with: esec vault group admin %s %s --remove", name, id, id, name)
+			}
+		}
+	}
+	return person, nil
+}
+
 func printRemoved(id string, res *account.GroupRemoveResult) {
-	fmt.Printf("✓ Removed the %s %s from %s; the server no longer gives it keys.\n", res.Cred.Kind, safetext.Clean(res.Cred.Name), id)
+	it, they := "it", "It"
+	if res.Cred.Kind == "member" {
+		it, they = "them", "They"
+	}
+	fmt.Printf("✓ Removed the %s %s from %s; the server no longer gives %s keys.\n", res.Cred.Kind, safetext.Clean(res.Cred.Name), id, it)
 	printRotated(id, res)
 	projects := make([]string, 0, len(res.Exposed))
 	for p := range res.Exposed {
@@ -526,7 +644,7 @@ func printRemoved(id string, res *account.GroupRemoveResult) {
 	}
 	slices.Sort(projects)
 	for _, p := range projects {
-		fmt.Printf("! It could read %s of %s. In that repository, give each a new key: esec vault env rotate ENV\n", strings.Join(res.Exposed[p], ", "), p)
+		fmt.Printf("! %s could read %s of %s. In that repository, give each a new key: esec vault env rotate ENV\n", they, strings.Join(res.Exposed[p], ", "), p)
 	}
 }
 

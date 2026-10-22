@@ -1,11 +1,24 @@
 {{template "head" .}}
-<p class="crumbs">{{if .Readable}}<a href="/groups">Machine groups</a>{{else}}<a href="/admin#groups">Admin</a>{{end}} › Machine group</p>
-<h1>{{.Group}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .Readable}}<span class="badge">reads your projects</span>{{else}}<span class="badge">read-only</span>{{end}}</h1>
-<p class="muted">Created by {{.Creator}} {{when .Created}}. Its admins, machines, tokens and the projects it takes keys from are recorded in a chain they sign; the server stores it but cannot change it. Machines check it from its first link, which their keys name.</p>
+<p class="crumbs">{{if .Readable}}<a href="/groups">Groups</a>{{else}}<a href="/admin#groups">Admin</a>{{end}} › Group</p>
+<h1>{{.Group}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .MyMember}}<span class="badge status-active">member</span>{{else if .Readable}}<span class="badge">reads your projects</span>{{else}}<span class="badge">read-only</span>{{end}}</h1>
+<p class="muted">Created by {{.Creator}} {{when .Created}}. Its admins, people, machines, tokens and the projects it takes keys from are recorded in a chain they sign; the server stores it but cannot change it. Everyone in it reads what it reads; machines check the chain from its first link, which their keys name.</p>
 <div id="live" {{dsLive (printf "/groups/%s/live" .Group) 10}}></div>
 {{template "group-alerts" .}}
 {{template "group-tiles" .}}
 {{template "group-joins" .}}
+<h2 id="people">People</h2>
+{{template "group-members" .}}
+{{if .MyAdmin}}
+<details class="help" data-preserve-attr="open">
+  <summary>Add a person</summary>
+  <form method="post" action="/groups/{{.Group}}/members" class="grid-form" {{dsPost (printf "/groups/%s/members" .Group)}}>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>GitHub login <input name="login" required pattern="[A-Za-z0-9][A-Za-z0-9-]{0,38}" autocomplete="off" spellcheck="false"></label>
+    <div><button type="submit">Propose</button></div>
+  </form>
+  <p class="muted">They sign in to this server first and publish their GitHub SSH proof with <code>esec vault access prove</code>. Sign the change with your passkey or on a device (<code>esec vault changes</code>); a device checks the proof against github.com before it sends them the group key. On a device, in one step: <code>esec vault group add {{.Group}} LOGIN</code>.</p>
+</details>
+{{end}}
 <h2 id="machines">Machines</h2>
 {{template "group-machines" .}}
 <details class="help" data-preserve-attr="open">
@@ -88,6 +101,24 @@
 </div>
 <p class="muted">Letting a machine in needs your device, which checks the words the machine shows: <code>esec vault group approve {{.Group}}</code>.</p>
 {{end}}
+</div>{{end}}
+
+{{define "group-members"}}<div id="group-members" class="scroll">
+{{if .Members}}
+<table>
+  <thead><tr><th>Person</th><th>Group key</th><th>Added</th><th></th></tr></thead>
+  <tbody>
+  {{range .Members}}
+  <tr>
+    <td><strong>{{.Login}}</strong>{{if .Blocked}} <span class="badge status-pending">being removed</span>{{end}}<br><span class="muted">GitHub {{trimPrefix .User "gh:"}}</span></td>
+    <td>{{if .HasKey}}sent{{else}}<span class="muted">not sent yet</span>{{end}}</td>
+    <td>{{when .AddedAt}}<br><span class="muted">by {{.AddedBy}}, checked by {{.Verified}}</span></td>
+    <td>{{if and $.MyAdmin (not .Blocked)}}<form method="post" action="/groups/{{$.Group}}/members/remove" data-confirm="Remove {{.Login}}? The server stops giving them keys at once; the removal is then signed and the group gets a new key." {{dsPost (printf "/groups/%s/members/remove" $.Group)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="login" value="{{.Login}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}<p class="muted">No people besides its admins. People in a group read what it reads, through the group's key.</p>{{end}}
 </div>{{end}}
 
 {{define "group-machines"}}<div id="group-machines" class="scroll">
@@ -204,6 +235,7 @@
 {{define "change-reads"}}{{if .Admin}}everything, as an admin{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}nothing{{end}}{{end}}
 {{define "change-text"}}{{if eq .Kind "access"}}read {{template "change-reads" .}} of {{.Project}}
 {{- else if eq .Kind "remove"}}remove {{with .Name}}{{.}} ({{end}}{{.Subject}}{{if .Name}}){{end}}
+{{- else if and (eq .Kind "member_add") (eq .Scope "group")}}add {{.Subject}}, who reads what the group reads
 {{- else if eq .Kind "member_add"}}add {{.Subject}}, who reads {{template "change-reads" .}}
 {{- else if eq .Kind "member_set"}}let {{.Subject}} read {{template "change-reads" .}}
 {{- else if eq .Kind "member_remove"}}remove {{.Subject}}

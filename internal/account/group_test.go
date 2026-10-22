@@ -362,7 +362,7 @@ func TestGroupWebPages(t *testing.T) { //nolint:gocyclo // one sequential story
 
 	b := h.Browser("mscno")
 	getPage(t, b, "/groups", group, "1 to approve")
-	page := getPage(t, b, "/groups/"+group, "web-1", "autoscale", "web-2", "esec vault group approve "+group, project, "created the machine group", "Fetched its keys")
+	page := getPage(t, b, "/groups/"+group, "web-1", "autoscale", "web-2", "esec vault group approve "+group, project, "created the group", "Fetched its keys")
 	if strings.Contains(page, team.JoinWords(group, strings.Repeat("0", 64), cred)) {
 		t.Fatal("the web page shows join words")
 	}

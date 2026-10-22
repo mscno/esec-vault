@@ -32,7 +32,7 @@ func TestCommandDetailsNameRealCommands(t *testing.T) {
 	paths := map[string]bool{}
 	var walk func(n *kong.Node)
 	walk = func(n *kong.Node) {
-		paths[n.Path()] = true
+		paths[commandPath(n)] = true
 		for _, c := range n.Children {
 			walk(c)
 		}
@@ -126,7 +126,7 @@ func TestHelpAndUsageStreams(t *testing.T) {
 	dir := t.TempDir()
 
 	out, _, code := runIn(dir, "")
-	if code != 0 || !strings.Contains(out, "Get started:") || !strings.Contains(out, "Machines, CI jobs and servers:") {
+	if code != 0 || !strings.Contains(out, "Get started:") || !strings.Contains(out, "On machines, CI jobs and servers:") {
 		t.Fatalf("no-argument help (exit %d):\n%s", code, out)
 	}
 	if strings.Contains(out, "daemon run") {

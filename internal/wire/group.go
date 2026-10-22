@@ -11,12 +11,17 @@ import (
 // machine asks to join. Detail is the group id.
 const EventGroup = "group"
 
-// GroupSummary is a machine group the caller administers, or one a project
-// of theirs grants environments to.
+// GroupSummary is a group the caller administers or is a member of, or one
+// a project of theirs grants environments to.
 type GroupSummary struct {
-	ID       string   `json:"id"`
-	Seq      uint64   `json:"seq"`
-	Admin    bool     `json:"admin"`
+	ID    string `json:"id"`
+	Seq   uint64 `json:"seq"`
+	Admin bool   `json:"admin"`
+	// Member says the caller is a member (not an admin): the group key is
+	// sealed to them, and they read what the group reads.
+	Member bool `json:"member,omitempty"`
+	// People counts admins and members.
+	People   int      `json:"people"`
 	Machines int      `json:"machines"`
 	Tokens   int      `json:"tokens"`
 	Projects []string `json:"projects"`
@@ -130,8 +135,8 @@ type Changes struct {
 type GroupStatus struct {
 	Seq   uint64       `json:"seq"`
 	Creds []CredStatus `json:"creds"`
-	// AdminsWithKey lists admins a grant of the current group key waits
-	// for.
+	// AdminsWithKey lists the admins and members a grant of the current
+	// group key waits for.
 	AdminsWithKey []string      `json:"admins_with_key"`
 	Joins         []JoinRequest `json:"joins"`
 	Changes       []Change      `json:"changes"`

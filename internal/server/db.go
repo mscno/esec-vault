@@ -249,6 +249,15 @@ var schema = []string{
 		active INTEGER NOT NULL,
 		PRIMARY KEY (group_id, user_id))`,
 	`CREATE INDEX IF NOT EXISTS group_admins_user ON group_admins(user_id)`,
+	// People who read what a group reads, without managing it.
+	`CREATE TABLE IF NOT EXISTS group_members (
+		group_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		login TEXT NOT NULL,
+		active INTEGER NOT NULL,
+		suspended_at INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (group_id, user_id))`,
+	`CREATE INDEX IF NOT EXISTS group_members_user ON group_members(user_id)`,
 	`CREATE TABLE IF NOT EXISTS group_creds (
 		group_id TEXT NOT NULL,
 		id TEXT NOT NULL,

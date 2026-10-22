@@ -15,18 +15,22 @@ import (
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
-// TeamCmd shares projects through the vault server.
+// TeamCmd ("esec vault access", formerly "team") shares projects through
+// the vault server.
 type TeamCmd struct {
-	List    TeamListCmd    `cmd:"" default:"withargs" help:"List your shared projects (default)."`
-	Show    TeamShowCmd    `cmd:"" help:"Show a shared project: members, machines, keys and what needs doing."`
-	Create  TeamCreateCmd  `cmd:"" help:"Share this project with your team, as its first admin."`
-	Add     TeamAddCmd     `cmd:"" help:"Add a member and send them the keys they may read."`
-	Set     TeamSetCmd     `cmd:"" help:"Change what a member reads, or make them an admin."`
-	Remove  TeamRemoveCmd  `cmd:"" help:"Remove a member."`
-	Leave   TeamLeaveCmd   `cmd:"" help:"Leave a shared project."`
-	Sync    TeamSyncCmd    `cmd:"" help:"Receive keys sent to you and, as an admin, send keys others are missing."`
-	Publish TeamPublishCmd `cmd:"" help:"Make this device's key for an environment the project's key (a new environment, or one rotated by hand)."`
-	Prove   TeamProveCmd   `cmd:"" help:"Prove with your GitHub SSH key that your vault account is yours, so admins can add you."`
+	List     TeamListCmd       `cmd:"" default:"withargs" help:"List your shared projects (default)."`
+	Show     TeamShowCmd       `cmd:"" help:"Show who reads what of a shared project: people, groups, machines, and what needs doing."`
+	Create   TeamCreateCmd     `cmd:"" help:"Share this project through the vault server, as its first admin."`
+	Grant    AccessGrantCmd    `cmd:"" help:"Let a person or a group read more environments (adds them if new)."`
+	Revoke   AccessRevokeCmd   `cmd:"" help:"Take environments, or all access, away from a person or a group."`
+	Offboard AccessOffboardCmd `cmd:"" help:"Take everything a person reads away: every project and group you administer."`
+	Add      TeamAddCmd        `cmd:"" help:"Add a member and send them the keys they may read."`
+	Set      TeamSetCmd        `cmd:"" help:"Change what a member reads (replacing it), or make them an admin."`
+	Remove   TeamRemoveCmd     `cmd:"" help:"Remove a member."`
+	Leave    TeamLeaveCmd      `cmd:"" help:"Leave a shared project."`
+	Sync     TeamSyncCmd       `cmd:"" help:"Receive keys sent to you and, as an admin, send keys others are missing."`
+	Publish  TeamPublishCmd    `cmd:"" help:"Make this device's key for an environment the project's key (a new environment, or one rotated by hand)."`
+	Prove    TeamProveCmd      `cmd:"" help:"Prove with your GitHub SSH key that your vault account is yours, so admins can add you."`
 }
 
 // TeamListCmd lists shared projects.
@@ -50,7 +54,7 @@ func (c *TeamListCmd) Run(ctx *cliCtx) error {
 		return printJSON(nonNil(list))
 	}
 	if len(list) == 0 {
-		fmt.Println("No shared projects. Share one from its repository with: esec vault team create")
+		fmt.Println("No shared projects. Share one from its repository with: esec vault access create")
 		return nil
 	}
 	for _, p := range list {
@@ -137,12 +141,7 @@ func (c *TeamShowCmd) Run(ctx *cliCtx) error {
 			fmt.Printf("  %-20s reads %-20s %s; %s\n", safetext.Clean(m.Name), strings.Join(m.Envs, ", "), keyStates(keys[m.ID]), from)
 		}
 	}
-	if gs := st.ActiveGroups(); len(gs) > 0 {
-		fmt.Println("Machine groups:")
-		for _, g := range gs {
-			fmt.Printf("  %-20s reads %-20s %s\n", g.Group, strings.Join(g.Envs, ", "), keyStates(keys[team.GroupHolder(g.Group)]))
-		}
-	}
+	printTeamGroups(v, keys)
 	for _, e := range st.Rotations() {
 		var who []string
 		for _, x := range e.Exposed {
@@ -158,6 +157,33 @@ func (c *TeamShowCmd) Run(ctx *cliCtx) error {
 		fmt.Printf("! %s needs a new key: %s may still hold it. Run in the repository: esec vault env rotate %s\n", n, strings.Join(who, ", "), n)
 	}
 	return nil
+}
+
+// printTeamGroups lists the groups a project grants environments to, with
+// their people and machines where this account can see the group.
+func printTeamGroups(v *account.TeamView, keys map[string]map[string]string) {
+	gs := v.State.ActiveGroups()
+	if len(gs) == 0 {
+		return
+	}
+	fmt.Println("Groups:")
+	for _, g := range gs {
+		fmt.Printf("  %-20s reads %-20s %s\n", g.Group, strings.Join(g.Envs, ", "), keyStates(keys[team.GroupHolder(g.Group)]))
+		chain, ok := v.Groups[g.Group]
+		if !ok {
+			continue
+		}
+		var people []string
+		for _, p := range chain.ActiveMembers() {
+			people = append(people, safetext.Clean(p.Login))
+		}
+		if len(people) > 0 {
+			fmt.Printf("    people: %s\n", strings.Join(people, ", "))
+		}
+		if n := len(chain.ActiveCreds(team.KindMachine)); n > 0 {
+			fmt.Printf("    %d machine(s), %d token(s)\n", n, len(chain.ActiveCreds(team.KindToken)))
+		}
+	}
 }
 
 func mapKeys[V any](m map[string]V) []string {
@@ -211,7 +237,7 @@ func (c *TeamCreateCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	fmt.Printf("✓ Shared %s with you as its admin. Environments: %s.\n", project, strings.Join(st.EnvNames(), ", "))
-	fmt.Println("Add people with: esec vault team add LOGIN --env dev")
+	fmt.Println("Add people with: esec vault access add LOGIN --env dev")
 	fmt.Printf("See it on the web: %s/teams/%s\n", a.State.Server, project)
 	return nil
 }
@@ -399,6 +425,10 @@ func (c *TeamSyncCmd) Run(ctx *cliCtx) error {
 		if inv.Admin {
 			reads = "you are an admin"
 		}
+		if inv.Group != "" {
+			fmt.Printf("You are a member of the group %s, which reads %s of the shared project %s.\n", inv.Group, joinOr(inv.Envs, "nothing"), inv.Project)
+			return c.Yes || confirm("Take in its keys on this device? Say no if you did not expect it")
+		}
 		fmt.Printf("%s added you to the shared project %s (%s).\n", safetext.Clean(inv.AddedBy), inv.Project, reads)
 		return c.Yes || confirm("Take in its keys on this device? Say no if you did not expect it")
 	}
@@ -421,7 +451,7 @@ func printTeamSync(res *account.TeamSyncResult) {
 		fmt.Println("  → " + safetext.Clean(s))
 	}
 	for _, s := range res.Conflicts {
-		fmt.Printf("  ! %s: kept this device's own key; run 'esec vault team sync' in a terminal to replace it\n", s)
+		fmt.Printf("  ! %s: kept this device's own key; run 'esec vault access sync' in a terminal to replace it\n", s)
 	}
 	for _, s := range res.Dropped {
 		fmt.Println("  - dropped an out-of-date grant: " + safetext.Clean(s))
@@ -436,7 +466,7 @@ func printTeamSync(res *account.TeamSyncResult) {
 		fmt.Println("  ! " + safetext.Clean(s))
 	}
 	for _, inv := range res.Invites {
-		fmt.Printf("  ! did not take in the keys of %s; run 'esec vault team sync' again to accept it\n", inv.Project)
+		fmt.Printf("  ! did not take in the keys of %s; run 'esec vault access sync' again to accept it\n", inv.Project)
 	}
 	projects := make([]string, 0, len(res.Rotations))
 	for p := range res.Rotations {
@@ -515,7 +545,7 @@ func (c *TeamProveCmd) Run(ctx *cliCtx) error {
 	if err := a.ProveAccount(bg, sign); err != nil {
 		return err
 	}
-	fmt.Printf("✓ Published proof that this vault account belongs to GitHub user %s. Admins can now add you with: esec vault team add %s --env ENV\n", a.State.Login, a.State.Login)
+	fmt.Printf("✓ Published proof that this vault account belongs to GitHub user %s. Admins can now add you with: esec vault access add %s --env ENV\n", a.State.Login, a.State.Login)
 	return nil
 }
 
@@ -578,14 +608,14 @@ func sharedProject(ctx *cliCtx, project string) (bool, error) {
 func publishShared(ctx *cliCtx, project, env, reason string) {
 	a, err := openAccount(ctx)
 	if err != nil {
-		fmt.Printf("! Publish the new %s key to the team with: esec vault team publish %s\n", env, env)
+		fmt.Printf("! Publish the new %s key to the team with: esec vault access publish %s\n", env, env)
 		return
 	}
 	bg, cancel := timeout(2 * time.Minute)
 	defer cancel()
 	res, err := a.PublishEnv(bg, project, env, reason)
 	if err != nil {
-		fmt.Printf("! The team does not have the new %s key yet (%v). Retry with: esec vault team publish %s --project %s\n", env, err, env, project)
+		fmt.Printf("! The team does not have the new %s key yet (%v). Retry with: esec vault access publish %s --project %s\n", env, err, env, project)
 		return
 	}
 	if len(res.Sent) > 0 {

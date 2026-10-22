@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -146,21 +147,11 @@ func (s *Server) changeLinks(ctx context.Context, user string, cs *chain.State, 
 			if c.Admin {
 				return nil, errNeedsDevice
 			}
-			u, err := s.db.userByLogin(ctx, c.Subject)
+			p, err := s.personByLogin(ctx, c.Subject)
 			if err != nil {
 				return nil, err
 			}
-			if u == nil {
-				return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s has no account on this server.", c.Subject)
-			}
-			first, err := s.db.firstLink(ctx, u.ID)
-			if err != nil {
-				return nil, err
-			}
-			if first == nil {
-				return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s has not created a vault account yet.", c.Subject)
-			}
-			typ, body = team.TypeMemberAdd, team.MemberAddBody{Member: team.Person{User: u.ID, Login: u.Login, Root: first.Hash()}, Envs: team.SortEnvs(c.Envs), Verified: team.VerifiedWeb}
+			typ, body = team.TypeMemberAdd, team.MemberAddBody{Member: p, Envs: team.SortEnvs(c.Envs), Verified: team.VerifiedWeb}
 		case wire.ChangeMemberSet, wire.ChangeMemberRemove:
 			m := memberOf(st, c.Subject)
 			if m == nil {
@@ -187,9 +178,40 @@ func (s *Server) changeLinks(ctx context.Context, user string, cs *chain.State, 
 			return nil, err
 		}
 		if gs == nil {
-			return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no machine group %s.", c.Target)
+			return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no group %s.", c.Target)
 		}
 		switch c.Kind {
+		case wire.ChangeMemberAdd:
+			if !gs.Admin(user) {
+				return nil, clientErr(http.StatusForbidden, wire.ErrForbidden, "Only an admin of %s can add people.", c.Target)
+			}
+			p, err := s.personByLogin(ctx, c.Subject)
+			if err != nil {
+				return nil, err
+			}
+			e, err := gs.DelegateLink(team.GroupMemberAdd, team.GroupMemberAddBody{Member: p, Verified: team.VerifiedWeb}, now, user, d.ID, seq)
+			if err != nil {
+				return nil, err
+			}
+			return []*envelope.Envelope{e}, nil
+		case wire.ChangeMemberRemove:
+			if !gs.Admin(user) {
+				return nil, clientErr(http.StatusForbidden, wire.ErrForbidden, "Only an admin of %s can remove people.", c.Target)
+			}
+			var who string
+			for _, m := range gs.ActiveMembers() {
+				if strings.EqualFold(m.Login, c.Subject) {
+					who = m.User
+				}
+			}
+			if who == "" {
+				return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s is not a member of %s.", c.Subject, c.Target)
+			}
+			e, err := gs.DelegateLink(team.GroupMemberRemove, team.GroupMemberRemoveBody{User: who, Reason: "removed on the web"}, now, user, d.ID, seq)
+			if err != nil {
+				return nil, err
+			}
+			return []*envelope.Envelope{e}, nil
 		case wire.ChangeRemove:
 			if !gs.Admin(user) {
 				return nil, clientErr(http.StatusForbidden, wire.ErrForbidden, "Only an admin of %s can remove its machines.", c.Target)
@@ -248,6 +270,26 @@ func (s *Server) accessLinks( //nolint:gocyclo // both sides, each only when use
 		return nil, clientErr(http.StatusConflict, wire.ErrConflict, "Nothing to change that you administer.")
 	}
 	return out, nil
+}
+
+// personByLogin returns the account of a GitHub login on this server, as a
+// chain records it.
+func (s *Server) personByLogin(ctx context.Context, login string) (team.Person, error) {
+	u, err := s.db.userByLogin(ctx, login)
+	if err != nil {
+		return team.Person{}, err
+	}
+	if u == nil {
+		return team.Person{}, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s has no account on this server.", login)
+	}
+	first, err := s.db.firstLink(ctx, u.ID)
+	if err != nil {
+		return team.Person{}, err
+	}
+	if first == nil {
+		return team.Person{}, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s has not created a vault account yet.", login)
+	}
+	return team.Person{User: u.ID, Login: u.Login, Root: first.Hash()}, nil
 }
 
 // checkDelegateLinks verifies signed delegate links against the current

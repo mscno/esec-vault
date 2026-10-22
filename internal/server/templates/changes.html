@@ -13,7 +13,7 @@
   <tbody>
   {{range .Changes}}
   <tr id="change-{{.ID}}">
-    <td>{{if eq .Scope "group"}}<a href="/groups/{{.Target}}">{{.Target}}</a> <span class="muted">machine group</span>{{else if eq .Scope "account"}}<a href="/account/signing">your account</a>{{else}}<a href="/teams/{{.Target}}">{{.Target}}</a>{{end}}</td>
+    <td>{{if eq .Scope "group"}}<a href="/groups/{{.Target}}">{{.Target}}</a> <span class="muted">group</span>{{else if eq .Scope "account"}}<a href="/account/signing">your account</a>{{else}}<a href="/teams/{{.Target}}">{{.Target}}</a>{{end}}</td>
     <td>{{template "change-text" .}}</td>
     <td>{{.By}}</td>
     <td>{{when .Created}}</td>

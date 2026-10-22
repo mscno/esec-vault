@@ -89,7 +89,7 @@ func describeProjectLink(before, after *team.State, l team.Link) (*projectAlert,
 		}
 		return &projectAlert{kind: alertMemberAdded, subject: b.Member.Login, recipients: []string{b.Member.User},
 			text:   fmt.Sprintf("%s added %s to the shared project %s (%s).", actor, b.Member.Login, after.Project, role),
-			advice: "If this was not expected, an admin removes them with 'esec vault team remove " + b.Member.Login + "' in the project, then gives the environments they could read new keys."}, nil
+			advice: "If this was not expected, an admin removes them with 'esec vault access remove " + b.Member.Login + "' in the project, then gives the environments they could read new keys."}, nil
 	case team.TypeMemberRemove:
 		var b team.MemberRemoveBody
 		if err := envelope.DecodeStrict(l.Body, &b); err != nil {

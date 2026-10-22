@@ -710,7 +710,7 @@ esec vault agent-unlock [enable --key K [--expires D]|list|disable ID]
 esec vault keyring [seal [--all]|unseal]
 esec vault env rotate ENV                  # phase 2; in a shared project, also sends the new key
 esec vault status                          # + server, session, device, secret store, chain head, sync state
-esec vault team [show|create|add LOGIN --env E|set LOGIN --env E|remove LOGIN|leave|sync|publish ENV|prove]
+esec vault access [show|create|add LOGIN --env E|set LOGIN --env E|remove LOGIN|leave|sync|publish ENV|prove]
 esec vault machine [create NAME --env E [--github-repo R --github-ref REF]|list|remove NAME]
 esec-vault machine [run -- CMD|env]        # in a CI job or app, with ESEC_VAULT_MACHINE_KEY
 ```

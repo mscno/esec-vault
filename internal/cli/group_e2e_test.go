@@ -42,7 +42,7 @@ func TestMachineGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one 
 	owner.run("", "team", "create", "--project=acme/api")
 
 	// --- A group reads prod of both. ---
-	if out := owner.run("", "group", "create", g); !strings.Contains(out, "Created the machine group "+g) {
+	if out := owner.run("", "group", "create", g); !strings.Contains(out, "Created the group "+g) {
 		t.Fatalf("group create:\n%s", out)
 	}
 	for _, p := range []string{"acme/store", "acme/api"} {

@@ -115,16 +115,8 @@ func groupSigners(gs *team.GroupState) []string {
 // mirrorGroup rewrites the admin, credential and access tables of a group
 // from its verified state, and drops key grants that no longer apply.
 func (d *DB) mirrorGroup(ctx context.Context, tx *sql.Tx, gs *team.GroupState, now time.Time) error {
-	for _, a := range gs.Admins {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO group_admins (group_id, user_id, login, active) VALUES (?, ?, ?, ?)
-			ON CONFLICT(group_id, user_id) DO UPDATE SET login = excluded.login, active = excluded.active`, gs.Group, a.User, a.Login, a.Active); err != nil {
-			return err
-		}
-		if !a.Active {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM group_key_grants WHERE group_id = ? AND to_id = ?`, gs.Group, a.User); err != nil {
-				return err
-			}
-		}
+	if err := mirrorGroupPeople(ctx, tx, gs); err != nil {
+		return err
 	}
 	for _, c := range gs.Creds {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO group_creds (group_id, id, kind, name, sign_pub, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -170,6 +162,36 @@ func (d *DB) mirrorGroup(ctx context.Context, tx *sql.Tx, gs *team.GroupState, n
 	return err
 }
 
+// mirrorGroupPeople mirrors a group's admins and members, and drops the key
+// grants of those no longer in it. A member blocked on the web is unblocked
+// once they leave or come back.
+func mirrorGroupPeople(ctx context.Context, tx *sql.Tx, gs *team.GroupState) error {
+	for _, a := range gs.Admins {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO group_admins (group_id, user_id, login, active) VALUES (?, ?, ?, ?)
+			ON CONFLICT(group_id, user_id) DO UPDATE SET login = excluded.login, active = excluded.active`, gs.Group, a.User, a.Login, a.Active); err != nil {
+			return err
+		}
+		if !gs.HoldsKey(a.User) {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM group_key_grants WHERE group_id = ? AND to_id = ?`, gs.Group, a.User); err != nil {
+				return err
+			}
+		}
+	}
+	for _, m := range gs.Members {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO group_members (group_id, user_id, login, active) VALUES (?, ?, ?, ?)
+			ON CONFLICT(group_id, user_id) DO UPDATE SET login = excluded.login, active = excluded.active,
+				suspended_at = CASE WHEN excluded.active != group_members.active THEN 0 ELSE group_members.suspended_at END`, gs.Group, m.User, m.Login, m.Active); err != nil {
+			return err
+		}
+		if !gs.HoldsKey(m.User) {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM group_key_grants WHERE group_id = ? AND to_id = ?`, gs.Group, m.User); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // mirrorProjectGroups rewrites the groups a project grants environments to.
 func (d *DB) mirrorProjectGroups(ctx context.Context, tx *sql.Tx, st *team.State) error {
 	for _, g := range st.Groups {
@@ -205,15 +227,17 @@ func (d *DB) adminGroups(ctx context.Context, user string) ([]string, error) {
 	return out, err
 }
 
-// visibleGroups lists the groups user may read: those they administer, and
-// those that take keys from a project they are a member of. Only a group's
+// visibleGroups lists the groups user may read: those they administer or
+// are a member of, and those that take keys from a project they are a
+// member of. Only a group's
 // admins choose those projects; a project granting a group environments
 // does not make the group visible, since anyone can create a project.
 func (d *DB) visibleGroups(ctx context.Context, user string) ([]string, error) {
 	var out []string
 	err := scanAll(ctx, d.sql, `SELECT group_id FROM group_admins WHERE user_id = ? AND active = 1
+		UNION SELECT group_id FROM group_members WHERE user_id = ? AND active = 1
 		UNION SELECT a.group_id FROM group_access a JOIN project_members m ON m.project = a.project WHERE m.user_id = ? AND m.active = 1
-		ORDER BY 1`, []any{user, user}, func(r *sql.Rows) error {
+		ORDER BY 1`, []any{user, user, user}, func(r *sql.Rows) error {
 		var g string
 		if err := r.Scan(&g); err != nil {
 			return err
@@ -367,8 +391,8 @@ func (d *DB) groupStatus(ctx context.Context, gs *team.GroupState, now time.Time
 		if g.Version != gs.Key.Version {
 			continue
 		}
-		if gs.Admin(g.To) {
-			// Sealed to an admin's earlier user key, it no longer opens.
+		if gs.HoldsKey(g.To) {
+			// Sealed to a person's earlier user key, it no longer opens.
 			kg, err := team.PeekKeyGrant(g.Env)
 			cs, cerr := chains(g.To)
 			if err != nil || cerr != nil || kg.ToKey != cs.UKeyVersion || kg.ToEncPub != hex.EncodeToString(cs.EncPub[:]) {
@@ -382,7 +406,7 @@ func (d *DB) groupStatus(ctx context.Context, gs *team.GroupState, now time.Time
 		r := rows[c.ID]
 		out.Creds = append(out.Creds, wire.CredStatus{ID: c.ID, HasKey: has[c.ID], Suspended: !r.Suspended.IsZero(), LastUsed: r.LastUsed, LastIP: r.LastIP, Uses: r.Uses})
 	}
-	for _, a := range gs.ActiveAdmins() {
+	for _, a := range gs.KeyHolders() {
 		if has[a.User] {
 			out.AdminsWithKey = append(out.AdminsWithKey, a.User)
 		}

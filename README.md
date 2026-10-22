@@ -40,14 +40,37 @@ command in the project's repository, or pass `--project org/repo`. Replace
 ### Share a project with a teammate
 
 ```sh
-esec vault team create                    # once per project: you become its admin
+esec vault access create                    # once per project: you become its admin
 # the teammate, once: sign in, then prove their account with their GitHub SSH key
-esec vault login https://vault.example.com && esec vault team prove
-esec vault team add alice --env dev       # you: add them; their devices get the dev key
+esec vault login https://vault.example.com && esec vault access prove
+esec vault access grant alice --env dev     # you: add them; their devices get the dev key
+esec vault access grant alice --env staging # later: now dev and staging
 ```
 
 On the web: the project's page › **Add a member**, then sign it with a
-passkey or `esec vault changes`.
+passkey or `esec vault changes`. (`esec vault team ...` still works: `team`
+is the old name of `access`.)
+
+### Give a whole team access with a group
+
+```sh
+esec vault group create acme/backend                     # you become its admin
+esec vault group add acme/backend alice                  # people read what the group reads
+esec vault group add acme/backend bob
+esec vault access grant acme/backend --env dev,staging   # in each project's repository
+```
+
+Everyone in the group gets the keys on their next sync (their device asks
+once per project). A new hire is one `group add` instead of one `access
+grant` per project. On the web: the group's page › **Add a person**.
+
+### Offboard someone
+
+```sh
+esec vault access offboard alice --dry-run   # every project and group alice reads
+esec vault access offboard alice             # take it all away; lists what to rotate
+esec vault env rotate prod --project acme/store
+```
 
 ### Give a GitHub Actions workflow its secrets
 
@@ -66,7 +89,7 @@ steps:
   - uses: actions/checkout@v5
   - name: Install esec and esec-vault
     run: |
-      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.12.0/esec-vault_0.12.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
+      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.13.0/esec-vault_0.13.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
       curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
   - run: esec-vault machine run -- esec run prod -- ./deploy.sh
     env:
@@ -90,7 +113,7 @@ fly secrets set -a store ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/p
 ```dockerfile
 FROM alpine:3.21 AS esec
 RUN apk add --no-cache curl \
- && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.12.0/esec-vault_0.12.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
+ && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.13.0/esec-vault_0.13.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
  && curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
 
 FROM your-app-image
@@ -136,13 +159,15 @@ ESEC_VAULT_ENROLL_TOKEN=esecg1_... esec-vault machine join
 ### Remove a person or a machine
 
 ```sh
-esec vault team remove alice                      # then rotate what it lists
+esec vault access revoke alice                    # then rotate what it lists
 esec vault env rotate dev
-esec vault group remove acme/production web-3     # the group gets a new key
+esec vault access revoke alice --env prod         # only prod
+esec vault group remove acme/backend alice        # out of a group: the group gets a new key
+esec vault group remove acme/production web-3     # a machine: the group gets a new key
 esec vault group remove acme/production web-4 --destroyed   # deleted with its disk: nothing to rotate
 ```
 
-On the web, **Remove** blocks a machine at once; with
+On the web, **Remove** blocks a person's or machine's keys at once; with
 `esec vault delegate server`, the server also signs the removal for you.
 
 ### Approve web changes without a terminal
@@ -156,8 +181,8 @@ while the background service runs.
 ### See what needs doing
 
 ```sh
-esec vault team                  # shared projects and their to-dos
-esec vault group                 # machine groups, machines waiting to join
+esec vault access                # shared projects and their to-dos
+esec vault group                 # groups, machines waiting to join
 esec vault changes               # changes made on the web, waiting for you
 ```
 
@@ -168,12 +193,15 @@ The web overview lists the same, with the command for each.
 ```sh
 esec vault                         # the commands, in sections; same as esec vault --help
 esec vault help group token        # one command, with examples
-esec vault team show --json        # list and show commands print JSON with --json
+esec vault access show --json      # list and show commands print JSON with --json
+esec vault access grant acme/backend --env dev --json
+esec vault access offboard alice --dry-run --json
 esec vault changes --list          # look at web changes without signing them
-esec vault team remove alice --yes # commands that ask take --yes (or --force)
+esec vault access revoke alice --yes   # commands that ask take --yes (or --force)
 ```
 
-`--json` works on `status`, `team list`, `team show`, `group list`,
+`--json` works on `status`, `access list`, `access show`, `access grant`,
+`access revoke`, `access offboard`, `group list`,
 `group show`, `machine list`, `machine whoami`, `devices list`, `env list`,
 `keyring list`, `delegate list` and `changes`. It shows names, public keys
 and fingerprints, never a private key.
@@ -365,10 +393,11 @@ Sign in at your server with GitHub. The pages never decrypt anything.
   names and public keys, never private keys or values. Search by a public
   key to find which project and environment an encrypted file belongs to.
   Each shared project has a page with its members, what each reads and
-  whether their devices have the keys yet, its machines and machine groups
+  whether their devices have the keys yet, its machines and groups
   and when they were last used, keys to rotate, and its history. Admins add
   members, change what they read and remove them there.
-- **Machines**: your machine groups. Each group's page shows its machines
+- **Groups**: your groups of people and machines. Each group's page shows
+  its people (add and remove them there), its machines
   (when and from where each last fetched its keys), its tokens, which
   projects and environments it reads, machines waiting to join, its history
   and log. Tick environments to change what it reads, remove a machine (it
@@ -892,8 +921,8 @@ registered on their GitHub account that the vault account is theirs:
 
 ```sh
 esec vault login https://vault.example.com
-esec vault team prove                     # uses your SSH agent
-esec vault team prove --ssh-key ~/.ssh/id_ed25519
+esec vault access prove                     # uses your SSH agent
+esec vault access prove --ssh-key ~/.ssh/id_ed25519
 ```
 
 Without a GitHub SSH key, the member reads out the account key words that
@@ -904,40 +933,67 @@ Without a GitHub SSH key, the member reads out the account key words that
 On a device that holds the project's keys, in its repository:
 
 ```sh
-esec vault team create                    # you become its first admin
+esec vault access create                    # you become its first admin
 ```
 
 ### Step 3: Add people
 
 ```sh
-esec vault team add alice --env dev,staging
-esec vault team add bob --admin           # reads everything, manages the project
-esec vault team add carol --env dev --account-key "word word word …"
+esec vault access grant alice --env dev,staging
+esec vault access grant bob --admin         # reads everything, manages the project
+esec vault access grant carol --env dev --account-key "word word word …"
 ```
 
-`add` checks the person's GitHub proof against `github.com/LOGIN.keys`, and
+`grant` checks a new person's GitHub proof against `github.com/LOGIN.keys`, and
 sends them the keys of the environments they may read. The first time, the
 member's device asks before it takes in a project's keys:
 
 ```sh
-esec vault team sync                      # on Alice's machine
+esec vault access sync                      # on Alice's machine
 ```
 
 After that, the background service takes in new keys on its own, and
 Alice's other devices get them through her vault.
 
+### Teams: give a group of people access
+
+A group (such as `acme/backend`) holds people who read the same
+environments. Its admins add and remove people; each project's admins
+decide what the group reads. The projects' keys are sealed once, to the
+group's key, and the group's key to each person in it, so someone who joins
+reads everything the group reads, and someone who leaves gives the group a
+new key.
+
+```sh
+esec vault group create acme/backend
+esec vault group add acme/backend alice     # checked like a new project member
+esec vault access grant acme/backend --env dev,staging
+esec vault access grant acme/backend --env prod --project acme/payments
+esec vault group show acme/backend          # its people, machines and projects
+esec vault group remove acme/backend alice  # the group gets a new key
+esec vault group leave acme/backend         # a member leaving by themselves
+```
+
+A member's devices take in the keys like a member of the project's would,
+asking once per project. Group admins manage the group without reading
+through it; give an admin access to a project directly when they need it.
+A group can hold machines as well (see below).
+
 ### Change access, remove people, rotate keys
 
 ```sh
-esec vault team                           # your shared projects
-esec vault team show                      # members, keys, what needs doing
-esec vault team set alice --env dev,staging,prod
-esec vault team remove alice
-esec vault team leave
+esec vault access                           # your shared projects
+esec vault access show                      # people, groups, machines, keys, what needs doing
+esec vault access grant alice --env prod    # adds prod to what alice reads
+esec vault access revoke alice --env prod   # takes prod away
+esec vault access set alice --env dev,staging   # replaces what alice reads
+esec vault access revoke alice              # alice leaves the project
+esec vault access leave
+esec vault access offboard alice            # every project and group alice reads
 ```
 
-Someone who loses access may still hold the keys they had. `remove` and
-`set` list the environments that need a new key, the project page shows
+Someone who loses access may still hold the keys they had. `revoke`,
+`set` and `offboard` list the environments that need a new key, the project page shows
 them, and the other members get an alert. In the repository, an admin runs:
 
 ```sh
@@ -950,7 +1006,7 @@ themselves where they may have been seen. Only admins rotate or add keys of
 a shared project; `env add` and `env rotate` send them to the team.
 
 Admins' devices send keys that members are missing on their own, for
-example after a member's user key changed. `esec vault team sync` does the
+example after a member's user key changed. `esec vault access sync` does the
 same by hand.
 
 ## Give CI jobs and apps their own key
@@ -1608,12 +1664,16 @@ Migration is explicit; installing the binary does not alter live keys.
 | List stored projects | `esec vault keyring list` |
 | List this project's named keys and public keys | `esec vault env list` |
 | List another project's named keys | `esec vault env list --project acme/store` |
-| List shared projects | `esec vault team` |
-| See who reads what, and what needs doing | `esec vault team show` |
-| Receive and send team keys now | `esec vault team sync` |
+| List shared projects | `esec vault access` |
+| See who reads what, and what needs doing | `esec vault access show` |
+| Give a person or a group more access | `esec vault access grant acme/backend --env dev` |
+| Take access away | `esec vault access revoke alice --env prod` |
+| Take everything away from someone leaving | `esec vault access offboard alice` |
+| Receive and send team keys now | `esec vault access sync` |
 | List a project's machines | `esec vault machine list` |
-| List machine groups | `esec vault group` |
-| See a group's machines and what it reads | `esec vault group show acme/production` |
+| List groups | `esec vault group` |
+| Add a person to a group | `esec vault group add acme/backend alice` |
+| See a group's people, machines and what it reads | `esec vault group show acme/production` |
 | Let machines waiting to join in | `esec vault group approve acme/production` |
 | Sign changes made on the web pages | `esec vault changes` |
 | Passkeys and server removals | `esec vault delegate` |

@@ -189,6 +189,25 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 			out = append(out, fmt.Sprintf("Rotate %s of %s: the group may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Project))
 		}
 		return out, nil
+	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeMemberAdd:
+		res, err := a.AddGroupMember(ctx, ch.Target, ch.Subject, "")
+		if errors.Is(err, ErrNoProof) {
+			return nil, fmt.Errorf("%w. Add them by hand with the account key words they read to you: esec vault group add %s %s --account-key '...'", err, ch.Target, ch.Subject)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Added %s to %s, checked with their GitHub SSH key.", res.Login, ch.Target)}, nil
+	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeMemberRemove:
+		res, err := a.RemoveGroupMember(ctx, ch.Target, ch.Subject, "removed on the web")
+		if err != nil {
+			return nil, err
+		}
+		out := []string{fmt.Sprintf("Removed %s from %s; the group has a new key.", ch.Subject, ch.Target)}
+		for p, envs := range res.Exposed {
+			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(envs, ", "), p))
+		}
+		return out, nil
 	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeRemove:
 		res, err := a.RemoveCred(ctx, ch.Target, ch.Subject, "removed on the web", false)
 		if err != nil {
@@ -202,7 +221,7 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberAdd:
 		res, err := a.AddMember(ctx, ch.Target, ch.Subject, ch.Admin, ch.Envs, "")
 		if errors.Is(err, ErrNoProof) {
-			return nil, fmt.Errorf("%w. Add them by hand with the account key words they read to you: esec vault team add %s --account-key '...' --project %s", err, ch.Subject, ch.Target)
+			return nil, fmt.Errorf("%w. Add them by hand with the account key words they read to you: esec vault access add %s --account-key '...' --project %s", err, ch.Subject, ch.Target)
 		}
 		if err != nil {
 			return nil, err
@@ -280,6 +299,9 @@ func (ch ChangeView) describe() []string {
 		}
 		return []string{fmt.Sprintf("%s: remove %s (blocked by the server already)", ch.Target, name)}
 	case wire.ChangeMemberAdd:
+		if ch.Scope == wire.ScopeGroup {
+			return []string{fmt.Sprintf("%s: add %s, who reads what the group reads", ch.Target, ch.Subject)}
+		}
 		return []string{fmt.Sprintf("%s: add %s, who reads %s", ch.Target, ch.Subject, readsText(ch.Change))}
 	case wire.ChangeMemberSet:
 		return []string{fmt.Sprintf("%s: let %s read %s", ch.Target, ch.Subject, readsText(ch.Change))}

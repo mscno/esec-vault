@@ -129,7 +129,7 @@
         case "machine_remove":
           return { text: `In ${p}: remove the machine ${b.id}`, ok: true };
         case "group_set":
-          return { text: b.envs && b.envs.length ? `In ${p}: the machine group ${b.group} reads ${envs(b.envs)}` : `In ${p}: the machine group ${b.group} reads nothing any more`, ok: true };
+          return { text: b.envs && b.envs.length ? `In ${p}: the group ${b.group} reads ${envs(b.envs)}` : `In ${p}: the group ${b.group} reads nothing any more`, ok: true };
       }
       return null;
     }
@@ -138,9 +138,18 @@
       switch (link.type) {
         case "remove":
           if (b.destroyed) return null;
-          return { text: `In the machine group ${g}: remove ${b.id}`, ok: true };
+          return { text: `In the group ${g}: remove the machine or token ${b.id}`, ok: true };
         case "access_remove":
-          return { text: `The machine group ${g} stops taking keys from ${b.project}`, ok: true };
+          return { text: `The group ${g} stops taking keys from ${b.project}`, ok: true };
+        case "member_add": {
+          if (b.verified !== "web" || !b.member) return null;
+          const w = await who(b.member.user, b.member.login);
+          return { text: `In the group ${g}: add ${w.text}, who reads everything the group reads`, ok: w.ok };
+        }
+        case "member_remove": {
+          const w = await who(b.user);
+          return { text: `In the group ${g}: remove ${w.text}`, ok: w.ok };
+        }
       }
     }
     return null;

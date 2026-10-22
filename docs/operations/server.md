@@ -226,23 +226,23 @@ everyone who checks them.
 | Task | How |
 |---|---|
 | Add a person | Add their numeric id to `allowed_github_ids` and redeploy. Print their token with `esec-vault-server -bootstrap-token-for <id>` and send it to them. They sign in and create their own account. The Admin page shows when they have. |
-| Remove a person | Remove the id and redeploy. Their sessions fail on the next request. Their data stays until you delete it. Shared projects still list them (their pages mark them "removed from the server"): an admin of each project removes them with `esec vault team remove LOGIN` and rotates the keys they could read. |
+| Remove a person | Remove the id and redeploy. Their sessions fail on the next request. Their data stays until you delete it. Shared projects still list them (their pages mark them "removed from the server"): an admin of each project removes them with `esec vault access remove LOGIN` and rotates the keys they could read. |
 | Rotate the GitHub client secret | Generate a new secret in the OAuth app, run `fly secrets set ESEC_SERVER_GITHUB_CLIENT_SECRET=...`, then delete the old secret. |
 
 ## Everyday operations
 
 | Task | How |
 |---|---|
-| Let a person in | Add their numeric GitHub id to `allowed_github_ids`, redeploy, send them `esec-vault-server -bootstrap-token-for <id>`. They run `esec vault login URL` and `esec vault team prove`. |
-| Share a project with them | In the repository: `esec vault team create` (once), `esec vault team add LOGIN --env dev`. Or on the project's page, then sign it. |
+| Let a person in | Add their numeric GitHub id to `allowed_github_ids`, redeploy, send them `esec-vault-server -bootstrap-token-for <id>`. They run `esec vault login URL` and `esec vault access prove`. |
+| Share a project with them | In the repository: `esec vault access create` (once), `esec vault access add LOGIN --env dev`. Or on the project's page, then sign it. |
 | Give CI its secrets | A machine group per environment, a token per repository bound to it: `esec vault group token acme/ci deploy --github-repo acme/store --github-ref refs/heads/main --out - \| gh secret set ESEC_VAULT_MACHINE_KEY`. See the README's recipes for the workflow. |
 | Run an app (Fly.io, containers) | The group token as the app's secret `ESEC_VAULT_MACHINE_KEY`; start it with `esec-vault machine run -- esec run prod -- ./app`. |
 | Add a server | On it: `esec-vault machine join GROUP --server URL --fingerprint WORDS`; on a laptop: `esec vault group approve GROUP`. |
 | Autoscaling | `esec vault group token GROUP autoscale --expires 90d` in the image; machines run `esec-vault machine join` at boot. |
 | Remove a machine or token | The group's page › **Remove** (blocked at once), or `esec vault group remove GROUP NAME`. Rotate what it lists. |
-| Remove a person | `esec vault team remove LOGIN` in each project, then `esec vault env rotate ENV` for each environment listed; remove their id from `allowed_github_ids`. |
+| Remove a person | `esec vault access remove LOGIN` in each project, then `esec vault env rotate ENV` for each environment listed; remove their id from `allowed_github_ids`. |
 | Approve web changes | `esec vault changes`, the dialog on a computer running the background service, or a passkey on the Changes page. |
-| See what needs doing | The web overview; `esec vault team`, `esec vault group`, `esec vault changes`. |
+| See what needs doing | The web overview; `esec vault access`, `esec vault group`, `esec vault changes`. |
 | Upgrade | Deploy the new server version, then update the CLIs (`go install ...@vX` or the release archives) and run `esec-vault daemon upgrade` on each computer. Read the CHANGELOG first: some releases need every colleague's CLI updated before a feature is used. |
 
 ## Respond to incidents
@@ -254,7 +254,7 @@ everyone who checks them.
 | Unknown device added via SSH agent | Revoke it. Disable the slot (`esec vault agent-unlock disable`). Treat the SSH key as exposed. |
 | Server compromised | The attacker gets metadata and can deny service. They cannot decrypt anything or add devices: clients verify the chain and refuse rollbacks. Redeploy from a clean image, rotate the GitHub client secret and Litestream credentials, and review the audit log. |
 | GitHub account taken over | The attacker can create pending devices but cannot decrypt anything without approval, the recovery phrase, or an SSH-agent slot. Secure the GitHub account, then suspend any unknown devices. |
-| Someone leaves a team | An admin runs `esec vault team remove LOGIN`, then `esec vault env rotate ENV` in the repository for each environment it lists, and changes the secret values they may have seen. The project page shows what is left. |
+| Someone leaves a team | An admin runs `esec vault access remove LOGIN`, then `esec vault env rotate ENV` in the repository for each environment it lists, and changes the secret values they may have seen. The project page shows what is left. |
 | Machine key leaked | `esec vault machine remove NAME`: the server stops handing it keys at once. Rotate the environments it could read. A machine bound to GitHub Actions is useless outside its repository and refs even before that. |
 | Group machine or enrollment token leaked | Remove it on the group's web page (it is blocked at once), or `esec vault group remove GROUP NAME`. The group gets a new key; rotate the environments `group show` lists. Machines it enrolled are listed with it on the group page: remove those you do not recognise. |
 | A passkey is lost or stolen | Remove it on **Overview › Signing** and sign that on a device, or run `esec vault delegate remove NAME`. Its signatures stop counting from then on. Review the projects' and groups' histories for changes it signed. |

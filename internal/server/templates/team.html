@@ -11,7 +11,7 @@
 {{if .MyAdmin}}{{template "team-manage" .}}{{else}}
 <details class="help" data-preserve-attr="open">
   <summary>Add, change or remove a member</summary>
-  <p>An admin of the project does this, on this page or in the project's repository with <code>esec vault team add LOGIN --env dev</code>.</p>
+  <p>An admin of the project does this, on this page or in the project's repository with <code>esec vault access add LOGIN --env dev</code>.</p>
 </details>
 {{end}}
 {{template "team-changes" .}}
@@ -24,14 +24,14 @@
   {{template "cmd" (printf "esec vault machine create deploy --env prod --github-repo %s --github-ref refs/heads/main" .Project)}}
   <p>The job then runs its command with the keys in its environment:</p>
   {{template "cmd" "esec-vault machine run -- esec run prod -- ./deploy.sh"}}
-  <p class="muted">With <code>--github-repo</code>, the server hands the sealed keys only to GitHub Actions jobs of that repository (and ref) that prove it with an OIDC token, so a leaked secret alone is not enough. For many machines, use a <a href="/groups">machine group</a>.</p>
+  <p class="muted">With <code>--github-repo</code>, the server hands the sealed keys only to GitHub Actions jobs of that repository (and ref) that prove it with an OIDC token, so a leaked secret alone is not enough. For many machines, use a <a href="/groups">group</a>.</p>
 </details>
 
-<h2 id="groups">Machine groups</h2>
+<h2 id="groups">Groups</h2>
 {{template "team-groups" .}}
 <details class="help" data-preserve-attr="open">
-  <summary>Let a machine group read this project</summary>
-  {{template "cmd" (printf "esec vault group grant acme/production --project %s --env prod" .Project)}}
+  <summary>Let a group of people or machines read this project</summary>
+  {{template "cmd" (printf "esec vault access grant acme/backend --project %s --env dev,staging" .Project)}}
   <p class="muted">The group's admins agree first (they choose the projects it reads), then an admin of the project grants environments: one command does both when you administer both. The group's page lets you tick environments too.</p>
 </details>
 
@@ -77,7 +77,7 @@
 
 {{define "team-tiles"}}<section id="team-tiles" class="tiles" aria-label="Summary">
   <a class="tile" href="#members"><span class="tile-label">Members</span><span class="tile-value">{{len .Members}}</span><span class="tile-note">{{if .Member}}you read {{if .MyAccess}}{{range $i, $e := .MyAccess}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}nothing{{end}}{{end}}</span></a>
-  <a class="tile" href="#machines"><span class="tile-label">Machines</span><span class="tile-value">{{len .Machines}}</span><span class="tile-note">{{plural (len .Groups) "machine group"}} too</span></a>
+  <a class="tile" href="#machines"><span class="tile-label">Machines</span><span class="tile-value">{{len .Machines}}</span><span class="tile-note">{{plural (len .Groups) "group"}} too</span></a>
   <a class="tile" href="#envs"><span class="tile-label">Environments</span><span class="tile-value">{{len .Envs}}</span><span class="tile-note">{{plural (len .Rotations) "key"}} to rotate</span></a>
   <a class="tile" href="#history"><span class="tile-label">Last change</span><span class="tile-value">{{ago .State.LastTime}}</span><span class="tile-note">{{plural (int .State.Seq) "signed change"}}</span></a>
 </section>{{end}}
@@ -107,7 +107,7 @@
     <div>{{range .Envs}}<label class="check"><input type="checkbox" name="env" value="{{.Name}}"> {{.Name}}</label> {{end}}<label class="check"><input type="checkbox" name="admin"> admin</label></div>
     <div><button type="submit">Propose</button></div>
   </form>
-  <p class="muted">They sign in to this server first and publish their GitHub SSH proof with <code>esec vault team prove</code>. Your device checks it against github.com before it signs the change (<code>esec vault changes</code>), and sends them their keys.</p>
+  <p class="muted">They sign in to this server first and publish their GitHub SSH proof with <code>esec vault access prove</code>. Your device checks it against github.com before it signs the change (<code>esec vault changes</code>), and sends them their keys.</p>
 </details>
 {{if .Members}}
 <details class="help" data-preserve-attr="open">
@@ -165,17 +165,18 @@
 
 {{define "team-groups"}}<div id="team-groups" class="scroll">
 <table>
-  <thead><tr><th>Group</th><th>Reads</th><th>Machines</th><th>Added</th></tr></thead>
+  <thead><tr><th>Group</th><th>Reads</th><th>People</th><th>Machines</th><th>Added</th></tr></thead>
   <tbody>
   {{range .Groups}}
   <tr>
-    <td><a href="/groups/{{.Group}}"><strong>{{.Group}}</strong></a>{{if not .Trusted}} <span class="badge status-pending">the group has not agreed yet</span>{{end}}{{if .Rotate}}<br><span class="badge status-pending">rotate {{range $i, $e := .Rotate}}{{if $i}}, {{end}}{{$e}}{{end}}: a removed machine may hold it</span>{{end}}</td>
+    <td><a href="/groups/{{.Group}}"><strong>{{.Group}}</strong></a>{{if not .Trusted}} <span class="badge status-pending">the group has not agreed yet</span>{{end}}{{if .Rotate}}<br><span class="badge status-pending">rotate {{range $i, $e := .Rotate}}{{if $i}}, {{end}}{{$e}}{{end}}: someone removed from the group may hold it</span>{{end}}</td>
     <td>{{range $env, $state := .Keys}}{{key $env $state}} {{end}}</td>
+    <td>{{if .People}}{{range $i, $p := .People}}{{if $i}}, {{end}}{{$p}}{{end}}{{else}}<span class="muted">—</span>{{end}}</td>
     <td>{{plural .Machines "machine"}}, {{plural .Tokens "token"}}</td>
     <td>{{when .AddedAt}}<br><span class="muted">by {{.AddedBy}}</span></td>
   </tr>
   {{else}}
-  <tr><td colspan="4" class="muted">No machine group reads this project. A group gives many machines (production servers, say) the same environments, each machine with its own key.</td></tr>
+  <tr><td colspan="5" class="muted">No group reads this project. A group gives a team of people, or many machines (production servers, say), the same environments.</td></tr>
   {{end}}
   </tbody>
 </table>

@@ -210,19 +210,32 @@ func (t *teamCtx) state(project string) (*team.State, error) {
 	if err != nil {
 		return nil, err
 	}
-	for u, links := range pc.Chains {
-		t.given[u] = links
-	}
-	st, err := team.Verify(project, pc.Links, t.chains)
+	return t.verifyProject(project, pc.Links, pc.Chains)
+}
+
+// verifyProject verifies a project chain the server sent, with the user
+// chains it sent along, against this device's pin, and moves the pin.
+func (t *teamCtx) verifyProject(project string, links []*envelope.Envelope, chains map[string][]*envelope.Envelope) (*team.State, error) {
+	t.give(chains)
+	st, err := team.Verify(project, links, t.chains)
 	if err != nil {
 		return nil, fmt.Errorf("the server's chain for %s does not verify: %w", project, err)
 	}
 	pin, ok := t.pins.Projects[project]
-	if err := t.checkPin(pin, ok, project, "project", st, st.Hashes, func(i uint64) (string, string) { return st.Links[i].Signer, describeLink(st, st.Links[i]) }); err != nil {
+	describe := func(i uint64) (string, string) { return st.Links[i].Signer, describeLink(st, st.Links[i]) }
+	if err := t.checkPin(pin, ok, project, "project", st, st.Hashes, describe); err != nil {
 		return nil, err
 	}
 	t.pin(st)
 	return st, nil
+}
+
+// give keeps the user chains the server sent along with a project or group
+// chain, to verify signers with.
+func (t *teamCtx) give(chains map[string][]*envelope.Envelope) {
+	for u, l := range chains {
+		t.given[u] = l
+	}
 }
 
 // pinnedChain is a verified project or group chain.
@@ -267,7 +280,7 @@ func (t *teamCtx) requireAdmin(project string) (*team.State, error) {
 		return nil, err
 	}
 	if st == nil {
-		return nil, fmt.Errorf("%s is not a shared project yet; create it with 'esec vault team create'", project)
+		return nil, fmt.Errorf("%s is not a shared project yet; create it with 'esec vault access create'", project)
 	}
 	if !st.Admin(t.a.State.User) {
 		return nil, fmt.Errorf("only an admin of %s can do that", project)
@@ -474,6 +487,9 @@ type TeamView struct {
 	// GroupExposed lists, by environment, machines removed from groups
 	// that read it, who may hold its current key.
 	GroupExposed map[string][]team.Exposure
+	// Groups holds the verified chains of the groups the project grants
+	// environments to, where this account can read them.
+	Groups map[string]*team.GroupState
 }
 
 // Team verifies a project and returns it with its delivery status.
@@ -498,9 +514,10 @@ func (a *Account) Team(ctx context.Context, project string) (*TeamView, error) {
 		for id, m := range st.Machines {
 			names[id] = m.Name
 		}
-		out = &TeamView{State: st, Status: status, Names: names, GroupExposed: map[string][]team.Exposure{}}
+		out = &TeamView{State: st, Status: status, Names: names, GroupExposed: map[string][]team.Exposure{}, Groups: map[string]*team.GroupState{}}
 		for _, pg := range st.ActiveGroups() {
-			if gs, err := t.group(pg.Group); err == nil && gs != nil {
+			if gs, err := t.group(pg.Group); err == nil && gs != nil && gs.Root() == pg.Root {
+				out.Groups[pg.Group] = gs
 				for env, ex := range team.GroupExposures(st, gs) {
 					out.GroupExposed[env] = append(out.GroupExposed[env], ex...)
 				}
@@ -608,7 +625,7 @@ func (a *Account) AddMember(ctx context.Context, project, login string, admin bo
 		}
 		person := team.Person{User: p.User.ID, Login: p.User.Login, Root: cs.Root()}
 		if m, ok := st.Member(person.User); ok {
-			return fmt.Errorf("%s is already a member (use 'esec vault team set' to change what they read)", m.Login)
+			return fmt.Errorf("%s is already a member (use 'esec vault access set' to change what they read)", m.Login)
 		}
 		verified, err := checkPerson(person, p.Proof, cs, accountKey)
 		if err != nil {
@@ -650,7 +667,7 @@ func checkPerson(person team.Person, proof *wire.AccountProof, cs *chain.State, 
 		return team.VerifiedAccountKey, nil
 	}
 	if proof == nil {
-		return "", fmt.Errorf("%w: %s has not published a GitHub SSH proof. Ask them to run 'esec vault team prove', or add them with --account-key and the words their 'esec vault status' shows", ErrNoProof, person.Login)
+		return "", fmt.Errorf("%w: %s has not published a GitHub SSH proof. Ask them to run 'esec vault access prove', or add them with --account-key and the words their 'esec vault status' shows", ErrNoProof, person.Login)
 	}
 	tp := team.AccountProof(*proof)
 	if err := tp.Check(); err != nil || !strings.EqualFold(proof.Login, person.Login) {
@@ -891,6 +908,8 @@ type Invite struct {
 	AddedBy string
 	Admin   bool
 	Envs    []string
+	// Group, when set, is the group the keys come through.
+	Group string
 }
 
 // TeamSyncResult summarizes a team sync.
@@ -938,6 +957,7 @@ func (a *Account) TeamSync(ctx context.Context, opts TeamSyncOptions) (*TeamSync
 		if err := t.importGrants(res, opts); err != nil {
 			return err
 		}
+		t.importGroupKeys(res, opts)
 		t.fulfilGroups(res)
 		if cs, err := t.a.Client.Changes(t.ctx); err == nil {
 			res.Changes = len(cs)
@@ -1252,6 +1272,12 @@ func (t *teamCtx) fulfilProject(st *team.State, res *TeamSyncResult) error { //n
 // the web, that their account is theirs: by their GitHub SSH proof, which
 // this device fetches from github.com, as for a member added on a device.
 func (t *teamCtx) checkWebMember(m *team.MemberState) error {
+	return t.checkWebPerson(m.Person)
+}
+
+// checkWebPerson is checkWebMember for anyone a passkey added: a project
+// member, or a group member.
+func (t *teamCtx) checkWebPerson(m team.Person) error {
 	if err, ok := t.webChecked[m.User]; ok {
 		return err
 	}
@@ -1267,9 +1293,9 @@ func (t *teamCtx) checkWebMember(m *team.MemberState) error {
 		if cs.Root() != m.Root {
 			return errors.New("the account is not the one the project recorded")
 		}
-		_, err = checkPerson(m.Person, p.Proof, cs, "")
+		_, err = checkPerson(m, p.Proof, cs, "")
 		if errors.Is(err, ErrNoProof) {
-			return fmt.Errorf("%s has not published a GitHub SSH proof (esec vault team prove), so no key goes to them", m.Login)
+			return fmt.Errorf("%s has not published a GitHub SSH proof (esec vault access prove), so no key goes to them", m.Login)
 		}
 		return err
 	}()

@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/team"
@@ -23,6 +25,8 @@ import (
 type groupSummary struct {
 	ID         string
 	Admin      bool
+	Member     bool
+	People     []string
 	Machines   int
 	Tokens     int
 	Projects   []string
@@ -54,7 +58,11 @@ func (s *Server) groupSummaries(ctx context.Context, user string) ([]groupSummar
 		if gs == nil {
 			continue
 		}
-		sum := groupSummary{ID: id, Admin: gs.Admin(user), Machines: len(gs.ActiveCreds(team.KindMachine)), Tokens: len(gs.ActiveCreds(team.KindToken)), Projects: gs.Projects(), KeyExposed: len(gs.KeyExposed), Updated: gs.LastTime}
+		var people []string
+		for _, p := range gs.ActiveMembers() {
+			people = append(people, p.Login)
+		}
+		sum := groupSummary{ID: id, Admin: gs.Admin(user), Member: gs.Member(user), People: people, Machines: len(gs.ActiveCreds(team.KindMachine)), Tokens: len(gs.ActiveCreds(team.KindToken)), Projects: gs.Projects(), KeyExposed: len(gs.KeyExposed), Updated: gs.LastTime}
 		rows, err := s.db.credRows(ctx, id)
 		if err != nil {
 			return nil, err
@@ -216,7 +224,7 @@ func (s *Server) webGroup(w http.ResponseWriter, r *http.Request) {
 // groupLiveParts are the parts of a group's page that refresh on their own;
 // groupParts adds the forms a submission changes.
 var (
-	groupLiveParts = []string{"group-alerts", "group-tiles", "group-joins", "group-machines", "group-tokens", "group-changes", "group-history", "group-activity"}
+	groupLiveParts = []string{"group-alerts", "group-tiles", "group-joins", "group-members", "group-machines", "group-tokens", "group-changes", "group-history", "group-activity"}
 	groupParts     = append([]string{"group-access"}, groupLiveParts...)
 )
 
@@ -325,7 +333,13 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 	data["Group"] = gs.Group
 	data["State"] = gs
 	data["MyAdmin"] = admin
+	data["MyMember"] = gs.Member(viewer)
 	data["Admins"] = gs.ActiveAdmins()
+	members, err := s.memberViews(ctx, gs, status, added)
+	if err != nil {
+		return err
+	}
+	data["Members"] = members
 	data["Machines"] = view(team.KindMachine)
 	data["Tokens"] = view(team.KindToken)
 	data["Matrix"] = matrix
@@ -336,6 +350,39 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 	data["Created"] = gs.Links[0].CTime
 	data["Creator"] = groupActor(gs, gs.Links[0].Signer)
 	return nil
+}
+
+// memberView is a person in a group, as its page shows them.
+type memberView struct {
+	Login, User, AddedBy, Verified string
+	AddedAt                        time.Time
+	HasKey, Blocked                bool
+}
+
+// memberViews lists a group's members for its page.
+func (s *Server) memberViews(ctx context.Context, gs *team.GroupState, status *wire.GroupStatus, added map[uint64]time.Time) ([]memberView, error) {
+	has := map[string]bool{}
+	for _, u := range status.AdminsWithKey {
+		has[u] = true
+	}
+	blocked := map[string]bool{}
+	err := scanAll(ctx, s.db.sql, `SELECT user_id FROM group_members WHERE group_id = ? AND suspended_at != 0`, []any{gs.Group}, func(r *sql.Rows) error {
+		var u string
+		if err := r.Scan(&u); err != nil {
+			return err
+		}
+		blocked[u] = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := []memberView{}
+	for _, m := range gs.ActiveMembers() {
+		v := memberView{Login: m.Login, User: m.User, AddedBy: groupActor(gs, m.AddedBy), Verified: verifiedLabel(m.Verified), AddedAt: added[m.AddedSeq], HasKey: has[m.User], Blocked: blocked[m.User]}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // accessMatrix lists the projects a group reads or could read: those it
@@ -448,7 +495,7 @@ func groupHistoryOf(gs *team.GroupState) []teamHistory {
 	out := make([]teamHistory, 0, len(gs.Links))
 	for _, l := range gs.Links {
 		h := teamHistory{Time: l.CTime, Actor: groupActor(gs, l.Signer), Text: groupLinkText(gs, l)}
-		if l.Type == team.GroupRemove || l.Type == team.GroupAdminRemove {
+		if l.Type == team.GroupRemove || l.Type == team.GroupAdminRemove || l.Type == team.GroupMemberRemove {
 			h.Tone = "bad"
 		}
 		out = append(out, h)
@@ -476,7 +523,7 @@ func groupLinkText(gs *team.GroupState, l team.GroupLink) string {
 	_ = json.Unmarshal(l.Body, &b)
 	switch l.Type {
 	case team.GroupInit:
-		return "created the machine group"
+		return "created the group"
 	case team.GroupAdminAdd:
 		return "made " + b.Admin.Login + " an admin"
 	case team.GroupAdminRemove:
@@ -510,6 +557,20 @@ func groupLinkText(gs *team.GroupState, l team.GroupLink) string {
 		return "let the group take keys from " + b.Project
 	case team.GroupAccessRemove:
 		return "stopped the group taking keys from " + b.Project
+	case team.GroupMemberAdd:
+		var m team.GroupMemberAddBody
+		_ = json.Unmarshal(l.Body, &m)
+		return "added " + m.Member.Login
+	case team.GroupMemberRemove:
+		if l.Signer == b.User {
+			if m := gs.Members[b.User]; m != nil {
+				return m.Login + " left the group"
+			}
+		}
+		if m := gs.Members[b.User]; m != nil {
+			return "removed " + m.Login
+		}
+		return "removed a member"
 	}
 	return l.Type
 }
@@ -572,6 +633,68 @@ func (s *Server) webGroupAccess(w http.ResponseWriter, r *http.Request) {
 			return "", err
 		}
 		return "Proposed. Sign it with your passkey on the Changes page, or on a device: esec vault changes", nil
+	})
+}
+
+// webGroupAddMember proposes adding a person to the group. Only a passkey
+// or a device signs it; a device checks the person's GitHub proof before it
+// seals the group key to them.
+func (s *Server) webGroupAddMember(w http.ResponseWriter, r *http.Request) {
+	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) (string, error) {
+		if !gs.Admin(ws.user.ID) {
+			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group can add people")
+		}
+		login := strings.TrimSpace(r.PostForm.Get("login"))
+		if team.ValidLogin(login) != nil {
+			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "that is not a GitHub login")
+		}
+		p, err := s.personByLogin(ctx, login)
+		if err != nil {
+			return "", err
+		}
+		if gs.HoldsKey(p.User) {
+			return "", clientErr(http.StatusConflict, wire.ErrConflict, "%s is in the group already", p.Login)
+		}
+		change := wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeMemberAdd, Subject: p.Login}
+		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), change); err != nil {
+			return "", err
+		}
+		return "Proposed. Sign it with your passkey on the Changes page, or on a device: esec vault changes. Your device checks " + p.Login + "'s GitHub proof before it sends them the group key.", nil
+	})
+}
+
+// webGroupRemoveMember stops giving a member keys at once and proposes
+// removing them from the group chain.
+func (s *Server) webGroupRemoveMember(w http.ResponseWriter, r *http.Request) {
+	s.groupForm(w, r, func(ctx context.Context, ws *webSession, gs *team.GroupState) (string, error) {
+		if !gs.Admin(ws.user.ID) {
+			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group can remove people")
+		}
+		login := r.PostForm.Get("login")
+		var m *team.GroupAdminState
+		for _, x := range gs.ActiveMembers() {
+			if strings.EqualFold(x.Login, login) {
+				m = x
+			}
+		}
+		if m == nil {
+			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "%s is not a member of the group", login)
+		}
+		change := wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeMemberRemove, Subject: m.Login}
+		if done, err := s.serverSigns(ctx, ws.user.ID, s.clientIP(r), change); err != nil || done {
+			return m.Login + " is removed, signed by the server for you. An admin's background service gives the group a new key.", err
+		}
+		now := s.now()
+		if _, err := s.db.sql.ExecContext(ctx, `UPDATE group_members SET suspended_at = ? WHERE group_id = ? AND user_id = ? AND suspended_at = 0`, now.Unix(), gs.Group, m.User); err != nil {
+			return "", err
+		}
+		if err := s.db.groupAudit(ctx, s.db.sql, gs.Group, ws.user.ID, s.clientIP(r), "blocked", "member "+m.Login, now); err != nil {
+			return "", err
+		}
+		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), change); err != nil {
+			return "", err
+		}
+		return m.Login + " gets no keys from the group any more. Sign the removal with your passkey, or on a device (esec vault changes), which gives the group a new key.", nil
 	})
 }
 
