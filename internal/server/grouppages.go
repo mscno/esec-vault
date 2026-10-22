@@ -114,8 +114,50 @@ func (s *Server) groupNotices(ctx context.Context, user string) ([]notice, error
 			out = append(out, notice{Level: "warn", Text: id + ": " + plural(len(joins), "machine") + " waiting to join. Let them in from a device, after comparing the words each machine shows.", Command: "esec vault group approve " + id, Link: link, LinkTo: "Open group"})
 		}
 		if len(gs.KeyExposed) > 0 {
-			out = append(out, notice{Level: "warn", Text: id + ": a removed machine still holds the group key.", Command: "esec vault group rotate " + id, Link: link, LinkTo: "Open group"})
+			out = append(out, notice{Level: "warn", Text: id + ": someone removed from the group still holds the group key.", Command: "esec vault group rotate " + id, Link: link, LinkTo: "Open group"})
 		}
+		creds, err := s.credNotices(ctx, gs, link, now)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, creds...)
+	}
+	return out, nil
+}
+
+// credNotices warns of a group's tokens that expire soon or did, and of
+// machines that stopped fetching their keys.
+func (s *Server) credNotices(ctx context.Context, gs *team.GroupState, link string, now time.Time) ([]notice, error) {
+	rows, err := s.db.credRows(ctx, gs.Group)
+	if err != nil {
+		return nil, err
+	}
+	added := map[uint64]time.Time{}
+	for _, l := range gs.Links {
+		added[l.Seq] = l.CTime
+	}
+	var stale, expiring, expired []string
+	for _, c := range gs.ActiveCreds("") {
+		v := credView{CredState: c, LastUsed: rows[c.ID].LastUsed, AddedAt: added[c.AddedSeq]}
+		credFlags(&v, now)
+		switch {
+		case v.Stale:
+			stale = append(stale, c.Name)
+		case v.Expired:
+			expired = append(expired, c.Name)
+		case v.Expiring:
+			expiring = append(expiring, c.Name+" ("+c.Expires.UTC().Format("2006-01-02")+")")
+		}
+	}
+	var out []notice
+	if len(expiring) > 0 {
+		out = append(out, notice{Level: "info", Text: gs.Group + ": " + plural(len(expiring), "token") + " expire soon: " + strings.Join(expiring, ", ") + ". Jobs that use them stop then; make new ones before.", Command: "esec vault group token " + gs.Group + " NAME --expires 90d", Link: link + "#tokens", LinkTo: "See tokens"})
+	}
+	if len(expired) > 0 {
+		out = append(out, notice{Level: "info", Text: gs.Group + ": " + plural(len(expired), "token") + " expired: " + strings.Join(expired, ", ") + ". Remove them to keep the list short.", Command: "esec vault group remove " + gs.Group + " " + expired[0], Link: link + "#tokens", LinkTo: "See tokens"})
+	}
+	if len(stale) > 0 {
+		out = append(out, notice{Level: "info", Text: gs.Group + ": " + plural(len(stale), "machine") + " fetched no keys for 30 days: " + strings.Join(stale, ", ") + ". Remove machines that are gone (with --destroyed if their disks are).", Command: "esec vault group remove " + gs.Group + " " + stale[0] + " --destroyed", Link: link + "#machines", LinkTo: "See machines"})
 	}
 	return out, nil
 }
@@ -136,7 +178,11 @@ func (s *Server) sharedNotices(ctx context.Context, user string) ([]notice, erro
 		return nil, err
 	}
 	teams, err := s.teamNotices(ctx, user)
-	return append(append(out, groups...), teams...), err
+	if err != nil {
+		return nil, err
+	}
+	requests, err := s.requestNotices(ctx, user)
+	return append(append(append(out, requests...), groups...), teams...), err
 }
 
 func (s *Server) webGroups(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +226,33 @@ type credView struct {
 	HasKey    bool
 	AddedAt   time.Time
 	AddedBy   string
+	// Stale: a machine unused for staleMachine (or never, since a week).
+	// Expiring: a token that stops working within tokenWarning, or did.
+	Stale, Expiring, Expired bool
+}
+
+const (
+	// staleMachine is how long a machine can go without fetching its keys
+	// before its group's page suggests removing it.
+	staleMachine = 30 * 24 * time.Hour
+	// tokenWarning is how early the pages warn that a token expires.
+	tokenWarning = 14 * 24 * time.Hour
+)
+
+// credFlags works out a machine's or token's warnings.
+func credFlags(v *credView, now time.Time) {
+	if v.Kind == team.KindMachine {
+		// Never used: stale a week after it was added.
+		last := v.LastUsed
+		if last.IsZero() && !v.AddedAt.IsZero() {
+			last = v.AddedAt.Add(7*24*time.Hour - staleMachine)
+		}
+		v.Stale = !last.IsZero() && now.Sub(last) > staleMachine
+	}
+	if !v.Expires.IsZero() {
+		v.Expired = !now.Before(v.Expires)
+		v.Expiring = !v.Expired && v.Expires.Sub(now) < tokenWarning
+	}
 }
 
 // accessRow is one project of the access matrix.
@@ -302,7 +375,9 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 		out := make([]credView, 0, len(creds))
 		for _, c := range creds {
 			r := rows[c.ID]
-			out = append(out, credView{CredState: c, Policy: c.OIDC.Describe(), LastUsed: r.LastUsed, LastIP: r.LastIP, Uses: r.Uses, Suspended: !r.Suspended.IsZero(), HasKey: has[c.ID], AddedAt: added[c.AddedSeq], AddedBy: groupActor(gs, c.AddedBy)})
+			v := credView{CredState: c, Policy: c.OIDC.Describe(), LastUsed: r.LastUsed, LastIP: r.LastIP, Uses: r.Uses, Suspended: !r.Suspended.IsZero(), HasKey: has[c.ID], AddedAt: added[c.AddedSeq], AddedBy: groupActor(gs, c.AddedBy)}
+			credFlags(&v, now)
+			out = append(out, v)
 		}
 		return out
 	}
@@ -340,6 +415,9 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 		return err
 	}
 	data["Members"] = members
+	if data["Invites"], err = s.invites(ctx, wire.ScopeGroup, gs.Group); err != nil {
+		return err
+	}
 	data["Machines"] = view(team.KindMachine)
 	data["Tokens"] = view(team.KindToken)
 	data["Matrix"] = matrix
@@ -649,6 +727,14 @@ func (s *Server) webGroupAddMember(w http.ResponseWriter, r *http.Request) {
 			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "that is not a GitHub login")
 		}
 		p, err := s.personByLogin(ctx, login)
+		if apiErrorIs(err, wire.ErrNotFound) {
+			// No vault account yet: the invite waits for one.
+			c := wire.Change{Scope: wire.ScopeGroup, Target: gs.Group, Kind: wire.ChangeMemberAdd, Subject: login}
+			if err := s.addInvite(ctx, ws.user.ID, s.clientIP(r), c); err != nil {
+				return "", err
+			}
+			return "Invited " + login + ". They have no vault account here yet: once they sign in, the change adding them waits for you to sign.", nil
+		}
 		if err != nil {
 			return "", err
 		}

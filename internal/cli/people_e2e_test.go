@@ -2,6 +2,8 @@ package cli_test
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/url"
 	"runtime"
 	"slices"
 	"strings"
@@ -16,7 +18,7 @@ import (
 // access reaches them, offboarding takes everything away and lists the
 // keys to rotate, and a member who leaves by themselves makes the admin's
 // next sync give the group a new key.
-func TestPeopleGroupsEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential story with explicit checks
+func TestPeopleGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential story with explicit checks
 	if testing.Short() {
 		t.Skip("builds binaries")
 	}
@@ -24,9 +26,10 @@ func TestPeopleGroupsEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential
 		t.Skip("unix sockets")
 	}
 	bin := buildBinaries(t)
-	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(100, 1000)}, 53101343, 2002)
+	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(100, 1000)}, 53101343, 2002, 2003)
 	h.GitHub.AddUser(53101343, "mscno")
 	h.GitHub.AddUser(2002, "alice")
+	h.GitHub.AddUser(2003, "carol")
 	sock, _, aliceKey := testAgentKey(t)
 	h.GitHub.AddKey("alice", aliceKey)
 	gh := "ESEC_VAULT_GITHUB_URL=" + h.GitHub.URL
@@ -136,5 +139,57 @@ func TestPeopleGroupsEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential
 	}
 	if out := owner.run("", "team", "revoke", "alice", "--yes", p); !strings.Contains(out, "alice reads nothing of acme/store") || !strings.Contains(out, "esec vault env rotate dev") {
 		t.Fatalf("revoke through the old name:\n%s", out)
+	}
+
+	// --- The web: who reads what, one person, and offboarding. ---
+	owner.run("", "group", "add", g, "alice")
+	b := h.Browser("mscno")
+	if _, _, err := b.Get("/account"); err != nil { // signs in
+		t.Fatal(err)
+	}
+	_, page, err := b.Get("/access")
+	if err != nil || !strings.Contains(page, "/people/alice") || !strings.Contains(page, "through <a href=\"/groups/"+g) {
+		t.Fatalf("access page: %v\n%s", err, page)
+	}
+	_, page, err = b.Get("/people/alice")
+	if err != nil || !strings.Contains(page, "Offboard alice") {
+		t.Fatalf("person page: %v\n%s", err, page)
+	}
+	csrf := servertest.CSRF(page)
+	if status, _, err := b.Post("/people/alice/offboard", csrf, url.Values{}); err != nil || status != http.StatusOK {
+		t.Fatalf("offboard on the web: %d %v", status, err)
+	}
+	if out := owner.run("", "changes", "--yes"); !strings.Contains(out, "Removed alice from "+g) {
+		t.Fatalf("sign the web offboarding:\n%s", out)
+	}
+	if out := owner.run("", "group", "show", g); strings.Contains(out, "Members") {
+		t.Fatalf("alice is still in the group:\n%s", out)
+	}
+
+	// --- Someone without an account is invited; the invite waits. ---
+	_, page, _ = b.Get("/teams/acme/store")
+	csrf = servertest.CSRF(page)
+	if status, _, err := b.Post("/teams/acme/store/members", csrf, url.Values{"login": {"carol"}, "env": {"dev"}}); err != nil || status != http.StatusOK {
+		t.Fatalf("invite carol: %d %v", status, err)
+	}
+	if _, page, _ = b.Get("/teams/acme/store"); !strings.Contains(page, "waiting for their vault account") || !strings.Contains(page, "carol") {
+		t.Fatalf("project page lacks the invite:\n%s", page)
+	}
+	carol := newMachine(t, bin, "carol").with(gh)
+	carol.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	loginAs(t, h, "carol", carol.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, 2003)), "").wait(true)
+	if out := owner.run("", "changes", "--list"); !strings.Contains(out, "acme/store: add carol, who reads dev") {
+		t.Fatalf("the invite did not become a change:\n%s", out)
+	}
+
+	// --- Exports. ---
+	if _, out, err := b.Get("/teams/acme/store/export"); err != nil || !strings.HasPrefix(out, "time,source,actor,action,detail,ip,device") || !strings.Contains(out, "member_add") {
+		t.Fatalf("project export: %v\n%s", err, out)
+	}
+	if _, out, err := b.Get("/groups/" + g + "/export?format=json"); err != nil || !strings.Contains(out, `"source": "chain"`) {
+		t.Fatalf("group export: %v\n%s", err, out)
+	}
+	if _, out, err := b.Get("/activity/export"); err != nil || !strings.HasPrefix(out, "time,source") {
+		t.Fatalf("activity export: %v\n%s", err, out)
 	}
 }

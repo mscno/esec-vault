@@ -338,6 +338,42 @@ var schema = []string{
 		detail TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS group_audit_group ON group_audit(group_id, id)`,
+	// Invites of people with no vault account yet (invites.go).
+	`CREATE TABLE IF NOT EXISTS invites (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		scope TEXT NOT NULL,
+		target TEXT NOT NULL,
+		login TEXT NOT NULL,
+		envs TEXT NOT NULL DEFAULT '[]',
+		admin INTEGER NOT NULL DEFAULT 0,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'open')`,
+	`CREATE INDEX IF NOT EXISTS invites_login ON invites(login, status)`,
+	`CREATE INDEX IF NOT EXISTS invites_target ON invites(scope, target, status)`,
+	// Timed access and access requests (timed.go).
+	`CREATE TABLE IF NOT EXISTS access_expiries (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project TEXT NOT NULL,
+		subject TEXT NOT NULL,
+		envs TEXT NOT NULL,
+		expires_at INTEGER NOT NULL,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'open')`,
+	`CREATE INDEX IF NOT EXISTS access_expiries_due ON access_expiries(status, expires_at)`,
+	`CREATE TABLE IF NOT EXISTS access_requests (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		envs TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'open',
+		decided_by TEXT NOT NULL DEFAULT '',
+		decided_at INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE INDEX IF NOT EXISTS access_requests_project ON access_requests(project, status)`,
+	`CREATE INDEX IF NOT EXISTS access_requests_user ON access_requests(user_id, status)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 

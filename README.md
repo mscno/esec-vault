@@ -72,6 +72,30 @@ esec vault access offboard alice             # take it all away; lists what to r
 esec vault env rotate prod --project acme/store
 ```
 
+On the web: **Access** › the person › **Offboard**.
+
+### Give access for a while
+
+```sh
+esec vault access grant alice --env prod --for 8h   # prod ends again in 8 hours
+```
+
+When the time comes, the server signs the removal for you if you let it
+(`esec vault delegate server`); otherwise it waits in `esec vault changes`
+(and `changes --yes` signs it, since it only takes access away).
+
+### Ask for access, and answer
+
+```sh
+esec vault access request --env staging --reason "release week"   # anyone signed in
+esec vault access requests                                       # admins: what waits
+esec vault access requests --grant 12                            # or --deny 12
+```
+
+On the web: a project's page › **Ask for more access** (members), or
+**Access** › **Ask for access** (anyone); admins answer on the project's
+page.
+
 ### Give a GitHub Actions workflow its secrets
 
 ```sh
@@ -89,7 +113,7 @@ steps:
   - uses: actions/checkout@v5
   - name: Install esec and esec-vault
     run: |
-      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.13.0/esec-vault_0.13.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
+      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.14.0/esec-vault_0.14.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
       curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
   - run: esec-vault machine run -- esec run prod -- ./deploy.sh
     env:
@@ -113,7 +137,7 @@ fly secrets set -a store ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/p
 ```dockerfile
 FROM alpine:3.21 AS esec
 RUN apk add --no-cache curl \
- && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.13.0/esec-vault_0.13.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
+ && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.14.0/esec-vault_0.14.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
  && curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
 
 FROM your-app-image
@@ -186,7 +210,9 @@ esec vault group                 # groups, machines waiting to join
 esec vault changes               # changes made on the web, waiting for you
 ```
 
-The web overview lists the same, with the command for each.
+The web overview lists the same, with the command for each. **Access** on
+the web shows everyone who reads something of your projects, directly or
+through a group, with what needs rotating first.
 
 ### Use it from scripts and agents
 
@@ -392,10 +418,15 @@ Sign in at your server with GitHub. The pages never decrypt anything.
 - **Projects**: your shared projects, then your own project ids, environment
   names and public keys, never private keys or values. Search by a public
   key to find which project and environment an encrypted file belongs to.
-  Each shared project has a page with its members, what each reads and
+  Each shared project has a page with its members, invites, access
+  requests, access that ends by itself, what each reads and
   whether their devices have the keys yet, its machines and groups
   and when they were last used, keys to rotate, and its history. Admins add
   members, change what they read and remove them there.
+- **Access**: everyone who reads something of your shared projects, directly
+  or through a group, and what needs doing (keys to rotate, requests to
+  answer). Each person has a page listing what they read, with an
+  **Offboard** button. Ask for access to any project here too.
 - **Groups**: your groups of people and machines. Each group's page shows
   its people (add and remove them there), its machines
   (when and from where each last fetched its keys), its tokens, which
@@ -978,6 +1009,13 @@ A member's devices take in the keys like a member of the project's would,
 asking once per project. Group admins manage the group without reading
 through it; give an admin access to a project directly when they need it.
 A group can hold machines as well (see below).
+
+### Invite someone who has no account yet
+
+On a project's page (Add a member) or a group's page (Add a person), name
+someone who has not signed in to the server yet: the invite waits, and once
+they create their vault account it becomes a change for you to sign. Cancel
+it on the same page.
 
 ### Change access, remove people, rotate keys
 
@@ -1669,6 +1707,8 @@ Migration is explicit; installing the binary does not alter live keys.
 | Give a person or a group more access | `esec vault access grant acme/backend --env dev` |
 | Take access away | `esec vault access revoke alice --env prod` |
 | Take everything away from someone leaving | `esec vault access offboard alice` |
+| Give access for a while | `esec vault access grant alice --env prod --for 8h` |
+| Ask for access, or answer requests | `esec vault access request --env staging`, `esec vault access requests` |
 | Receive and send team keys now | `esec vault access sync` |
 | List a project's machines | `esec vault machine list` |
 | List groups | `esec vault group` |

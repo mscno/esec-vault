@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/team"
 	"github.com/mscno/esec-vault/internal/wire"
 )
@@ -360,8 +361,22 @@ func (s *Server) webTeamAdd(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return "", err
 		}
-		if u == nil || !s.cfg.Allowed(u.GitHubID) {
-			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s has no account on this server; they sign in first.", login)
+		if u != nil && !s.cfg.Allowed(u.GitHubID) {
+			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s may not use this server.", login)
+		}
+		var first *envelope.Envelope
+		if u != nil {
+			if first, err = s.db.firstLink(ctx, u.ID); err != nil {
+				return "", err
+			}
+		}
+		if first == nil {
+			// No vault account yet: the invite waits for one.
+			c := wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberAdd, Subject: login, Admin: admin, Envs: envs}
+			if err := s.addInvite(ctx, ws.user.ID, s.clientIP(r), c); err != nil {
+				return "", err
+			}
+			return "Invited " + login + ". They have no vault account here yet: once they sign in (esec vault login " + s.cfg.BaseURL + ") the change adding them waits for you to sign.", nil
 		}
 		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeMemberAdd, Subject: u.Login, Admin: admin, Envs: envs}); err != nil {
 			return "", err
@@ -398,6 +413,21 @@ func (s *Server) webTeamDismiss(w http.ResponseWriter, r *http.Request) {
 	s.teamForm(w, r, func(ctx context.Context, ws *webSession, _ *team.State) (string, error) {
 		return s.dismiss(ctx, ws, r)
 	})
+}
+
+// teamWaiting adds a project's invites, access requests and timed access
+// to data.
+func (s *Server) teamWaiting(ctx context.Context, st *team.State, data map[string]any) error {
+	invites, err := s.invites(ctx, wire.ScopeProject, st.Project)
+	if err != nil {
+		return err
+	}
+	data["Invites"] = invites
+	if data["Requests"], err = s.projectRequests(ctx, st.Project); err != nil {
+		return err
+	}
+	data["Expiries"], err = s.expiries(ctx, st.Project)
+	return err
 }
 
 // teamPage adds what the project page shows of st to data.
@@ -462,6 +492,9 @@ func (s *Server) teamPage(ctx context.Context, st *team.State, data map[string]a
 	data["Project"] = st.Project
 	data["State"] = st
 	data["Members"] = memberViews
+	if err := s.teamWaiting(ctx, st, data); err != nil {
+		return err
+	}
 	data["Machines"] = machineViews
 	data["Groups"] = groupViews
 	data["Envs"] = envs

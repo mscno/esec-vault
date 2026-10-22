@@ -379,6 +379,43 @@ func (c *Client) FleetKeys(ctx context.Context, req wire.GroupKeysRequest) (*wir
 	return &out, c.do(ctx, http.MethodPost, "/v1/fleet/keys", unsigned, req, &out)
 }
 
+// ---- access requests and timed access ----
+
+// Requests lists the access requests the caller can decide, and their own.
+func (c *Client) Requests(ctx context.Context) (*wire.AccessRequests, error) {
+	var out wire.AccessRequests
+	return &out, c.do(ctx, http.MethodGet, "/v1/requests", authenticated, nil, &out)
+}
+
+// RequestAccess asks a project's admins for environments.
+func (c *Client) RequestAccess(ctx context.Context, req wire.AccessRequestNew) (*wire.AccessRequest, error) {
+	var out wire.AccessRequest
+	return &out, c.do(ctx, http.MethodPost, "/v1/requests", authenticated, req, &out)
+}
+
+// CloseRequest answers an access request, or withdraws one's own.
+func (c *Client) CloseRequest(ctx context.Context, id int64, granted bool) error {
+	return c.do(ctx, http.MethodPost, "/v1/requests/"+strconv.FormatInt(id, 10)+"/close", authenticated, wire.AccessRequestClose{Granted: granted}, nil)
+}
+
+// SetExpiry records when timed access to a project ends.
+func (c *Client) SetExpiry(ctx context.Context, project string, e wire.AccessExpiry) (*wire.AccessExpiry, error) {
+	var out wire.AccessExpiry
+	return &out, c.do(ctx, http.MethodPost, projectPath(project)+"/expiries", authenticated, e, &out)
+}
+
+// Expiries lists a project's timed access.
+func (c *Client) Expiries(ctx context.Context, project string) ([]wire.AccessExpiry, error) {
+	var out wire.AccessExpiries
+	err := c.do(ctx, http.MethodGet, projectPath(project)+"/expiries", authenticated, nil, &out)
+	return out.Expiries, err
+}
+
+// CancelExpiry keeps timed access instead of ending it.
+func (c *Client) CancelExpiry(ctx context.Context, project string, id int64) error {
+	return c.do(ctx, http.MethodDelete, projectPath(project)+"/expiries/"+strconv.FormatInt(id, 10), authenticated, nil, nil)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, m mode, in, out any) error {
 	var body []byte
 	if in != nil {

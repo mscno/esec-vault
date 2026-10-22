@@ -508,10 +508,10 @@ func TestDatastarPages(t *testing.T) { //nolint:gocyclo // one sequential story
 	if dr.StatusCode != http.StatusOK || !strings.HasPrefix(dr.Header.Get("Content-Type"), "text/event-stream") || !strings.Contains(body, "datastar-patch-elements") || !strings.Contains(body, "esec vault changes") || !strings.Contains(body, `id="team-members"`) {
 		t.Fatalf("member change: %d %s\n%s", dr.StatusCode, dr.Header.Get("Content-Type"), body)
 	}
-	// Errors come back as a message too.
+	// Someone without an account is invited, and the message says so.
 	_, body = dsRequest(t, h, b, http.MethodPost, "/teams/"+project+"/members", "", url.Values{"csrf": {csrf}, "login": {"nobody-here"}, "env": {"dev"}})
-	if !strings.Contains(body, "has no account on this server") || !strings.Contains(body, `id="flash"`) {
-		t.Fatalf("member add error:\n%s", body)
+	if !strings.Contains(body, "Invited nobody-here") || !strings.Contains(body, `id="flash"`) {
+		t.Fatalf("member add of someone without an account:\n%s", body)
 	}
 	_, body = dsRequest(t, h, b, http.MethodPost, "/teams/"+project+"/members", "", url.Values{"csrf": {csrf}, "login": {"x'+alert(1)+'"}, "env": {"dev"}})
 	if !strings.Contains(body, "not a GitHub login") || strings.Contains(body, "alert(1)") {

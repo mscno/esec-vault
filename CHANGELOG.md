@@ -1,3 +1,38 @@
+# v0.14.0
+
+More of it on the web, access requests, and access that ends by itself.
+
+- **Access page** (`/access`): everyone who reads something of your shared
+  projects, directly or through a group, with what needs doing first (keys
+  to rotate, keys not sent, requests to answer, tokens about to expire). A
+  page per person lists what they read, with **Offboard**: every removal
+  you may sign is signed by the server (when you let it sign removals) or
+  proposed for your passkey or device, and groups stop giving them keys at
+  once.
+- **Invites.** Adding someone on the web who has no vault account here yet
+  stores an invite; once they create their account it becomes a change for
+  the admin who invited them to sign. Projects' and groups' pages list
+  invites, and cancel them.
+- **Access requests.** `esec vault access request --env staging` (or the
+  forms on a project's page and on the Access page) asks a project's
+  admins; `esec vault access requests` lists what waits, with `--grant ID`,
+  `--deny ID` and `--withdraw ID`, and `--json`. Admins answer on the
+  project's page too. The server answers the same whether or not the
+  project exists.
+- **Timed access.** `esec vault access grant alice --env prod --for 8h`:
+  when the time comes, the server signs the removal for the admin who set
+  it, if they let it sign removals, and otherwise proposes it. `access show`
+  and the project's page list it, and admins can keep the access instead.
+- **`changes --yes`** now also signs changes the verified chain shows only
+  take access away (a member or group left reading less), such as a timed
+  access ending.
+- **Groups' pages** warn of enrollment tokens that expire within two weeks
+  (or did), and machines that fetched no keys for 30 days; the overview
+  lists them too.
+- **Activity** has a search, and exports (CSV and JSON); projects' and
+  groups' histories export too, signed changes and what the server recorded.
+  CSV cells that a spreadsheet would run as formulas are escaped.
+
 # v0.13.0
 
 Teams: groups of people, one command to grant and revoke, and offboarding.

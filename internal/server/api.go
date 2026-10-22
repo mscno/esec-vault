@@ -47,6 +47,12 @@ type apiError struct {
 
 func (e *apiError) Error() string { return e.desc }
 
+// apiErrorIs reports whether err is a client error with code.
+func apiErrorIs(err error, code string) bool {
+	var ae *apiError
+	return errors.As(err, &ae) && ae.code == code
+}
+
 func clientErr(status int, code, format string, args ...any) error {
 	return &apiError{status: status, code: code, desc: fmt.Sprintf(format, args...)}
 }
@@ -557,8 +563,18 @@ func (s *Server) apiCommit(w http.ResponseWriter, r *http.Request, c *reqCtx) {
 		return
 	}
 	s.notify.wake(c.user.ID)
+	if slices.ContainsFunc(req.Links, isInitLink) {
+		// A new vault account: invites waiting for it become changes.
+		s.redeemInvites(context.WithoutCancel(ctx), c.user.ID)
+	}
 	s.kickAlerts()
 	writeJSON(w, http.StatusOK, result)
+}
+
+// isInitLink reports whether e is the first link of a user chain.
+func isInitLink(e *envelope.Envelope) bool {
+	var l chain.Link
+	return e.Kind == chain.KindLink && e.Decode(&l) == nil && l.Type == chain.TypeInit
 }
 
 // commit applies a commit inside tx. It re-verifies the stored chain, applies

@@ -8,10 +8,17 @@
 
 <h2 id="members">Members</h2>
 {{template "team-members" .}}
-{{if .MyAdmin}}{{template "team-manage" .}}{{else}}
+{{template "team-requests" .}}
+{{if .MyAdmin}}{{template "team-manage" .}}{{else if .Member}}
 <details class="help" data-preserve-attr="open">
-  <summary>Add, change or remove a member</summary>
-  <p>An admin of the project does this, on this page or in the project's repository with <code>esec vault access add LOGIN --env dev</code>.</p>
+  <summary>Ask for more access</summary>
+  <form method="post" action="/teams/{{.Project}}/ask" class="grid-form" {{dsPost (printf "/teams/%s/ask" .Project)}}>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div>{{range .Envs}}{{if not (hasEnv $.MyAccess .Name)}}<label class="check"><input type="checkbox" name="env" value="{{.Name}}"> {{.Name}}</label> {{end}}{{end}}</div>
+    <label>Why (optional) <input name="reason" maxlength="200" autocomplete="off"></label>
+    <div><button type="submit">Ask the admins</button></div>
+  </form>
+  <p class="muted">Or on a device: <code>esec vault access request --env staging --project {{.Project}}</code>. An admin grants it from a passkey or a device.</p>
 </details>
 {{end}}
 {{template "team-changes" .}}
@@ -53,6 +60,7 @@
 </div>
 
 <h2 id="history">History</h2>
+<p class="muted">Export the whole history, signed changes and what the server recorded: <a href="/teams/{{.Project}}/export" download>CSV</a> · <a href="/teams/{{.Project}}/export?format=json" download>JSON</a></p>
 {{template "team-history" .}}
 
 <h2>Key deliveries and machine use</h2>
@@ -96,6 +104,42 @@
   {{end}}
   </tbody>
 </table>
+{{if .Invites}}
+<p class="muted">Invited, waiting for their vault account:</p>
+<ul class="plain">
+{{range .Invites}}<li><strong>{{.Login}}</strong> <span class="muted">reads {{if .Admin}}everything, as an admin{{else}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{end}}; by {{.ByLogin}} {{when .Created}}</span>{{if $.MyAdmin}} <form method="post" action="/teams/{{$.Project}}/invites/{{.ID}}/cancel" class="inline" {{dsPost (printf "/teams/%s/invites/%d/cancel" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Cancel</button></form>{{end}}</li>{{end}}
+</ul>
+{{end}}
+</div>{{end}}
+
+{{define "team-requests"}}<div id="team-requests">
+{{if and .MyAdmin .Requests}}
+<h3 id="requests">Asked for</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>Who</th><th>Asks for</th><th>Why</th><th>When</th><th></th></tr></thead>
+  <tbody>
+  {{range .Requests}}
+  <tr>
+    <td><strong>{{.Login}}</strong></td>
+    <td>{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}</td>
+    <td>{{with .Reason}}{{.}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{when .Created}}</td>
+    <td class="actions"><form method="post" action="/teams/{{$.Project}}/requests/{{.ID}}/grant" class="inline" {{dsPost (printf "/teams/%s/requests/%d/grant" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Grant</button></form> <form method="post" action="/teams/{{$.Project}}/requests/{{.ID}}/deny" class="inline" {{dsPost (printf "/teams/%s/requests/%d/deny" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Turn down</button></form></td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p class="muted">Grant proposes the change; your passkey or device signs it, and checks the person's GitHub proof first.</p>
+{{end}}
+{{if .Expiries}}
+<h3 id="timed">Access that ends by itself</h3>
+<ul class="plain">
+{{range .Expiries}}<li><strong>{{.Subject}}</strong> loses {{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}} {{when .Expires}} <span class="muted">(set by {{.By}})</span>{{if $.MyAdmin}} <form method="post" action="/teams/{{$.Project}}/expiries/{{.ID}}/cancel" class="inline" data-confirm="Keep this access instead of ending it?" {{dsPost (printf "/teams/%s/expiries/%d/cancel" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Keep it</button></form>{{end}}</li>{{end}}
+</ul>
+<p class="muted">When the time comes, the server signs the removal for whoever set it if they let it sign removals; otherwise it waits on the Changes page for their passkey or device.</p>
+{{end}}
 </div>{{end}}
 
 {{define "team-manage"}}<div id="team-manage">

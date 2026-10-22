@@ -96,3 +96,6 @@ a.tile:hover { border-color: var(--accent); }
 form[aria-busy="true"] { opacity: 0.6; }
 .grid-form { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); align-items: end; }
 .grid-form label { margin: 0; }
+ul.plain { list-style: none; padding-left: 0; }
+ul.plain li { margin: 0.25rem 0; }
+form.inline { display: inline; }

@@ -1,0 +1,35 @@
+{{template "head" .}}
+<p class="crumbs"><a href="/access">Access</a> › Person</p>
+<h1>{{.Person.Login}}</h1>
+<p class="muted">GitHub {{trimPrefix .Person.User "gh:"}}. What they read in the shared projects and groups you can see.</p>
+{{template "person-reads" .}}
+{{template "foot" .}}
+
+{{define "person-reads"}}<div id="person-reads">
+{{with .Person}}
+<div class="scroll">
+<table>
+  <thead><tr><th>Project</th><th>Reads</th><th>Through</th></tr></thead>
+  <tbody>
+  {{range .Reads}}
+  <tr>
+    <td><a href="/teams/{{.Project}}">{{.Project}}</a></td>
+    <td>{{if .Admin}}<span class="badge status-active">admin</span> every environment{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{with .Via}}the group <a href="/groups/{{.}}">{{.}}</a>{{else}}a member of the project{{end}}{{if not .CanRemove}} <span class="muted">(not yours to change)</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="3" class="muted">Nothing.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{if .Groups}}<p>Member of {{range $i, $g := .Groups}}{{if $i}}, {{end}}<a href="/groups/{{$g}}">{{$g}}</a>{{end}}.</p>{{end}}
+{{if .AdminOf}}<p>Admin of {{range $i, $g := .AdminOf}}{{if $i}}, {{end}}<a href="/groups/{{$g}}">{{$g}}</a>{{end}}; only a device removes an admin: <code>esec vault group admin GROUP {{.Login}} --remove</code>.</p>{{end}}
+{{end}}
+{{if .Removable}}
+<h2>Offboard</h2>
+<p>Take {{.Person.Login}} out of every project and group above that you administer. Removals you let the server sign happen at once; the others wait on the Changes page for your passkey or device, and a group stops giving them keys at once. Keys they already read stay with them: rotate each environment the projects then list.</p>
+<form method="post" action="/people/{{.Person.Login}}/offboard" data-confirm="Take {{.Person.Login}} out of everything you administer?" {{dsPost (printf "/people/%s/offboard" .Person.Login)}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="danger">Offboard {{.Person.Login}}</button></form>
+<p class="muted">On a device, in one go, with the list of keys to rotate: <code>{{.Command}}</code></p>
+{{end}}
+</div>{{end}}

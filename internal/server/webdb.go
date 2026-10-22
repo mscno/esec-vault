@@ -32,6 +32,8 @@ type auditFilter struct {
 	Actions []string
 	// Device limits entries to those by or about one device.
 	Device string
+	// Query keeps entries whose action, detail or address contains it.
+	Query string
 	// Before returns entries older than this id, for paging.
 	Before int64
 	Limit  int
@@ -55,6 +57,11 @@ func (d *DB) auditPage(ctx context.Context, f auditFilter) ([]auditRow, error) {
 		// name it in full, approvals as "<id> via <method>".
 		where = append(where, "(device_id = ? OR detail = ? OR substr(detail, 1, ?) = ?)")
 		args = append(args, f.Device, f.Device, len(f.Device)+1, f.Device+" ")
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		like := "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(q) + "%"
+		where = append(where, `(action LIKE ? ESCAPE '\' OR detail LIKE ? ESCAPE '\' OR ip LIKE ? ESCAPE '\')`)
+		args = append(args, like, like, like)
 	}
 	if f.Before > 0 {
 		where = append(where, "id < ?")

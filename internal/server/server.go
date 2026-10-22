@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -126,6 +127,7 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 		"dsPost":     dsPost,
 		"dsLive":     dsLive,
 		"int":        func(n uint64) int { return int(n) }, //nolint:gosec // chain lengths are small
+		"hasEnv":     slices.Contains[[]string],
 	}).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -176,6 +178,7 @@ func (s *Server) housekeeping(ctx context.Context) {
 		if err := s.db.cleanup(ctx, s.now()); err != nil && ctx.Err() == nil {
 			s.log.Warn("cleanup failed", "error", err)
 		}
+		s.expireAccess(ctx)
 		s.limits.prune(s.now())
 		s.anon.prune(s.now())
 		select {
@@ -203,6 +206,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /account", s.webAccount)
 	m.HandleFunc("GET /projects", s.webProjects)
 	m.HandleFunc("GET /activity", s.webActivity)
+	m.HandleFunc("GET /activity/export", s.webActivityExport)
 	m.HandleFunc("GET /vault", s.webVault)
 	m.HandleFunc("GET /devices/{id}", s.webDevicePage)
 	m.HandleFunc("POST /account/devices/{id}/suspend", s.webSuspendDevice)
@@ -217,8 +221,16 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /admin/users/{id}", s.webAdminUser)
 	m.HandleFunc("GET /teams/{org}/{repo}", s.webTeam)
 	m.HandleFunc("GET /teams/{org}/{repo}/live", s.webTeamLive)
+	m.HandleFunc("GET /teams/{org}/{repo}/export", s.webTeamExport)
 	m.HandleFunc("POST /teams/{org}/{repo}/members", s.webTeamAdd)
 	m.HandleFunc("POST /teams/{org}/{repo}/members/set", s.webTeamSet)
+	m.HandleFunc("POST /teams/{org}/{repo}/invites/{id}/cancel", s.webTeamCancelInvite)
+	m.HandleFunc("POST /teams/{org}/{repo}/ask", s.webTeamAsk)
+	m.HandleFunc("POST /teams/{org}/{repo}/requests/{id}/grant", s.webTeamGrantRequest)
+	m.HandleFunc("POST /teams/{org}/{repo}/requests/{id}/deny", s.webTeamDenyRequest)
+	m.HandleFunc("POST /teams/{org}/{repo}/expiries/{id}/cancel", s.webTeamCancelExpiry)
+	m.HandleFunc("POST /access/ask", s.webAskAccess)
+	m.HandleFunc("POST /access/requests/{id}/withdraw", s.webWithdrawRequest)
 	m.HandleFunc("POST /teams/{org}/{repo}/changes/{id}/dismiss", s.webTeamDismiss)
 	m.HandleFunc("GET /groups", s.webGroups)
 	m.HandleFunc("GET /groups/live", s.webGroupsLive)
@@ -230,10 +242,15 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /account/delegates/{id}/remove", s.webDelegateRemove)
 	m.HandleFunc("GET /groups/{org}/{name}", s.webGroup)
 	m.HandleFunc("GET /groups/{org}/{name}/live", s.webGroupLive)
+	m.HandleFunc("GET /groups/{org}/{name}/export", s.webGroupExport)
+	m.HandleFunc("GET /access", s.webAccess)
+	m.HandleFunc("GET /people/{login}", s.webPerson)
+	m.HandleFunc("POST /people/{login}/offboard", s.webOffboard)
 	m.HandleFunc("POST /groups/{org}/{name}/access", s.webGroupAccess)
 	m.HandleFunc("POST /groups/{org}/{name}/remove", s.webGroupRemove)
 	m.HandleFunc("POST /groups/{org}/{name}/members", s.webGroupAddMember)
 	m.HandleFunc("POST /groups/{org}/{name}/members/remove", s.webGroupRemoveMember)
+	m.HandleFunc("POST /groups/{org}/{name}/invites/{id}/cancel", s.webGroupCancelInvite)
 	m.HandleFunc("POST /groups/{org}/{name}/joins/{id}/reject", s.webGroupRejectJoin)
 	m.HandleFunc("POST /groups/{org}/{name}/changes/{id}/dismiss", s.webGroupDismiss)
 
@@ -271,6 +288,12 @@ func (s *Server) routes() {
 	m.Handle("GET /v1/projects/{org}/{repo}/chain", s.api(false, s.apiProjectChain))
 	m.Handle("GET /v1/projects/{org}/{repo}/status", s.api(false, s.apiProjectStatus))
 	m.Handle("POST /v1/projects/{org}/{repo}/commit", s.api(false, s.apiProjectCommit))
+	m.Handle("GET /v1/projects/{org}/{repo}/expiries", s.api(false, s.apiExpiries))
+	m.Handle("POST /v1/projects/{org}/{repo}/expiries", s.api(false, s.apiSetExpiry))
+	m.Handle("DELETE /v1/projects/{org}/{repo}/expiries/{id}", s.api(false, s.apiDeleteExpiry))
+	m.Handle("GET /v1/requests", s.api(false, s.apiRequests))
+	m.Handle("POST /v1/requests", s.api(false, s.apiNewRequest))
+	m.Handle("POST /v1/requests/{id}/close", s.api(false, s.apiCloseRequest))
 	m.Handle("GET /v1/grants", s.api(false, s.apiGrants))
 	m.Handle("POST /v1/grants/ack", s.api(false, s.apiGrantAck))
 	m.HandleFunc("POST /v1/machines/keys", s.apiMachineKeys)

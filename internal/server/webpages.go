@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -318,7 +319,11 @@ func (s *Server) webActivity(w http.ResponseWriter, r *http.Request) {
 	if _, ok := names[device]; !ok {
 		device = ""
 	}
-	rows, err := s.db.auditPage(ctx, auditFilter{UserID: ws.user.ID, Actions: actions, Device: device, Before: before, Limit: activityPage + 1})
+	query := strings.TrimSpace(q.Get("q"))
+	if len(query) > 100 {
+		query = query[:100]
+	}
+	rows, err := s.db.auditPage(ctx, auditFilter{UserID: ws.user.ID, Actions: actions, Device: device, Query: query, Before: before, Limit: activityPage + 1})
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -326,11 +331,13 @@ func (s *Server) webActivity(w http.ResponseWriter, r *http.Request) {
 	data := s.page(ws, "activity")
 	if len(rows) > activityPage {
 		rows = rows[:activityPage]
-		data["Older"] = activityLink(category, device, rows[len(rows)-1].ID)
+		data["Older"] = activityLink(category, device, query, rows[len(rows)-1].ID)
 	}
 	if before > 0 {
-		data["Newest"] = activityLink(category, device, 0)
+		data["Newest"] = activityLink(category, device, query, 0)
 	}
+	data["Query"] = query
+	data["Export"] = strings.Replace(activityLink(category, device, query, 0), "/activity", "/activity/export", 1)
 	data["Entries"] = auditViews(rows, names, nil)
 	data["Categories"] = auditCategories
 	data["Category"] = category
@@ -340,13 +347,16 @@ func (s *Server) webActivity(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "activity.html", data)
 }
 
-func activityLink(category, device string, before int64) string {
+func activityLink(category, device, query string, before int64) string {
 	var parts []string
 	if category != "" {
 		parts = append(parts, "category="+category)
 	}
 	if device != "" {
 		parts = append(parts, "device="+device)
+	}
+	if query != "" {
+		parts = append(parts, "q="+url.QueryEscape(query))
 	}
 	if before > 0 {
 		parts = append(parts, "before="+strconv.FormatInt(before, 10))

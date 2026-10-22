@@ -1,0 +1,59 @@
+{{template "head" .}}
+<h1>Access</h1>
+<p class="muted">Who reads what across the shared projects you are a member of, directly or through a group, and what needs doing about it. Each list is checked from the projects' and groups' signed chains; the server cannot add to them.</p>
+
+<h2 id="todo">Needs doing</h2>
+{{if .Notices}}
+<section class="notices" aria-label="Needs attention">
+  {{range .Notices}}
+  <div class="notice notice-{{.Level}}">
+    <p>{{.Text}}{{if .Link}} <a href="{{.Link}}">{{.LinkTo}}</a>{{end}}</p>
+    {{with .Command}}{{template "cmd" .}}{{end}}
+  </div>
+  {{end}}
+</section>
+{{else}}<p class="muted">Nothing: no key needs rotating, and every key has been sent.</p>{{end}}
+
+<h2 id="people">People</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Person</th><th>Reads</th><th>Groups</th></tr></thead>
+  <tbody>
+  {{range .People}}
+  <tr>
+    <td><a href="/people/{{.Login}}"><strong>{{.Login}}</strong></a><br><span class="muted">GitHub {{trimPrefix .User "gh:"}}</span></td>
+    <td>{{range .Reads}}<div>{{.Project}}: {{if .Admin}}<span class="badge status-active">admin</span>{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}{{with .Via}} <span class="muted">through <a href="/groups/{{.}}">{{.}}</a></span>{{end}}</div>{{else}}<span class="muted">none of your projects</span>{{end}}</td>
+    <td>{{range $i, $g := .Groups}}{{if $i}}, {{end}}<a href="/groups/{{$g}}">{{$g}}</a>{{end}}{{if .AdminOf}}{{if .Groups}}<br>{{end}}<span class="muted">admin of {{range $i, $g := .AdminOf}}{{if $i}}, {{end}}<a href="/groups/{{$g}}">{{$g}}</a>{{end}}</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="3" class="muted">Nobody yet. Share a project with <code>esec vault access create</code>.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{template "access-requests" .}}
+
+<details class="help">
+  <summary>Give people access</summary>
+  {{template "cmd" "esec vault access grant alice --env dev --project acme/store"}}
+  {{template "cmd" "esec vault group add acme/backend alice"}}
+  <p class="muted">Or on a project's page (Add a member) or a group's page (Add a person); a passkey or a device signs it.</p>
+</details>
+{{template "foot" .}}
+
+{{define "access-requests"}}<div id="access-requests">
+<h2 id="ask">Ask for access</h2>
+<form method="post" action="/access/ask" class="grid-form" {{dsPost "/access/ask"}}>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Project <input name="project" required placeholder="acme/store" pattern="[A-Za-z0-9._-]+/[A-Za-z0-9._-]+" autocomplete="off" spellcheck="false"></label>
+  <label>Environments <input name="envs" required placeholder="dev, staging" autocomplete="off" spellcheck="false"></label>
+  <label>Why (optional) <input name="reason" maxlength="200" autocomplete="off"></label>
+  <div><button type="submit">Ask its admins</button></div>
+</form>
+{{if .MyRequests}}
+<p class="muted">Waiting for an answer:</p>
+<ul class="plain">
+{{range .MyRequests}}<li>{{.Project}}: {{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}} <span class="muted">{{when .Created}}</span> <form method="post" action="/access/requests/{{.ID}}/withdraw" class="inline" {{dsPost (printf "/access/requests/%d/withdraw" .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Withdraw</button></form></li>{{end}}
+</ul>
+{{end}}
+</div>{{end}}

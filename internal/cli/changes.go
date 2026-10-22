@@ -65,7 +65,7 @@ func signChanges(ctx context.Context, a *account.Account, list []account.ChangeV
 		if ch.Kind == wire.ChangeDelegateAdd {
 			question = "Does the page that made it show the same fingerprint, and do you want it?"
 		}
-		if (!yesRemovals || !ch.Removes()) && !confirm(question) {
+		if (!yesRemovals || !a.Narrows(ctx, ch)) && !confirm(question) {
 			if unanswered {
 				// Nothing to ask: never sign, nor dismiss, on a guess.
 				unsigned++

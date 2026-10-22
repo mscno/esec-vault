@@ -11,6 +11,7 @@ import (
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/team"
+	"github.com/mscno/esec-vault/internal/wire"
 )
 
 // One command for any reader of a project: a person by GitHub login, or a
@@ -22,6 +23,7 @@ type AccessGrantCmd struct {
 	Env        []string `name:"env" sep:"," help:"Environments they may read, on top of what they read already"`
 	Admin      bool     `help:"Make the person an admin: they read every environment and manage the project"`
 	AccountKey string   `help:"A new person's account key words, read to you over another channel, instead of their GitHub SSH proof"`
+	For        string   `name:"for" help:"Take the --env environments away again after this long, such as 8h or 3d (the server signs or proposes the removal)"`
 	Project    string   `help:"Project id (default: nearest .esec-project)"`
 	JSON       bool     `help:"Print JSON, for scripts and agents"`
 }
@@ -51,6 +53,9 @@ type accessResult struct {
 	// Pending says another admin (of the group, or of the project) still
 	// has to agree.
 	Pending []string `json:"pending"`
+	// Until is when Ending, the environments granted for a while, end.
+	Until  *time.Time `json:"until,omitempty"`
+	Ending []string   `json:"ending,omitempty"`
 }
 
 // isGroupRef tells a group id ("org/name") from a GitHub login.
@@ -64,6 +69,15 @@ func (c *AccessGrantCmd) Run(ctx *cliCtx) error {
 	}
 	if !c.Admin && len(c.Env) == 0 {
 		return errors.New("say what they may read with --env dev[,prod], or make a person an admin with --admin")
+	}
+	var ttl time.Duration
+	if c.For != "" {
+		if c.Admin {
+			return errors.New("--for ends --env environments; an admin reads everything, so make them an admin for good or not at all")
+		}
+		if ttl, err = parseTTL(c.For); err != nil {
+			return fmt.Errorf("%w: use hours such as 8h or days such as 3d", err)
+		}
 	}
 	a, err := openAccount(ctx)
 	if err != nil {
@@ -82,6 +96,13 @@ func (c *AccessGrantCmd) Run(ctx *cliCtx) error {
 	}
 	if err != nil {
 		return err
+	}
+	if ttl > 0 {
+		e, err := a.EndAccessAt(bg, project, c.Who, team.SortEnvs(c.Env), a.Now().Add(ttl))
+		if err != nil {
+			return fmt.Errorf("granted, but the server did not take the end time (%w); take it away by hand later: esec vault access revoke %s --env %s --project %s", err, c.Who, strings.Join(c.Env, ","), project)
+		}
+		res.Until, res.Ending = &e.Expires, e.Envs
 	}
 	return printAccess(res, c.JSON)
 }
@@ -262,6 +283,9 @@ func printAccess(r *accessResult, asJSON bool) error {
 	for _, p := range r.Pending {
 		fmt.Println("  ! Not yet: " + p)
 	}
+	if r.Until != nil {
+		fmt.Printf("  They lose %s again at %s: the server signs the removal for you if you let it (esec vault delegate server), otherwise it waits for you in esec vault changes.\n", strings.Join(r.Ending, ", "), r.Until.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
+	}
 	printRotations(r.Rotate, who+" could read")
 	return nil
 }
@@ -405,4 +429,133 @@ func printOffboard(out *offboardResult) {
 			fmt.Printf("    esec vault env rotate %s --project %s\n", e, p)
 		}
 	}
+}
+
+// AccessRequestCmd asks a project's admins for environments.
+type AccessRequestCmd struct {
+	Env     []string `name:"env" sep:"," required:"" help:"Environments you need"`
+	Reason  string   `help:"Why, for the admins"`
+	Project string   `help:"Project id (default: nearest .esec-project)"`
+	JSON    bool     `help:"Print JSON, for scripts and agents"`
+}
+
+// Run implements access request.
+func (c *AccessRequestCmd) Run(ctx *cliCtx) error {
+	project, err := projectFlag(c.Project)
+	if err != nil {
+		return err
+	}
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(time.Minute)
+	defer cancel()
+	q, err := a.RequestAccess(bg, project, team.SortEnvs(c.Env), c.Reason)
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		return printJSON(q)
+	}
+	fmt.Printf("✓ Asked for %s of %s (#%d). Its admins see it on the project's page and with 'esec vault access requests'; your devices get the keys once one grants it.\n", strings.Join(q.Envs, ", "), project, q.ID)
+	return nil
+}
+
+// AccessRequestsCmd lists, grants and turns down access requests.
+type AccessRequestsCmd struct {
+	Project  string `help:"Only this project's requests"`
+	Grant    int64  `help:"Grant request ID: the person gets what they asked for" xor:"answer"`
+	Deny     int64  `help:"Turn request ID down" xor:"answer"`
+	Withdraw int64  `help:"Withdraw your own request ID" xor:"answer"`
+	JSON     bool   `help:"Print JSON, for scripts and agents"`
+}
+
+// Run implements access requests.
+func (c *AccessRequestsCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // list, or one of three answers
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(2 * time.Minute)
+	defer cancel()
+	list, err := a.AccessRequests(bg)
+	if err != nil {
+		return err
+	}
+	keep := func(qs []wire.AccessRequest) []wire.AccessRequest {
+		if c.Project == "" {
+			return qs
+		}
+		return slices.DeleteFunc(qs, func(q wire.AccessRequest) bool { return q.Project != c.Project })
+	}
+	list.ToDecide, list.Mine = keep(list.ToDecide), keep(list.Mine)
+	find := func(qs []wire.AccessRequest, id int64) (*wire.AccessRequest, error) {
+		for i := range qs {
+			if qs[i].ID == id {
+				return &qs[i], nil
+			}
+		}
+		return nil, fmt.Errorf("no open request #%d for you to answer; list them with: esec vault access requests", id)
+	}
+	switch {
+	case c.Grant != 0:
+		q, err := find(list.ToDecide, c.Grant)
+		if err != nil {
+			return err
+		}
+		res, err := grantPerson(bg, a, q.Project, q.Login, q.Envs, false, "")
+		if err != nil {
+			return err
+		}
+		if err := a.CloseRequest(bg, q.ID, true); err != nil {
+			return err
+		}
+		return printAccess(res, c.JSON)
+	case c.Deny != 0:
+		q, err := find(list.ToDecide, c.Deny)
+		if err != nil {
+			return err
+		}
+		if err := a.CloseRequest(bg, q.ID, false); err != nil {
+			return err
+		}
+		fmt.Printf("✓ Turned down %s's request for %s of %s.\n", safetext.Clean(q.Login), strings.Join(q.Envs, ", "), q.Project)
+		return nil
+	case c.Withdraw != 0:
+		q, err := find(list.Mine, c.Withdraw)
+		if err != nil {
+			return err
+		}
+		if err := a.CloseRequest(bg, q.ID, false); err != nil {
+			return err
+		}
+		fmt.Printf("✓ Withdrew your request for %s of %s.\n", strings.Join(q.Envs, ", "), q.Project)
+		return nil
+	}
+	if c.JSON {
+		return printJSON(list)
+	}
+	if len(list.ToDecide)+len(list.Mine) == 0 {
+		fmt.Println("No access requests wait. Ask for access with: esec vault access request --env staging")
+		return nil
+	}
+	if len(list.ToDecide) > 0 {
+		fmt.Println("Waiting for you:")
+		for _, q := range list.ToDecide {
+			why := ""
+			if q.Reason != "" {
+				why = " (" + safetext.Clean(q.Reason) + ")"
+			}
+			fmt.Printf("  #%-5d %-20s %s of %s%s, %s\n", q.ID, safetext.Clean(q.Login), strings.Join(q.Envs, ", "), q.Project, why, q.Created.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
+		}
+		fmt.Println("Answer with: esec vault access requests --grant ID (or --deny ID)")
+	}
+	if len(list.Mine) > 0 {
+		fmt.Println("Yours, waiting for an answer:")
+		for _, q := range list.Mine {
+			fmt.Printf("  #%-5d %s of %s\n", q.ID, strings.Join(q.Envs, ", "), q.Project)
+		}
+	}
+	return nil
 }

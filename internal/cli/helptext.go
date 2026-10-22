@@ -82,6 +82,19 @@ var commandDetails = map[string]string{
 		"esec vault access grant bob --admin",
 		"esec vault access grant acme/backend --env dev,staging",
 		"esec vault access grant acme/production --env prod --project acme/api --json",
+		"esec vault access grant alice --env prod --for 8h     # emergency access that ends by itself",
+	),
+	"access request": `Anyone signed in may ask; the project's admins see it on its page, on their overview and with access requests. An admin grants it from a device or a passkey.
+
+` + examples(
+		"esec vault access request --env staging",
+		"esec vault access request --env prod --reason \"on call this week\" --project acme/api",
+	),
+	"access requests": examples(
+		"esec vault access requests                    # to answer, and your own",
+		"esec vault access requests --grant 12",
+		"esec vault access requests --deny 13",
+		"esec vault access requests --json",
 	),
 	"access revoke": `Without --env, the person leaves the project, or the group stops reading it. Keys they read before stay with them: rotate those environments (the command lists them).
 

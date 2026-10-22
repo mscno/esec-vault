@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -249,6 +250,41 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 		return out, nil
 	}
 	return nil, fmt.Errorf("this version cannot sign a %s change; update esec-vault", ch.Kind)
+}
+
+// Narrows reports whether a change, checked against the verified chains,
+// only takes access away: a member or group left reading less. Removes
+// tells that from the change alone; this covers what needs the chain.
+func (a *Account) Narrows(ctx context.Context, ch ChangeView) bool {
+	if ch.Removes() {
+		return true
+	}
+	switch {
+	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberSet && !ch.Admin:
+		v, err := a.Team(ctx, ch.Target)
+		if err != nil {
+			return false
+		}
+		m, err := member(v.State, ch.Subject)
+		return err == nil && !m.Admin && subsetOf(ch.Envs, m.Envs)
+	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeAccess:
+		v, err := a.Team(ctx, ch.Project)
+		if err != nil {
+			return false
+		}
+		pg, ok := v.State.Group(ch.Target)
+		return ok && subsetOf(ch.Envs, pg.Envs)
+	}
+	return false
+}
+
+func subsetOf(a, b []string) bool {
+	for _, n := range a {
+		if !slices.Contains(b, n) {
+			return false
+		}
+	}
+	return true
 }
 
 // Removes reports whether a change only takes access away.

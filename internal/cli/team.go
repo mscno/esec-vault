@@ -24,6 +24,8 @@ type TeamCmd struct {
 	Grant    AccessGrantCmd    `cmd:"" help:"Let a person or a group read more environments (adds them if new)."`
 	Revoke   AccessRevokeCmd   `cmd:"" help:"Take environments, or all access, away from a person or a group."`
 	Offboard AccessOffboardCmd `cmd:"" help:"Take everything a person reads away: every project and group you administer."`
+	Request  AccessRequestCmd  `cmd:"" help:"Ask a project's admins for environments."`
+	Requests AccessRequestsCmd `cmd:"" help:"List access requests; grant, turn down or withdraw one."`
 	Add      TeamAddCmd        `cmd:"" help:"Add a member and send them the keys they may read."`
 	Set      TeamSetCmd        `cmd:"" help:"Change what a member reads (replacing it), or make them an admin."`
 	Remove   TeamRemoveCmd     `cmd:"" help:"Remove a member."`
@@ -142,6 +144,12 @@ func (c *TeamShowCmd) Run(ctx *cliCtx) error {
 		}
 	}
 	printTeamGroups(v, keys)
+	if timed, err := a.TimedAccess(bg, project); err == nil && len(timed) > 0 {
+		fmt.Println("Access that ends by itself:")
+		for _, e := range timed {
+			fmt.Printf("  %-20s loses %s at %s\n", safetext.Clean(e.Subject), strings.Join(e.Envs, ", "), e.Expires.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
+		}
+	}
 	for _, e := range st.Rotations() {
 		var who []string
 		for _, x := range e.Exposed {

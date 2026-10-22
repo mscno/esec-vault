@@ -44,6 +44,7 @@
   {{template "cmd" (printf "esec vault group admin %s LOGIN" .Group)}}
 </details>
 <h2 id="history">History</h2>
+<p class="muted">Export the whole history{{if .ShowOps}}, with the machines' activity{{end}}: <a href="/groups/{{.Group}}/export" download>CSV</a> · <a href="/groups/{{.Group}}/export?format=json" download>JSON</a></p>
 {{template "group-history" .}}
 {{if .ShowOps}}
 <h2>Machine activity</h2>
@@ -119,6 +120,12 @@
   </tbody>
 </table>
 {{else}}<p class="muted">No people besides its admins. People in a group read what it reads, through the group's key.</p>{{end}}
+{{if .Invites}}
+<p class="muted">Invited, waiting for their vault account:</p>
+<ul class="plain">
+{{range .Invites}}<li><strong>{{.Login}}</strong> <span class="muted">by {{.ByLogin}} {{when .Created}}</span>{{if $.MyAdmin}} <form method="post" action="/groups/{{$.Group}}/invites/{{.ID}}/cancel" class="inline" {{dsPost (printf "/groups/%s/invites/%d/cancel" $.Group .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Cancel</button></form>{{end}}</li>{{end}}
+</ul>
+{{end}}
 </div>{{end}}
 
 {{define "group-machines"}}<div id="group-machines" class="scroll">
@@ -127,7 +134,7 @@
   <tbody>
   {{range .Machines}}
   <tr id="cred-{{.ID}}">
-    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{else if not .HasKey}} <span class="badge status-pending">key not sent</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
+    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{else if not .HasKey}} <span class="badge status-pending">key not sent</span>{{end}}{{if .Stale}} <span class="badge status-pending">quiet for 30 days</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
     <td>{{when .LastUsed}}{{if and $.ShowOps .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "fetch"}}</span>{{end}}</td>
     <td>{{with .Policy}}{{.}}{{else}}<span class="muted">anywhere with its key</span>{{end}}</td>
     <td>{{when .AddedAt}}<br><span class="muted">{{if .Join}}asked to join; let in by {{.AddedBy}}{{else}}by {{.AddedBy}}{{end}}</span></td>
@@ -146,7 +153,7 @@
   <tbody>
   {{range .Tokens}}
   <tr id="cred-{{.ID}}">
-    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
+    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{end}}{{if .Expired}} <span class="badge status-revoked">expired</span>{{else if .Expiring}} <span class="badge status-pending">expires soon</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
     <td>{{if .Expires.IsZero}}<span class="muted">never</span>{{else}}{{when .Expires}}{{end}}</td>
     <td>{{when .LastUsed}}{{if and $.ShowOps .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "use"}}</span>{{end}}</td>
     <td>{{with .Policy}}{{.}}{{else}}<span class="muted">anywhere with the token</span>{{end}}</td>

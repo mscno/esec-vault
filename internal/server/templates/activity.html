@@ -10,7 +10,14 @@
 </nav>
 {{if .DeviceID}}<p>Showing <a href="/devices/{{.DeviceID}}">{{or .DeviceName .DeviceID}}</a> only. <a href="/activity{{with .Category}}?category={{.}}{{end}}">Show every device</a></p>{{end}}
 
-<input type="search" class="filter" placeholder="Filter this page" aria-label="Filter this page" data-filter="#activity" hidden>
+<form method="get" action="/activity" class="search" role="search">
+  {{with .Category}}<input type="hidden" name="category" value="{{.}}">{{end}}
+  {{with .DeviceID}}<input type="hidden" name="device" value="{{.}}">{{end}}
+  <input type="search" name="q" value="{{.Query}}" placeholder="Search events, details, addresses" aria-label="Search activity" maxlength="100">
+  <button type="submit" class="secondary">Search</button>
+  {{if .Query}}<a href="/activity{{with .Category}}?category={{.}}{{end}}">Clear</a>{{end}}
+</form>
+<p class="muted">Export what this page shows (up to 10,000 entries): <a href="{{.Export}}" download>CSV</a> · <a href="{{.Export}}{{if eq .Export "/activity/export"}}?{{else}}&amp;{{end}}format=json" download>JSON</a></p>
 <div class="scroll">
 <table id="activity">
   <thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Device</th><th>Address</th></tr></thead>
