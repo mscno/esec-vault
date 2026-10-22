@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -53,6 +54,8 @@ type accessResult struct {
 	// Pending says another admin (of the group, or of the project) still
 	// has to agree.
 	Pending []string `json:"pending"`
+	// Gained lists the environments this grant added.
+	Gained []string `json:"gained"`
 	// Until is when Ending, the environments granted for a while, end.
 	Until  *time.Time `json:"until,omitempty"`
 	Ending []string   `json:"ending,omitempty"`
@@ -97,8 +100,12 @@ func (c *AccessGrantCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	if ttl > 0 {
-		e, err := a.EndAccessAt(bg, project, c.Who, team.SortEnvs(c.Env), a.Now().Add(ttl))
+	if ttl > 0 && len(res.Gained) == 0 {
+		fmt.Fprintf(os.Stderr, "Note: %s read %s already, so nothing ends after %s.\n", c.Who, strings.Join(c.Env, ", "), c.For)
+	}
+	if ttl > 0 && len(res.Gained) > 0 {
+		// Only what this grant added ends: what they read before stays.
+		e, err := a.EndAccessAt(bg, project, c.Who, res.Gained, a.Now().Add(ttl))
 		if err != nil {
 			return fmt.Errorf("granted, but the server did not take the end time (%w); take it away by hand later: esec vault access revoke %s --env %s --project %s", err, c.Who, strings.Join(c.Env, ","), project)
 		}
@@ -131,7 +138,7 @@ func grantPerson(ctx context.Context, a *account.Account, project, login string,
 			return nil, err
 		}
 		out.Who, out.Admin, out.Sent, out.Missing = res.Login, admin, nonNil(res.Granted), nonNil(res.Missing)
-		out.Reads = team.SortEnvs(envs)
+		out.Reads, out.Gained = team.SortEnvs(envs), team.SortEnvs(envs)
 		if admin {
 			out.Reads = v.State.EnvNames()
 		}
@@ -154,6 +161,7 @@ func grantPerson(ctx context.Context, a *account.Account, project, login string,
 	}
 	out.Who, out.Admin, out.Sent, out.Missing = m.Login, admin, nonNil(res.Granted), nonNil(res.Missing)
 	out.Reads = want
+	out.Gained = slices.DeleteFunc(slices.Clone(want), func(n string) bool { return slices.Contains(m.Envs, n) })
 	if admin {
 		out.Reads = v.State.EnvNames()
 	}
@@ -183,6 +191,7 @@ func grantGroupMore(ctx context.Context, a *account.Account, project, group stri
 		return nil, err
 	}
 	out := &accessResult{Project: project, Who: group, Kind: "group", Reads: nonNil(want), Sent: []string{}, Missing: nonNil(res.Missing), Rotate: nonNil(res.Exposed), Pending: []string{}}
+	out.Gained = slices.DeleteFunc(slices.Clone(want), func(n string) bool { return slices.Contains(current, n) })
 	if res.Sent {
 		out.Sent = want
 	}
@@ -263,6 +272,7 @@ func revokePerson(ctx context.Context, a *account.Account, project, login string
 
 func printAccess(r *accessResult, asJSON bool) error {
 	if asJSON {
+		r.Gained = nonNil(r.Gained)
 		return printJSON(r)
 	}
 	who := safetext.Clean(r.Who)
@@ -468,7 +478,12 @@ type AccessRequestsCmd struct {
 	Grant    int64  `help:"Grant request ID: the person gets what they asked for" xor:"answer"`
 	Deny     int64  `help:"Turn request ID down" xor:"answer"`
 	Withdraw int64  `help:"Withdraw your own request ID" xor:"answer"`
-	JSON     bool   `help:"Print JSON, for scripts and agents"`
+	// The server says what a request asks for, so granting one unasked
+	// needs the person to say it too.
+	Login string   `help:"With --grant --yes: the login the request must be from"`
+	Env   []string `name:"env" sep:"," help:"With --grant --yes: the environments it must ask for"`
+	Yes   bool     `help:"With --grant, --login, --env and --project: grant without asking"`
+	JSON  bool     `help:"Print JSON, for scripts and agents"`
 }
 
 // Run implements access requests.
@@ -504,6 +519,9 @@ func (c *AccessRequestsCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // list, o
 		if err != nil {
 			return err
 		}
+		if err := c.checkGrant(q); err != nil {
+			return err
+		}
 		res, err := grantPerson(bg, a, q.Project, q.Login, q.Envs, false, "")
 		if err != nil {
 			return err
@@ -520,7 +538,7 @@ func (c *AccessRequestsCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // list, o
 		if err := a.CloseRequest(bg, q.ID, false); err != nil {
 			return err
 		}
-		fmt.Printf("✓ Turned down %s's request for %s of %s.\n", safetext.Clean(q.Login), strings.Join(q.Envs, ", "), q.Project)
+		fmt.Printf("✓ Turned down %s's request for %s of %s.\n", safetext.Clean(q.Login), safetext.Clean(strings.Join(q.Envs, ", ")), safetext.Clean(q.Project))
 		return nil
 	case c.Withdraw != 0:
 		q, err := find(list.Mine, c.Withdraw)
@@ -530,7 +548,7 @@ func (c *AccessRequestsCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // list, o
 		if err := a.CloseRequest(bg, q.ID, false); err != nil {
 			return err
 		}
-		fmt.Printf("✓ Withdrew your request for %s of %s.\n", strings.Join(q.Envs, ", "), q.Project)
+		fmt.Printf("✓ Withdrew your request for %s of %s.\n", safetext.Clean(strings.Join(q.Envs, ", ")), safetext.Clean(q.Project))
 		return nil
 	}
 	if c.JSON {
@@ -547,14 +565,14 @@ func (c *AccessRequestsCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // list, o
 			if q.Reason != "" {
 				why = " (" + safetext.Clean(q.Reason) + ")"
 			}
-			fmt.Printf("  #%-5d %-20s %s of %s%s, %s\n", q.ID, safetext.Clean(q.Login), strings.Join(q.Envs, ", "), q.Project, why, q.Created.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
+			fmt.Printf("  #%-5d %-20s %s of %s%s, %s\n", q.ID, safetext.Clean(q.Login), safetext.Clean(strings.Join(q.Envs, ", ")), safetext.Clean(q.Project), why, q.Created.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
 		}
 		fmt.Println("Answer with: esec vault access requests --grant ID (or --deny ID)")
 	}
 	if len(list.Mine) > 0 {
 		fmt.Println("Yours, waiting for an answer:")
 		for _, q := range list.Mine {
-			fmt.Printf("  #%-5d %s of %s\n", q.ID, strings.Join(q.Envs, ", "), q.Project)
+			fmt.Printf("  #%-5d %s of %s\n", q.ID, safetext.Clean(strings.Join(q.Envs, ", ")), safetext.Clean(q.Project))
 		}
 	}
 	return nil
@@ -694,5 +712,26 @@ func (c *AccessHandoverCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	fmt.Printf("✓ You are a member of %s who reads every environment, no longer an admin.\n", project)
+	return nil
+}
+
+// checkGrant shows a request the server describes and asks before granting
+// it; with --yes, the request must match the login, project and
+// environments given on the command line instead.
+func (c *AccessRequestsCmd) checkGrant(q *wire.AccessRequest) error {
+	what := fmt.Sprintf("%s asks for %s of %s", safetext.Clean(q.Login), safetext.Clean(strings.Join(q.Envs, ", ")), safetext.Clean(q.Project))
+	if !c.Yes {
+		fmt.Println(what + ".")
+		if !confirm("Grant it?") {
+			return errors.New("not granted")
+		}
+		return nil
+	}
+	if c.Login == "" || c.Project == "" || len(c.Env) == 0 {
+		return errors.New("--yes needs --login, --project and --env, which the request must match")
+	}
+	if !strings.EqualFold(c.Login, q.Login) || c.Project != q.Project || !slices.Equal(team.SortEnvs(c.Env), team.SortEnvs(q.Envs)) {
+		return fmt.Errorf("request #%d is not what you named: %s", q.ID, what)
+	}
 	return nil
 }

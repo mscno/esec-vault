@@ -22,7 +22,7 @@
   {{range .People}}
   <tr>
     <td><a href="/people/{{.Login}}"><strong>{{.Login}}</strong></a><br><span class="muted">GitHub {{trimPrefix .User "gh:"}}</span></td>
-    <td>{{range .Reads}}<div>{{.Project}}: {{if .Admin}}<span class="badge status-active">admin</span>{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}{{with .Via}} <span class="muted">through <a href="/groups/{{.}}">{{.}}</a></span>{{end}}</div>{{else}}<span class="muted">none of your projects</span>{{end}}</td>
+    <td>{{range .Reads}}<div>{{.Project}}: {{if .Admin}}<span class="badge status-active">admin</span>{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}{{with .Via}} <span class="muted">through <a href="/groups/{{.}}">{{.}}</a></span>{{end}}{{if .GroupAdmin}} <span class="muted">(as its admin)</span>{{end}}</div>{{else}}<span class="muted">none of your projects</span>{{end}}</td>
     <td>{{range $i, $g := .Groups}}{{if $i}}, {{end}}<a href="/groups/{{$g}}">{{$g}}</a>{{end}}{{if .AdminOf}}{{if .Groups}}<br>{{end}}<span class="muted">admin of {{range $i, $g := .AdminOf}}{{if $i}}, {{end}}<a href="/groups/{{$g}}">{{$g}}</a>{{end}}</span>{{end}}</td>
   </tr>
   {{else}}

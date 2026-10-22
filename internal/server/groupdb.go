@@ -411,6 +411,17 @@ func (d *DB) groupStatus(ctx context.Context, gs *team.GroupState, now time.Time
 			out.AdminsWithKey = append(out.AdminsWithKey, a.User)
 		}
 	}
+	err = scanAll(ctx, d.sql, `SELECT user_id FROM group_members WHERE group_id = ? AND active = 1 AND suspended_at != 0`, []any{gs.Group}, func(r *sql.Rows) error {
+		var u string
+		if err := r.Scan(&u); err != nil {
+			return err
+		}
+		out.BlockedMembers = append(out.BlockedMembers, u)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	if out.Joins, err = d.pendingJoins(ctx, gs.Group, now); err != nil {
 		return nil, err
 	}

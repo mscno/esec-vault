@@ -135,6 +135,33 @@ func (s *Server) redeemInvites(ctx context.Context, user string) {
 	}
 }
 
+// redeemWaitingInvites redeems the invites of people who have a vault
+// account by now: redeeming when the account was made may have failed
+// (housekeeping).
+func (s *Server) redeemWaitingInvites(ctx context.Context) {
+	var logins []string
+	err := scanAll(ctx, s.db.sql, `SELECT DISTINCT login FROM invites WHERE status = 'open' AND created_at > ? LIMIT 200`, []any{s.now().Add(-inviteLifetime).Unix()}, func(r *sql.Rows) error {
+		var l string
+		if err := r.Scan(&l); err != nil {
+			return err
+		}
+		logins = append(logins, l)
+		return nil
+	})
+	if err != nil {
+		return
+	}
+	for _, l := range logins {
+		u, err := s.db.userByLogin(ctx, l)
+		if err != nil || u == nil {
+			continue
+		}
+		if first, err := s.db.firstLink(ctx, u.ID); err == nil && first != nil {
+			s.redeemInvites(ctx, u.ID)
+		}
+	}
+}
+
 // cancelInvite cancels an open invite of a project or group user
 // administers.
 func (s *Server) cancelInvite(ctx context.Context, scope, target, user, ip, id string) (string, error) {

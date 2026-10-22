@@ -711,6 +711,12 @@ type UpdateResult struct {
 // UpdateMember changes a member's role and environments, and sends the keys
 // they gained.
 func (a *Account) UpdateMember(ctx context.Context, project, login string, admin bool, envs []string) (*UpdateResult, error) {
+	return a.updateMember(ctx, project, login, admin, envs, false)
+}
+
+// updateMember is UpdateMember; with narrow, it refuses any change that
+// gives the member anything, judged on the chain it signs from.
+func (a *Account) updateMember(ctx context.Context, project, login string, admin bool, envs []string, narrow bool) (*UpdateResult, error) {
 	var out *UpdateResult
 	err := a.withTeam(ctx, func(t *teamCtx) error {
 		st, err := t.requireAdmin(project)
@@ -726,6 +732,9 @@ func (a *Account) UpdateMember(ctx context.Context, project, login string, admin
 			envs = nil
 		}
 		before := st.Access(m.User)
+		if narrow && (admin || m.Admin || !subsetOf(envs, m.Envs)) {
+			return fmt.Errorf("the change to %s gives %s more than they read now; sign it after reading it", project, m.Login)
+		}
 		e, next, err := t.link(st, team.TypeMemberUpdate, team.MemberUpdateBody{User: m.User, Admin: admin, Envs: envs})
 		if err != nil {
 			return err
@@ -764,6 +773,12 @@ func (a *Account) UpdateMember(ctx context.Context, project, login string, admin
 // the project). It returns the environments the member could read, whose
 // keys now need replacing.
 func (a *Account) RemoveMember(ctx context.Context, project, login, reason string) ([]string, error) {
+	return a.removeMember(ctx, project, login, reason, false)
+}
+
+// removeMember is RemoveMember; with narrow, it refuses to remove an admin,
+// which is never signed unasked.
+func (a *Account) removeMember(ctx context.Context, project, login, reason string, narrow bool) ([]string, error) {
 	var out []string
 	err := a.withTeam(ctx, func(t *teamCtx) error {
 		st, err := t.state(project)
@@ -779,6 +794,9 @@ func (a *Account) RemoveMember(ctx context.Context, project, login, reason strin
 		}
 		if m.User != a.State.User && !st.Admin(a.State.User) {
 			return fmt.Errorf("only an admin of %s can remove others", project)
+		}
+		if narrow && m.Admin {
+			return fmt.Errorf("%s is an admin of %s; removing an admin is signed only after asking", m.Login, project)
 		}
 		out = st.Access(m.User)
 		e, next, err := t.link(st, team.TypeMemberRemove, team.MemberRemoveBody{User: m.User, Reason: reason})

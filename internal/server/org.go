@@ -317,10 +317,10 @@ func (s *Server) reviewStatus(ctx context.Context, st *team.State) (*wire.Review
 	return out, nil
 }
 
-var reviewName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$`)
+var reviewName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/: ()'-]{0,99}$`)
 
-// recordReview stores an access review of a project by user.
-func (s *Server) recordReview(ctx context.Context, project, user, ip string, rv wire.AccessReview) error {
+// checkReviewNames checks the names of a review before anything is done.
+func checkReviewNames(rv wire.AccessReview) error {
 	if len(rv.Kept)+len(rv.Removed) > team.MaxMembers+team.MaxProjectGroups+team.MaxMachines {
 		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "review too large")
 	}
@@ -328,6 +328,14 @@ func (s *Server) recordReview(ctx context.Context, project, user, ip string, rv 
 		if !reviewName.MatchString(n) {
 			return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid name in the review")
 		}
+	}
+	return nil
+}
+
+// recordReview stores an access review of a project by user.
+func (s *Server) recordReview(ctx context.Context, project, user, ip string, rv wire.AccessReview) error {
+	if err := checkReviewNames(rv); err != nil {
+		return err
 	}
 	kept, err := json.Marshal(nonNilStrings(rv.Kept))
 	if err != nil {
@@ -344,6 +352,21 @@ func (s *Server) recordReview(ctx context.Context, project, user, ip string, rv 
 		}
 		return s.db.projectAudit(ctx, tx, project, user, ip, "access_reviewed", strconv.Itoa(len(rv.Kept))+" kept, "+strconv.Itoa(len(rv.Removed))+" removed", now)
 	})
+}
+
+// readersOf names everyone who reads st, as a review records them.
+func readersOf(st *team.State) wire.AccessReview {
+	var out wire.AccessReview
+	for _, m := range st.ActiveMembers() {
+		out.Kept = append(out.Kept, m.Login)
+	}
+	for _, g := range st.ActiveGroups() {
+		out.Kept = append(out.Kept, g.Group)
+	}
+	for _, m := range st.ActiveMachines() {
+		out.Kept = append(out.Kept, "machine:"+m.Name)
+	}
+	return out
 }
 
 func nonNilStrings(v []string) []string {
@@ -453,14 +476,16 @@ func (s *Server) webReviewPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "review.html", data)
 }
 
-// webReview records a review: those ticked keep their access, the others
-// lose it (signed by the server when the admin lets it, otherwise proposed).
+// webReview records a review: those ticked to remove lose their access
+// (signed by the server when the admin lets it, otherwise proposed), and
+// everyone else keeps it, including anyone added since the page was shown.
 func (s *Server) webReview(w http.ResponseWriter, r *http.Request) {
 	s.teamForm(w, r, func(ctx context.Context, ws *webSession, st *team.State) (string, error) {
-		keep := map[string]bool{}
-		for _, k := range r.PostForm["keep"] {
-			keep[k] = true
+		drop := map[string]bool{}
+		for _, k := range r.PostForm["remove"] {
+			drop[k] = true
 		}
+		keep := func(name string) bool { return !drop[name] }
 		ip := s.clientIP(r)
 		var rv wire.AccessReview
 		var proposed, signed []string
@@ -476,8 +501,11 @@ func (s *Server) webReview(w http.ResponseWriter, r *http.Request) {
 			proposed = append(proposed, name)
 			return s.propose(ctx, ws.user.ID, ip, c)
 		}
+		if err := checkReviewNames(readersOf(st)); err != nil {
+			return "", err
+		}
 		for _, m := range st.ActiveMembers() {
-			if m.Admin || keep[m.Login] {
+			if m.Admin || keep(m.Login) {
 				rv.Kept = append(rv.Kept, m.Login)
 				continue
 			}
@@ -487,7 +515,7 @@ func (s *Server) webReview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, g := range st.ActiveGroups() {
-			if keep[g.Group] {
+			if keep(g.Group) {
 				rv.Kept = append(rv.Kept, g.Group)
 				continue
 			}
@@ -497,7 +525,7 @@ func (s *Server) webReview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, m := range st.ActiveMachines() {
-			if keep["machine:"+m.ID] {
+			if keep("machine:" + m.ID) {
 				rv.Kept = append(rv.Kept, "machine:"+m.Name)
 				continue
 			}

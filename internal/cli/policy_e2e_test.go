@@ -76,7 +76,8 @@ func TestPolicyAndReviewEndToEnd(t *testing.T) {
 	owner.run("", "access", "grant", "alice", "--env", "dev", p)
 
 	// --- The admin reviews who reads it, and alice goes. ---
-	if out := owner.run("", "access", "review", "--remove", "alice", "--yes", p); !strings.Contains(out, "Took acme/store away from alice") || !strings.Contains(out, "1 kept, 1 removed") {
+	owner.run("", "machine", "create", "ci", "--env", "dev", "--out", "-", p)
+	if out := owner.run("", "access", "review", "--remove", "alice,machine:ci", "--yes", p); !strings.Contains(out, "Took acme/store away from alice") || !strings.Contains(out, "1 kept, 2 removed") {
 		t.Fatalf("access review:\n%s", out)
 	}
 	_, page, _ = b.Get("/teams/acme/store/review")

@@ -524,10 +524,15 @@ func (s *Server) teamGroups(ctx context.Context, st *team.State, keys map[string
 		if gs, err := s.listedGroup(ctx, g.Group); err == nil && gs != nil && gs.Root() == g.Root {
 			v.Machines = len(gs.ActiveCreds(team.KindMachine))
 			v.Tokens = len(gs.ActiveCreds(team.KindToken))
-			for _, p := range gs.ActiveMembers() {
-				v.People = append(v.People, p.Login)
+			root, trusted := gs.Access[st.Project]
+			v.Trusted = trusted && root == st.Root()
+			// A group's people are the project's to see only while the group
+			// takes its keys.
+			if v.Trusted {
+				for _, p := range gs.ActiveMembers() {
+					v.People = append(v.People, p.Login)
+				}
 			}
-			_, v.Trusted = gs.Access[st.Project]
 			for env := range team.GroupExposures(st, gs) {
 				v.Rotate = append(v.Rotate, env)
 			}

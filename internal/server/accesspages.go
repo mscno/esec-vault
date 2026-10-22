@@ -22,6 +22,9 @@ type accessRead struct {
 	Envs    []string
 	Admin   bool
 	Via     string
+	// GroupAdmin says they read through Via as one of its admins, who hold
+	// its key; only a device removes an admin.
+	GroupAdmin bool
 	// CanRemove says the viewer administers where this access comes from:
 	// the project, or the group.
 	CanRemove bool
@@ -144,6 +147,11 @@ func projectReads(st *team.State, viewer string, get func(user, login string) *a
 		for _, m := range gs.ActiveMembers() {
 			p := get(m.User, m.Login)
 			p.Reads = append(p.Reads, accessRead{Project: st.Project, Envs: pg.Envs, Via: pg.Group, CanRemove: gs.Admin(viewer)})
+		}
+		// The group's admins hold its key too, so they can read the same.
+		for _, a := range gs.ActiveAdmins() {
+			p := get(a.User, a.Login)
+			p.Reads = append(p.Reads, accessRead{Project: st.Project, Envs: pg.Envs, Via: pg.Group, GroupAdmin: true})
 		}
 	}
 }
@@ -346,11 +354,10 @@ func (s *Server) removeFrom(ctx context.Context, viewer, ip string, p *accessPer
 		return nil
 	}
 	if scope == wire.ScopeGroup {
-		if _, err := s.db.sql.ExecContext(ctx, `UPDATE group_members SET suspended_at = ? WHERE group_id = ? AND user_id = ? AND suspended_at = 0`, s.now().Unix(), target, p.User); err != nil {
+		if err := s.blockMemberAndPropose(ctx, viewer, ip, target, p.User, c); err != nil {
 			return err
 		}
-	}
-	if err := s.propose(ctx, viewer, ip, c); err != nil {
+	} else if err := s.propose(ctx, viewer, ip, c); err != nil {
 		return err
 	}
 	out.proposed = append(out.proposed, target)

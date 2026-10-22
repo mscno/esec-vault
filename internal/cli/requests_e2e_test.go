@@ -60,7 +60,11 @@ func TestRequestsAndTimedAccessEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &list); err != nil || len(list.ToDecide) != 1 || list.ToDecide[0].Login != "alice" {
 		t.Fatalf("access requests --json: %v\n%s", err, raw)
 	}
-	if out := owner.run("", "access", "requests", "--grant", strconv.FormatInt(list.ToDecide[0].ID, 10)); !strings.Contains(out, "alice reads dev, prod of acme/store") {
+	// --yes needs the request spelled out, and it must match.
+	if out, err := owner.cmd(owner.home, "", "esec-vault", "access", "requests", "--grant", strconv.FormatInt(list.ToDecide[0].ID, 10), "--yes", "--login", "alice", "--project", "acme/store", "--env", "dev").CombinedOutput(); err == nil || !strings.Contains(string(out), "not what you named") {
+		t.Fatalf("grant --yes of another request: %v\n%s", err, out)
+	}
+	if out := owner.run("y\n", "access", "requests", "--grant", strconv.FormatInt(list.ToDecide[0].ID, 10)); !strings.Contains(out, "alice reads dev, prod of acme/store") {
 		t.Fatalf("grant the request:\n%s", out)
 	}
 	if out := alice.run("", "access", "requests"); !strings.Contains(out, "No access requests wait") {

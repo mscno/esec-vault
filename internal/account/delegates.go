@@ -352,7 +352,13 @@ func (a *Account) Narrows(ctx context.Context, ch ChangeView) bool {
 			return false
 		}
 		pg, ok := v.State.Group(ch.Target)
-		return ok && subsetOf(ch.Envs, pg.Envs)
+		// The group chain must be the one the project names (Team keeps
+		// only those), and already take keys from this project.
+		gs, known := v.Groups[ch.Target]
+		if !ok || !known || gs.Access[ch.Project] != v.State.Root() {
+			return false
+		}
+		return subsetOf(ch.Envs, pg.Envs)
 	}
 	return false
 }
@@ -364,6 +370,50 @@ func subsetOf(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ApplyChangeNarrow signs a change unasked, as changes --yes does: only if
+// the chain it signs from shows it takes access away and gives nothing.
+// Each check runs on the same verified state the change is signed from.
+func (a *Account) ApplyChangeNarrow(ctx context.Context, ch ChangeView) ([]string, error) {
+	switch {
+	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberSet && !ch.Admin:
+		res, err := a.updateMember(ctx, ch.Target, ch.Subject, false, ch.Envs, true)
+		if err != nil {
+			return nil, err
+		}
+		out := []string{fmt.Sprintf("%s now reads %s of %s.", ch.Subject, readsText(ch.Change), ch.Target)}
+		if len(res.Exposed) > 0 {
+			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Target))
+		}
+		return out, nil
+	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberRemove:
+		envs, err := a.removeMember(ctx, ch.Target, ch.Subject, "removed on the web", true)
+		if err != nil {
+			return nil, err
+		}
+		out := []string{fmt.Sprintf("Removed %s from %s.", ch.Subject, ch.Target)}
+		if len(envs) > 0 {
+			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(envs, ", "), ch.Target))
+		}
+		return out, nil
+	case ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeAccess:
+		res, err := a.grantGroup(ctx, ch.Target, ch.Project, ch.Envs, true)
+		if err != nil {
+			return nil, err
+		}
+		out := []string{fmt.Sprintf("%s reads %s of %s.", ch.Target, orNothing(ch.Envs), ch.Project)}
+		if len(res.Exposed) > 0 {
+			out = append(out, fmt.Sprintf("Rotate %s of %s: the group may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Project))
+		}
+		return out, nil
+	case ch.Kind == wire.ChangeRemove, ch.Kind == wire.ChangeDelegateRemove, ch.Kind == wire.ChangeMachineRemove,
+		ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeMemberRemove:
+		// Removals by what they are: a machine, token, delegate or group
+		// member; never an admin.
+		return a.ApplyChange(ctx, ch)
+	}
+	return nil, fmt.Errorf("a %s change is signed only after asking", ch.Kind)
 }
 
 // NeedsWords reports whether signing a change needs the person to type the

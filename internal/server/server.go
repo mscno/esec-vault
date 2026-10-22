@@ -179,6 +179,7 @@ func (s *Server) housekeeping(ctx context.Context) {
 			s.log.Warn("cleanup failed", "error", err)
 		}
 		s.expireAccess(ctx)
+		s.redeemWaitingInvites(ctx)
 		s.limits.prune(s.now())
 		s.anon.prune(s.now())
 		select {

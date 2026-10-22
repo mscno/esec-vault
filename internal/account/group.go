@@ -216,6 +216,9 @@ func (t *teamCtx) keyGrantsAll(gs *team.GroupState, key [32]byte) ([]*envelope.E
 		for _, c := range status.Creds {
 			blocked[c.ID] = c.Suspended
 		}
+		for _, u := range status.BlockedMembers {
+			blocked[u] = true
+		}
 	}
 	var out []*envelope.Envelope
 	for _, c := range gs.ActiveCreds("") {
@@ -229,7 +232,7 @@ func (t *teamCtx) keyGrantsAll(gs *team.GroupState, key [32]byte) ([]*envelope.E
 		out = append(out, g)
 	}
 	for _, a := range gs.KeyHolders() {
-		if t.uncheckedWebMember(gs, a.User) {
+		if blocked[a.User] || t.uncheckedWebMember(gs, a.User) {
 			continue
 		}
 		g, err := t.keyGrant(gs, a.User, key)
@@ -794,6 +797,13 @@ type GrantResult struct {
 // both sides this account administers: the group's list of projects it takes
 // keys from, and the project's grant to the group.
 func (a *Account) GrantGroup(ctx context.Context, id, project string, envs []string) (*GrantResult, error) {
+	return a.grantGroup(ctx, id, project, envs, false)
+}
+
+// grantGroup is GrantGroup; with narrow, it refuses anything but the group
+// reading less of the project it reads now, from the group chain the
+// project names: never another chain, a new project, or more environments.
+func (a *Account) grantGroup(ctx context.Context, id, project string, envs []string, narrow bool) (*GrantResult, error) {
 	envs = team.SortEnvs(envs)
 	out := &GrantResult{}
 	err := a.withTeam(ctx, func(t *teamCtx) error {
@@ -817,6 +827,13 @@ func (a *Account) GrantGroup(ctx context.Context, id, project string, envs []str
 		for _, n := range envs {
 			if _, ok := st.Envs[n]; !ok {
 				return fmt.Errorf("%s has no environment %s (it has %s)", project, n, strings.Join(st.EnvNames(), ", "))
+			}
+		}
+		if narrow {
+			pg, ok := st.Group(id)
+			root, trusted := gs.Access[project]
+			if !ok || pg.Root != gs.Root() || !trusted || root != st.Root() || !subsetOf(envs, pg.Envs) {
+				return fmt.Errorf("the change to what %s reads of %s is not only a narrowing of what it reads now; sign it after reading it", id, project)
 			}
 		}
 		if err := t.groupSide(gs, st, len(envs) > 0, out); err != nil {
@@ -1041,6 +1058,9 @@ func lackingKey(gs *team.GroupState, status *wire.GroupStatus, now time.Time) []
 		has[c.ID] = c.HasKey || c.Suspended
 	}
 	for _, u := range status.AdminsWithKey {
+		has[u] = true
+	}
+	for _, u := range status.BlockedMembers {
 		has[u] = true
 	}
 	var want []string

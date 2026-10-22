@@ -65,7 +65,7 @@ func (c *OrgCmd) Run(ctx *cliCtx) error {
 			return nil
 		}
 		for _, o := range orgs {
-			fmt.Printf("%-24s %d project(s), %d group(s)\n", o, count[o][0], count[o][1])
+			fmt.Printf("%-24s %d project(s), %d group(s)\n", safetext.Clean(o), count[o][0], count[o][1])
 		}
 		fmt.Println("Show one with: esec vault org ORG")
 		return nil
@@ -83,7 +83,7 @@ func (c *OrgCmd) Run(ctx *cliCtx) error {
 	if len(projects)+len(groups) == 0 {
 		return fmt.Errorf("you have no shared project or group in %s", c.Org)
 	}
-	fmt.Printf("%s  (%s/orgs/%s)\n", c.Org, a.State.Server, c.Org)
+	fmt.Printf("%s  (%s/orgs/%s)\n", safetext.Clean(c.Org), a.State.Server, safetext.Clean(c.Org))
 	if len(projects) > 0 {
 		fmt.Println("Projects:")
 		for _, p := range projects {
@@ -91,7 +91,7 @@ func (c *OrgCmd) Run(ctx *cliCtx) error {
 			if p.Admin {
 				role = "admin"
 			}
-			fmt.Printf("  %-32s %-22s %d member(s), %d group(s), %d machine(s)\n", p.ID, role, p.Members, p.Groups, p.Machines)
+			fmt.Printf("  %-32s %-22s %d member(s), %d group(s), %d machine(s)\n", safetext.Clean(p.ID), safetext.Clean(role), p.Members, p.Groups, p.Machines)
 		}
 	}
 	if len(groups) > 0 {
@@ -104,7 +104,7 @@ func (c *OrgCmd) Run(ctx *cliCtx) error {
 			case g.Member:
 				role = "member"
 			}
-			fmt.Printf("  %-32s %-22s %d people, %d machine(s), reads %s\n", g.ID, role, g.People, g.Machines, joinOr(g.Projects, "nothing"))
+			fmt.Printf("  %-32s %-22s %d people, %d machine(s), reads %s\n", safetext.Clean(g.ID), role, g.People, g.Machines, safetext.Clean(joinOr(g.Projects, "nothing")))
 		}
 	}
 	fmt.Println("Policy (set by the server's admins, checked by the server):")

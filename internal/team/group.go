@@ -710,6 +710,14 @@ func (s *GroupState) applyAdminAdd(l GroupLink) error {
 	if s.Admin(b.Admin.User) {
 		return fmt.Errorf("%s is already an admin", b.Admin.Login)
 	}
+	// A member who becomes an admin is an admin only: removing them as an
+	// admin then takes them out of the group.
+	if m, ok := s.Members[b.Admin.User]; ok && m.Active {
+		if m.Root != b.Admin.Root {
+			return fmt.Errorf("%s's account is not the one the group recorded", b.Admin.Login)
+		}
+		m.Active, m.RemovedSeq, m.RemovedTime = false, l.Seq, l.CTime
+	}
 	s.Admins[b.Admin.User] = &GroupAdminState{Person: b.Admin, Active: true, Verified: b.Verified, AddedBy: l.Signer, AddedSeq: l.Seq}
 	return nil
 }

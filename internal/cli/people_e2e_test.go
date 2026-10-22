@@ -63,7 +63,7 @@ func TestPeopleGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one s
 	}
 
 	// --- Alice's device asks once, then takes in dev through the group. ---
-	if out := alice.run("n\n", "access", "sync"); !strings.Contains(out, "member of the group "+g+", which reads dev of the shared project acme/store") || strings.Contains(out, "+ acme/store") {
+	if out := alice.run("n\n", "access", "sync"); !strings.Contains(out, "mscno added you to the group "+g+", which reads dev of the shared project acme/store") || strings.Contains(out, "+ acme/store") {
 		t.Fatalf("alice sync, declined:\n%s", out)
 	}
 	if out := alice.run("y\n", "access", "sync"); !strings.Contains(out, "+ acme/store dev") {

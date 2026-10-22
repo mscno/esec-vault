@@ -189,9 +189,19 @@ func (s *Server) apiGroupKeyGrants(w http.ResponseWriter, r *http.Request, c *re
 		return
 	}
 	ctx := r.Context()
-	if _, _, err := s.keyHolderGroup(ctx, group, c.user.ID); err != nil {
+	gs, _, err := s.keyHolderGroup(ctx, group, c.user.ID)
+	if err != nil {
 		s.fail(w, r, err)
 		return
+	}
+	if !gs.Admin(c.user.ID) {
+		if blocked, err := s.memberBlocked(ctx, group, c.user.ID); err != nil || blocked {
+			if err == nil {
+				err = clientErr(http.StatusForbidden, wire.ErrForbidden, "an admin of %s is removing you from it", group)
+			}
+			s.fail(w, r, err)
+			return
+		}
 	}
 	rows, err := s.db.keyGrants(ctx, s.db.sql, group, c.user.ID)
 	if err != nil {
@@ -220,18 +230,28 @@ func (s *Server) apiGroupKeys(w http.ResponseWriter, r *http.Request, c *reqCtx)
 		s.fail(w, r, err)
 		return
 	}
-	var blocked int64
-	if err := s.db.sql.QueryRowContext(ctx, `SELECT suspended_at FROM group_members WHERE group_id = ? AND user_id = ?`, group, c.user.ID).Scan(&blocked); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		s.internalError(w, r, err)
-		return
-	}
-	if blocked != 0 && !gs.Admin(c.user.ID) {
-		writeErr(w, http.StatusForbidden, wire.ErrForbidden, "an admin of "+group+" is removing you from it")
-		return
+	if !gs.Admin(c.user.ID) {
+		blocked, err := s.memberBlocked(ctx, group, c.user.ID)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if blocked {
+			writeErr(w, http.StatusForbidden, wire.ErrForbidden, "an admin of "+group+" is removing you from it")
+			return
+		}
 	}
 	out, err := s.fleetKeys(ctx, gs, links, c.user.ID)
 	if err != nil {
 		s.fail(w, r, err)
+		return
+	}
+	projects := make([]string, 0, len(out.Projects))
+	for _, p := range out.Projects {
+		projects = append(projects, p.Project)
+	}
+	if err := s.db.groupAudit(ctx, s.db.sql, group, c.user.ID, c.ip, "member_keys", truncate(strings.Join(projects, ","), 500), s.now()); err != nil {
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1106,6 +1126,16 @@ func groupLinkSummary(before, after *team.GroupState, l team.GroupLink) string {
 		return b.Project
 	}
 	return fmt.Sprint(after.Seq)
+}
+
+// memberBlocked reports whether a member is blocked on the web.
+func (s *Server) memberBlocked(ctx context.Context, group, user string) (bool, error) {
+	var at int64
+	err := s.db.sql.QueryRowContext(ctx, `SELECT suspended_at FROM group_members WHERE group_id = ? AND user_id = ?`, group, user).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return at != 0, err
 }
 
 // groupPeople queues a group event for the admins and members of a group

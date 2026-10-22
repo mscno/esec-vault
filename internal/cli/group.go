@@ -84,7 +84,7 @@ func (c *GroupListCmd) Run(ctx *cliCtx) error {
 		if g.KeyExposed > 0 {
 			extra += "  needs a new group key"
 		}
-		fmt.Printf("%-28s %-20s %d people, %d machine(s), %d token(s), reads %s%s\n", g.ID, role, g.People, g.Machines, g.Tokens, joinOr(g.Projects, "no projects"), extra)
+		fmt.Println(safetext.CleanN(fmt.Sprintf("%-28s %-20s %d people, %d machine(s), %d token(s), reads %s%s", g.ID, role, g.People, g.Machines, g.Tokens, joinOr(g.Projects, "no projects"), extra), 2000))
 	}
 	return nil
 }

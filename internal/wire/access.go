@@ -45,6 +45,9 @@ type AccessExpiry struct {
 	Envs    []string  `json:"envs"`
 	Expires time.Time `json:"expires"`
 	By      string    `json:"by,omitempty"`
+	// Error says why access past its time has not ended yet; the server
+	// keeps trying.
+	Error string `json:"error,omitempty"`
 }
 
 // AccessExpiries lists a project's timed access.

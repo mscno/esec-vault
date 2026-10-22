@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/team"
@@ -89,7 +90,11 @@ func (s *Server) webActivityExport(w http.ResponseWriter, r *http.Request) {
 	if _, ok := names[device]; !ok {
 		device = ""
 	}
-	rows, err := s.db.auditPage(ctx, auditFilter{UserID: ws.user.ID, Actions: categoryActions(q.Get("category")), Device: device, Query: q.Get("q"), Limit: maxExport})
+	query := strings.TrimSpace(q.Get("q"))
+	if len(query) > 100 {
+		query = query[:100]
+	}
+	rows, err := s.db.auditPage(ctx, auditFilter{UserID: ws.user.ID, Actions: categoryActions(q.Get("category")), Device: device, Query: query, Limit: maxExport})
 	if err != nil {
 		s.internalError(w, r, err)
 		return

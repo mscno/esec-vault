@@ -153,9 +153,12 @@ type GroupStatus struct {
 	Creds []CredStatus `json:"creds"`
 	// AdminsWithKey lists the admins and members a grant of the current
 	// group key waits for.
-	AdminsWithKey []string      `json:"admins_with_key"`
-	Joins         []JoinRequest `json:"joins"`
-	Changes       []Change      `json:"changes"`
+	AdminsWithKey []string `json:"admins_with_key"`
+	// BlockedMembers lists members blocked on the web while their removal
+	// waits to be signed: no group key goes to them.
+	BlockedMembers []string      `json:"blocked_members,omitempty"`
+	Joins          []JoinRequest `json:"joins"`
+	Changes        []Change      `json:"changes"`
 }
 
 // GroupKeyGrants returns the key grants waiting for the caller.

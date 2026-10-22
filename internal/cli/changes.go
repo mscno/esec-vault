@@ -94,7 +94,21 @@ func signChanges(ctx context.Context, a *account.Account, list []account.ChangeV
 		if ch.Kind == wire.ChangeDelegateAdd {
 			question = "Does the page that made it show the same fingerprint, and do you want it?"
 		}
-		if (!yesRemovals || !a.Narrows(ctx, ch)) && !confirm(question) {
+		if yesRemovals && a.Narrows(ctx, ch) {
+			// Checked again on the very state it is signed from.
+			lines, err := a.ApplyChangeNarrow(ctx, ch)
+			if err == nil {
+				for _, l := range lines {
+					fmt.Println("  ✓ " + safetext.Clean(l))
+				}
+				if err := a.CloseChange(ctx, ch.ID, true); err != nil {
+					return err
+				}
+				continue
+			}
+			fmt.Println("  " + safetext.Clean(err.Error()))
+		}
+		if !confirm(question) {
 			if unanswered {
 				// Nothing to ask: never sign, nor dismiss, on a guess.
 				unsigned++
@@ -110,7 +124,7 @@ func signChanges(ctx context.Context, a *account.Account, list []account.ChangeV
 		}
 		lines, err := a.ApplyChange(ctx, ch)
 		if err != nil {
-			fmt.Println("  ! " + err.Error())
+			fmt.Println("  ! " + safetext.Clean(err.Error()))
 			continue
 		}
 		for _, l := range lines {

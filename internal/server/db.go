@@ -392,6 +392,8 @@ var schema = []string{
 }
 
 var addedColumns = []struct{ table, column, def string }{
+	// Why timed access has not ended yet; it is tried again (timed.go).
+	{"access_expiries", "last_error", "TEXT NOT NULL DEFAULT ''"},
 	// A passkey's description, for a change that adds one.
 	{"changes", "data", "TEXT NOT NULL DEFAULT ''"},
 	{"web_sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"},
@@ -732,6 +734,10 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		args []any
 	}{
 		{`DELETE FROM nonces WHERE seen_at < ?`, []any{unix(now.Add(-10 * time.Minute))}},
+		// Requests, invites and timed access, answered or past use.
+		{`DELETE FROM access_requests WHERE created_at < ?`, []any{unix(now.Add(-requestLifetime - 60*24*time.Hour))}},
+		{`DELETE FROM invites WHERE created_at < ?`, []any{unix(now.Add(-inviteLifetime - 60*24*time.Hour))}},
+		{`DELETE FROM access_expiries WHERE status != 'open' AND expires_at < ?`, []any{unix(now.Add(-90 * 24 * time.Hour))}},
 		{`DELETE FROM device_codes WHERE expires_at < ?`, []any{unix(now.Add(-time.Hour))}},
 		{`DELETE FROM oauth_states WHERE created_at < ?`, []any{unix(now.Add(-time.Hour))}},
 		{`DELETE FROM web_sessions WHERE expires_at < ?`, []any{unix(now)}},

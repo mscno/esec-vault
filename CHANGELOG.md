@@ -29,6 +29,39 @@ Project settings and device management on the web.
 Older versions cannot verify a project chain with an archive link in it:
 update esec-vault on every device of such a project.
 
+Security fixes, from an audit of v0.13.0 to v0.15.0:
+
+- `access requests --grant ID` showed nothing and asked nothing, so a
+  malicious server could answer with another person and project than the
+  admin saw. It now shows the request and asks; `--yes` needs `--login`,
+  `--project` and `--env`, which the request must match.
+- A group member made an admin stayed a member too, so `access offboard`
+  (which removed the admin) left them in the group with the new group key.
+  An admin is now an admin only, in the group chain itself.
+- `changes --yes` judged a change a narrowing on one fetch of the chains and
+  signed it from another, and for a group's access did not check that the
+  group chain was the one the project names. It now signs unasked only
+  through a narrow-only path that checks on the very state it signs from,
+  refuses anything that gives access, and never removes an admin unasked.
+- Timed access that could not end (a busy server, too many waiting changes)
+  was marked failed and kept for good. It now stays open, is retried every
+  round, and shows why on the project's page and in `access show`.
+- The web review removed anyone not in the submitted form, such as someone
+  added after the page was shown; it now removes only those ticked. A
+  review of a project with machines could not be recorded.
+- A member blocked on the web could still fetch a new group key; a block
+  could outlive a proposal that failed.
+- `access grant --for` ended environments the person already read before;
+  it now ends only those the grant added.
+- Text from the server is cleaned before the CLI prints it in more places;
+  access requests are rate-limited; old requests, invites and timed access
+  are cleaned up; invites whose redemption failed are retried.
+- The Access, person and organisation pages count a group's admins among
+  its readers (they hold its key); adding someone to a group checks the
+  server's allowlist; a project's page shows a group's people only while
+  the group takes its keys; a member fetching a group's keys is logged; the
+  prompt for a project reached through a group says who added you.
+
 # v0.15.0
 
 Organisations, their policies, and access reviews.

@@ -179,7 +179,7 @@
 {{if .Expiries}}
 <h3 id="timed">Access that ends by itself</h3>
 <ul class="plain">
-{{range .Expiries}}<li><strong>{{.Subject}}</strong> loses {{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}} {{when .Expires}} <span class="muted">(set by {{.By}})</span>{{if $.MyAdmin}} <form method="post" action="/teams/{{$.Project}}/expiries/{{.ID}}/cancel" class="inline" data-confirm="Keep this access instead of ending it?" {{dsPost (printf "/teams/%s/expiries/%d/cancel" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Keep it</button></form>{{end}}</li>{{end}}
+{{range .Expiries}}<li><strong>{{.Subject}}</strong> loses {{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}} {{when .Expires}} <span class="muted">(set by {{.By}})</span>{{with .Error}} <span class="badge status-revoked">not ended yet: {{.}}</span>{{end}}{{if $.MyAdmin}} <form method="post" action="/teams/{{$.Project}}/expiries/{{.ID}}/cancel" class="inline" data-confirm="Keep this access instead of ending it?" {{dsPost (printf "/teams/%s/expiries/%d/cancel" $.Project .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Keep it</button></form>{{end}}</li>{{end}}
 </ul>
 <p class="muted">When the time comes, the server signs the removal for whoever set it if they let it sign removals; otherwise it waits on the Changes page for their passkey or device.</p>
 {{end}}

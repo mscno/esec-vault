@@ -15,7 +15,7 @@
   <tr>
     <td><a href="/teams/{{.Project}}">{{.Project}}</a></td>
     <td>{{if .Admin}}<span class="badge status-active">admin</span> every environment{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}</td>
-    <td>{{with .Via}}the group <a href="/groups/{{.}}">{{.}}</a>{{else}}a member of the project{{end}}{{if not .CanRemove}} <span class="muted">(not yours to change)</span>{{end}}</td>
+    <td>{{with .Via}}the group <a href="/groups/{{.}}">{{.}}</a>{{else}}a member of the project{{end}}{{if .GroupAdmin}}, as its admin{{end}}{{if not .CanRemove}} <span class="muted">(not yours to change)</span>{{end}}</td>
   </tr>
   {{else}}
   <tr><td colspan="3" class="muted">Nothing.</td></tr>

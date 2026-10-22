@@ -551,6 +551,8 @@ func groupAuditLabel(action string) string {
 	switch action {
 	case "keys":
 		return "Fetched its keys"
+	case "member_keys":
+		return "Fetched the group's keys"
 	case "keys_refused":
 		return "Refused (OIDC)"
 	case "enroll_refused":
@@ -731,6 +733,11 @@ func (s *Server) webGroupAddMember(w http.ResponseWriter, r *http.Request) {
 		if team.ValidLogin(login) != nil {
 			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "that is not a GitHub login")
 		}
+		if u, err := s.db.userByLogin(ctx, login); err != nil {
+			return "", err
+		} else if u != nil && !s.cfg.Allowed(u.GitHubID) {
+			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s may not use this server.", login)
+		}
 		p, err := s.personByLogin(ctx, login)
 		if apiErrorIs(err, wire.ErrNotFound) {
 			// No vault account yet: the invite waits for one.
@@ -775,18 +782,32 @@ func (s *Server) webGroupRemoveMember(w http.ResponseWriter, r *http.Request) {
 		if done, err := s.serverSigns(ctx, ws.user.ID, s.clientIP(r), change); err != nil || done {
 			return m.Login + " is removed, signed by the server for you. An admin's background service gives the group a new key.", err
 		}
-		now := s.now()
-		if _, err := s.db.sql.ExecContext(ctx, `UPDATE group_members SET suspended_at = ? WHERE group_id = ? AND user_id = ? AND suspended_at = 0`, now.Unix(), gs.Group, m.User); err != nil {
-			return "", err
-		}
-		if err := s.db.groupAudit(ctx, s.db.sql, gs.Group, ws.user.ID, s.clientIP(r), "blocked", "member "+m.Login, now); err != nil {
-			return "", err
-		}
-		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), change); err != nil {
+		if err := s.blockMemberAndPropose(ctx, ws.user.ID, s.clientIP(r), gs.Group, m.User, change); err != nil {
 			return "", err
 		}
 		return m.Login + " gets no keys from the group any more. Sign the removal with your passkey, or on a device (esec vault changes), which gives the group a new key.", nil
 	})
+}
+
+// blockMemberAndPropose stops giving a member keys and proposes removing
+// them; if the proposal fails, the member is unblocked again, so no block
+// outlives the change that would end it.
+func (s *Server) blockMemberAndPropose(ctx context.Context, user, ip, group, member string, c wire.Change) error {
+	now := s.now()
+	res, err := s.db.sql.ExecContext(ctx, `UPDATE group_members SET suspended_at = ? WHERE group_id = ? AND user_id = ? AND suspended_at = 0`, now.Unix(), group, member)
+	if err != nil {
+		return err
+	}
+	blocked, _ := res.RowsAffected()
+	if err := s.propose(ctx, user, ip, c); err != nil {
+		if blocked > 0 {
+			if _, uerr := s.db.sql.ExecContext(ctx, `UPDATE group_members SET suspended_at = 0 WHERE group_id = ? AND user_id = ?`, group, member); uerr != nil {
+				s.log.Warn("unblocking a member after a failed proposal", "error", uerr)
+			}
+		}
+		return err
+	}
+	return s.db.groupAudit(ctx, s.db.sql, group, user, ip, "blocked", "member "+c.Subject, now)
 }
 
 // webGroupRemove blocks a machine or token at once and proposes removing

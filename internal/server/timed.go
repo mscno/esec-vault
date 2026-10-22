@@ -207,11 +207,11 @@ func (s *Server) expiries(ctx context.Context, project string) ([]wire.AccessExp
 		return nil, err
 	}
 	out := []wire.AccessExpiry{}
-	err = scanAll(ctx, s.db.sql, `SELECT id, subject, envs, expires_at, created_by FROM access_expiries WHERE project = ? AND status = 'open' ORDER BY expires_at`, []any{project}, func(r *sql.Rows) error {
+	err = scanAll(ctx, s.db.sql, `SELECT id, subject, envs, expires_at, created_by, last_error FROM access_expiries WHERE project = ? AND status = 'open' ORDER BY expires_at`, []any{project}, func(r *sql.Rows) error {
 		e := wire.AccessExpiry{Project: project}
 		var envs, by string
 		var at int64
-		if err := r.Scan(&e.ID, &e.Subject, &envs, &at, &by); err != nil {
+		if err := r.Scan(&e.ID, &e.Subject, &envs, &at, &by, &e.Error); err != nil {
 			return err
 		}
 		if err := json.Unmarshal([]byte(envs), &e.Envs); err != nil {
@@ -257,10 +257,15 @@ func (s *Server) expireAccess(ctx context.Context) {
 	for _, d := range list {
 		status, err := s.expireOne(ctx, d.project, d.subject, d.by, d.envs)
 		if err != nil {
+			// Fail closed: it stays open, shown on the project's page and in
+			// access show, and is tried again on the next round.
 			s.log.Warn("ending timed access", "project", d.project, "subject", d.subject, "error", err)
-			status = "failed"
+			if _, err2 := s.db.sql.ExecContext(ctx, `UPDATE access_expiries SET last_error = ? WHERE id = ?`, truncate(err.Error(), 300), d.id); err2 != nil {
+				s.log.Warn("noting a timed access failure", "error", err2)
+			}
+			continue
 		}
-		if _, err := s.db.sql.ExecContext(ctx, `UPDATE access_expiries SET status = ? WHERE id = ?`, status, d.id); err != nil {
+		if _, err := s.db.sql.ExecContext(ctx, `UPDATE access_expiries SET status = ?, last_error = '' WHERE id = ?`, status, d.id); err != nil {
 			s.log.Warn("closing timed access", "error", err)
 		}
 	}
@@ -296,23 +301,22 @@ func (s *Server) expireOne(ctx context.Context, project, subject, by string, env
 			c = wire.Change{Scope: wire.ScopeProject, Target: project, Kind: wire.ChangeMemberRemove, Subject: m.Login}
 		}
 	}
-	now := s.now()
-	if err := s.db.projectAudit(ctx, s.db.sql, project, by, "", "access_expired", subject+" "+strings.Join(envs, ","), now); err != nil {
-		return "", err
-	}
+	status := "proposed"
 	if st.Admin(by) {
 		ok, err := s.serverSigns(ctx, by, "", c)
 		if err != nil {
 			return "", err
 		}
 		if ok {
-			return "signed", nil
+			status = "signed"
 		}
 	}
-	if err := s.propose(ctx, by, "", c); err != nil {
-		return "", err
+	if status == "proposed" {
+		if err := s.propose(ctx, by, "", c); err != nil {
+			return "", err
+		}
 	}
-	return "proposed", nil
+	return status, s.db.projectAudit(ctx, s.db.sql, project, by, "", "access_expired", subject+" "+strings.Join(envs, ",")+" "+status, s.now())
 }
 
 // ---- access requests ----
@@ -335,22 +339,12 @@ func (s *Server) apiNewRequest(w http.ResponseWriter, r *http.Request, c *reqCtx
 // that does not exist takes the request too, and nobody sees it: the
 // answer does not tell who has which projects.
 func (s *Server) newRequest(ctx context.Context, user, ip string, req wire.AccessRequestNew) (int64, error) {
-	bad := func(format string, args ...any) error {
-		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, format, args...)
+	if err := checkRequest(req); err != nil {
+		return 0, err
 	}
-	if team.ValidProject(req.Project) != nil {
-		return 0, bad("invalid project: use org/repo")
-	}
-	if len(req.Envs) == 0 || len(req.Envs) > team.MaxEnvs {
-		return 0, bad("name the environments you need")
-	}
-	for _, n := range req.Envs {
-		if team.ValidEnv(n) != nil {
-			return 0, bad("invalid environment %q", n)
-		}
-	}
-	if !requestReason.MatchString(req.Reason) {
-		return 0, bad("a reason is at most 200 letters, digits, spaces and simple punctuation")
+	// Withdrawn requests do not count as open: bound how often anyone asks.
+	if !s.limits.allow("request:"+user, 30, time.Hour, s.now()) {
+		return 0, clientErr(http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests for access; try again later")
 	}
 	envs, err := json.Marshal(team.SortEnvs(req.Envs))
 	if err != nil {
@@ -399,6 +393,28 @@ func (s *Server) newRequest(ctx context.Context, user, ip string, req wire.Acces
 		}
 	}
 	return id, err
+}
+
+// checkRequest checks what an access request asks for.
+func checkRequest(req wire.AccessRequestNew) error {
+	bad := func(format string, args ...any) error {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, format, args...)
+	}
+	if team.ValidProject(req.Project) != nil {
+		return bad("invalid project: use org/repo")
+	}
+	if len(req.Envs) == 0 || len(req.Envs) > team.MaxEnvs {
+		return bad("name the environments you need")
+	}
+	for _, n := range req.Envs {
+		if team.ValidEnv(n) != nil {
+			return bad("invalid environment %q", n)
+		}
+	}
+	if !requestReason.MatchString(req.Reason) {
+		return bad("a reason is at most 200 letters, digits, spaces and simple punctuation")
+	}
+	return nil
 }
 
 func (s *Server) apiRequests(w http.ResponseWriter, r *http.Request, c *reqCtx) {

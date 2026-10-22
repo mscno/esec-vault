@@ -374,3 +374,20 @@ func TestGroupMembers(t *testing.T) { //nolint:gocyclo // one sequential story
 		t.Fatalf("reverify: %v", err)
 	}
 }
+
+// A member made an admin is an admin only: removing them as an admin takes
+// them out of the group, and the group key is not sealed to them again.
+func TestGroupMemberPromoted(t *testing.T) {
+	alice, bob := newAcct(t, 1, "alice"), newAcct(t, 2, "bob")
+	w := newWorld(t, alice, bob)
+	g := newGroupWorld(t, w, alice)
+	g.add(alice, team.GroupMemberAdd, team.GroupMemberAddBody{Member: bob.person(), Verified: team.VerifiedAccountKey})
+	g.add(alice, team.GroupAdminAdd, team.GroupAdminAddBody{Admin: bob.person(), Verified: team.VerifiedAccountKey})
+	if !g.st.Admin(bob.user) || g.st.Member(bob.user) || len(g.st.KeyHolders()) != 2 {
+		t.Fatalf("promoted: admin %v member %v", g.st.Admin(bob.user), g.st.Member(bob.user))
+	}
+	g.add(alice, team.GroupAdminRemove, team.GroupAdminRemoveBody{User: bob.user})
+	if g.st.HoldsKey(bob.user) {
+		t.Fatal("a former admin who was a member still holds the group key")
+	}
+}

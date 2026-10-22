@@ -241,7 +241,13 @@ func (t *teamCtx) importGroupProject(gs *team.GroupState, p wire.GroupProjectKey
 	if err != nil {
 		return fmt.Errorf("its keys do not verify: %w", err)
 	}
-	if !t.acceptVia(st, gs.Group, pg.Envs, res, opts) {
+	addedBy := "an admin"
+	if m := gs.Members[t.a.State.User]; m != nil {
+		if a := gs.Admins[m.AddedBy]; a != nil {
+			addedBy = a.Login
+		}
+	}
+	if !t.acceptVia(st, gs.Group, addedBy, pg.Envs, res, opts) {
 		return nil
 	}
 	imported, conflicts, err := t.a.importKeys(st, keys, t.pins, opts.Interactive)
@@ -256,11 +262,11 @@ func (t *teamCtx) importGroupProject(gs *team.GroupState, p wire.GroupProjectKey
 // acceptVia is accept for a project whose keys come through a group: like
 // a project someone added this account to, its first keys wait until the
 // person accepts them.
-func (t *teamCtx) acceptVia(st *team.State, group string, envs []string, res *TeamSyncResult, opts TeamSyncOptions) bool {
+func (t *teamCtx) acceptVia(st *team.State, group, addedBy string, envs []string, res *TeamSyncResult, opts TeamSyncOptions) bool {
 	if t.pins.Accepted[st.Project] || t.followMoves(st) {
 		return true
 	}
-	inv := Invite{Project: st.Project, AddedBy: "the group " + group, Envs: envs, Group: group}
+	inv := Invite{Project: st.Project, AddedBy: addedBy, Envs: envs, Group: group}
 	if opts.Accept != nil && opts.Accept(inv) {
 		t.pins.Accepted[st.Project] = true
 		return true

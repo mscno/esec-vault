@@ -79,7 +79,7 @@ func (c *TeamListCmd) Run(ctx *cliCtx) error {
 		case p.Archived:
 			extra += "  archived"
 		}
-		fmt.Printf("%-32s %-24s %d member(s), %d machine(s)%s\n", p.ID, role, p.Members, p.Machines, extra)
+		fmt.Println(safetext.CleanN(fmt.Sprintf("%-32s %-24s %d member(s), %d machine(s)%s", p.ID, role, p.Members, p.Machines, extra), 2000))
 	}
 	return nil
 }
@@ -158,7 +158,10 @@ func (c *TeamShowCmd) Run(ctx *cliCtx) error {
 	if timed, err := a.TimedAccess(bg, project); err == nil && len(timed) > 0 {
 		fmt.Println("Access that ends by itself:")
 		for _, e := range timed {
-			fmt.Printf("  %-20s loses %s at %s\n", safetext.Clean(e.Subject), strings.Join(e.Envs, ", "), e.Expires.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
+			fmt.Printf("  %-20s loses %s at %s\n", safetext.Clean(e.Subject), safetext.Clean(strings.Join(e.Envs, ", ")), e.Expires.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
+			if e.Error != "" {
+				fmt.Printf("  ! not ended yet (the server keeps trying): %s\n", safetext.Clean(e.Error))
+			}
 		}
 	}
 	for _, e := range st.Rotations() {
@@ -445,7 +448,7 @@ func (c *TeamSyncCmd) Run(ctx *cliCtx) error {
 			reads = "you are an admin"
 		}
 		if inv.Group != "" {
-			fmt.Printf("You are a member of the group %s, which reads %s of the shared project %s.\n", inv.Group, joinOr(inv.Envs, "nothing"), inv.Project)
+			fmt.Printf("%s added you to the group %s, which reads %s of the shared project %s.\n", safetext.Clean(inv.AddedBy), safetext.Clean(inv.Group), safetext.Clean(joinOr(inv.Envs, "nothing")), safetext.Clean(inv.Project))
 			return c.Yes || confirm("Take in its keys on this device? Say no if you did not expect it")
 		}
 		fmt.Printf("%s added you to the shared project %s (%s).\n", safetext.Clean(inv.AddedBy), inv.Project, reads)
