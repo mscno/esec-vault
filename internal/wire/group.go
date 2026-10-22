@@ -96,6 +96,8 @@ const (
 	ChangeMemberAdd    = "member_add"
 	ChangeMemberSet    = "member_set"
 	ChangeMemberRemove = "member_remove"
+	// ChangeMachineRemove removes a project's machine (Subject is its id).
+	ChangeMachineRemove = "machine_remove"
 	// ChangeDelegateAdd, in an account, adds a passkey as a delegate (Data
 	// is the chain.Delegate); ChangeDelegateServer lets the server sign
 	// removals; ChangeDelegateRemove removes a delegate (Subject is its id).

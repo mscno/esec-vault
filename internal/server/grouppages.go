@@ -182,7 +182,11 @@ func (s *Server) sharedNotices(ctx context.Context, user string) ([]notice, erro
 		return nil, err
 	}
 	requests, err := s.requestNotices(ctx, user)
-	return append(append(append(out, requests...), groups...), teams...), err
+	if err != nil {
+		return nil, err
+	}
+	reviews, err := s.reviewNotices(ctx, user)
+	return append(append(append(append(out, requests...), groups...), teams...), reviews...), err
 }
 
 func (s *Server) webGroups(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +410,7 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 		acts = append(acts, groupAuditView{groupAuditRow: e, ActorName: name, Label: groupAuditLabel(e.Action)})
 	}
 	data["Group"] = gs.Group
+	data["Org"] = orgOf(gs.Group)
 	data["State"] = gs
 	data["MyAdmin"] = admin
 	data["MyMember"] = gs.Member(viewer)

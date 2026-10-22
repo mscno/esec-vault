@@ -152,6 +152,11 @@ func (s *Server) changeLinks(ctx context.Context, user string, cs *chain.State, 
 				return nil, err
 			}
 			typ, body = team.TypeMemberAdd, team.MemberAddBody{Member: p, Envs: team.SortEnvs(c.Envs), Verified: team.VerifiedWeb}
+		case wire.ChangeMachineRemove:
+			if _, ok := st.Machine(c.Subject); !ok {
+				return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "There is no such machine.")
+			}
+			typ, body = team.TypeMachineRemove, team.MachineRemoveBody{ID: c.Subject, Reason: "removed on the web"}
 		case wire.ChangeMemberSet, wire.ChangeMemberRemove:
 			m := memberOf(st, c.Subject)
 			if m == nil {
@@ -428,6 +433,9 @@ func (s *Server) commitDelegateLinks(ctx context.Context, user, ip string, links
 // serverSigns applies change c at once, signed by the server, when user let
 // the server sign removals and c is one. It reports whether it did.
 func (s *Server) serverSigns(ctx context.Context, user, ip string, c wire.Change) (bool, error) {
+	if ok, err := s.serverMaySign(ctx, c); err != nil || !ok {
+		return false, err
+	}
 	ds, err := s.delegatesOf(ctx, user)
 	if err != nil || ds.server == nil {
 		return false, err

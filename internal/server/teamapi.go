@@ -380,6 +380,9 @@ func (s *Server) appendProjectLink(ctx context.Context, tx *sql.Tx, st *team.Sta
 	if err := s.checkGroupSet(ctx, tx, l); err != nil {
 		return nil, err
 	}
+	if err := s.checkPolicyProjectLink(ctx, tx, st.Project, l); err != nil {
+		return nil, err
+	}
 	raw, err := json.Marshal(e)
 	if err != nil {
 		return nil, err

@@ -238,6 +238,12 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 			out = append(out, fmt.Sprintf("Rotate %s of %s: they may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Target))
 		}
 		return out, nil
+	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMachineRemove:
+		m, err := a.RemoveMachine(ctx, ch.Target, ch.Subject, "removed on the web")
+		if err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Removed the machine %s from %s. Rotate %s: it may still hold the keys.", m.Name, ch.Target, strings.Join(m.Envs, ", "))}, nil
 	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberRemove:
 		envs, err := a.RemoveMember(ctx, ch.Target, ch.Subject, "removed on the web")
 		if err != nil {
@@ -290,7 +296,7 @@ func subsetOf(a, b []string) bool {
 // Removes reports whether a change only takes access away.
 func (ch ChangeView) Removes() bool {
 	switch ch.Kind {
-	case wire.ChangeRemove, wire.ChangeMemberRemove, wire.ChangeDelegateRemove:
+	case wire.ChangeRemove, wire.ChangeMemberRemove, wire.ChangeDelegateRemove, wire.ChangeMachineRemove:
 		return true
 	case wire.ChangeAccess:
 		return len(ch.Envs) == 0
@@ -343,6 +349,8 @@ func (ch ChangeView) describe() []string {
 		return []string{fmt.Sprintf("%s: let %s read %s", ch.Target, ch.Subject, readsText(ch.Change))}
 	case wire.ChangeMemberRemove:
 		return []string{fmt.Sprintf("%s: remove %s", ch.Target, ch.Subject)}
+	case wire.ChangeMachineRemove:
+		return []string{fmt.Sprintf("%s: remove the machine %s", ch.Target, ch.Subject)}
 	case wire.ChangeDelegateAdd:
 		d, err := changePasskey(ch.Change)
 		if err != nil {

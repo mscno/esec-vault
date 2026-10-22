@@ -1,0 +1,39 @@
+{{template "head" .}}
+<p class="crumbs"><a href="/teams/{{.Project}}">{{.Project}}</a> › Review</p>
+<h1>Review who reads {{.Project}}</h1>
+<p class="muted">{{with .ReviewStatus}}{{if .Last}}Last reviewed by {{.Last.By}} {{when .Last.Reviewed}}: {{plural (len .Last.Kept) "reader"}} kept, {{len .Last.Removed}} removed.{{else}}Never reviewed yet.{{end}}{{if .Days}} {{$.Project}}'s organisation asks for a review every {{plural .Days "day"}}.{{end}}{{end}}</p>
+<p>Untick everyone who no longer needs access. Saving records the review; the server signs each removal for you if you let it sign removals, and otherwise proposes it for your passkey or device. Admins are kept; remove one from a device.</p>
+<form method="post" action="/teams/{{.Project}}/review">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Keep</th><th>Who</th><th>Reads</th></tr></thead>
+    <tbody>
+    {{range .Members}}
+    <tr>
+      <td>{{if .Admin}}<input type="checkbox" checked disabled aria-label="admin, kept">{{else}}<input type="checkbox" name="keep" value="{{.Login}}" checked aria-label="keep {{.Login}}">{{end}}</td>
+      <td><strong>{{.Login}}</strong>{{if .Admin}} <span class="badge status-active">admin</span>{{end}}</td>
+      <td>{{if .Admin}}every environment{{else}}{{range $i, $e := .Access}}{{if $i}}, {{end}}{{$e}}{{else}}<span class="muted">nothing</span>{{end}}{{end}}</td>
+    </tr>
+    {{end}}
+    {{range .Groups}}
+    <tr>
+      <td><input type="checkbox" name="keep" value="{{.Group}}" checked aria-label="keep {{.Group}}"></td>
+      <td>the group <strong>{{.Group}}</strong>{{if .People}} <span class="muted">({{range $i, $p := .People}}{{if $i}}, {{end}}{{$p}}{{end}})</span>{{end}}</td>
+      <td>{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}</td>
+    </tr>
+    {{end}}
+    {{range .Machines}}
+    <tr>
+      <td><input type="checkbox" name="keep" value="machine:{{.ID}}" checked aria-label="keep {{.Name}}"></td>
+      <td>the machine <strong>{{.Name}}</strong>{{if .LastUsed.IsZero}} <span class="muted">(never used)</span>{{else}} <span class="muted">(last used {{when .LastUsed}})</span>{{end}}</td>
+      <td>{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p><button type="submit">Save the review</button></p>
+</form>
+<p class="muted">On a device: <code>esec vault access review --project {{.Project}}</code></p>
+{{template "foot" .}}

@@ -109,6 +109,20 @@ var commandDetails = map[string]string{
 		"esec vault access offboard alice --dry-run",
 		"esec vault access offboard alice --yes --json",
 	),
+	"access review": `Asks about each member, group and machine (admins are kept), takes access away from those you say, and records the review on the server, where an organisation's policy may ask for one every so many days.
+
+` + examples(
+		"esec vault access review",
+		"esec vault access review --remove bob,machine:old-ci --yes --project acme/api",
+		"esec vault access review --keep-all",
+	),
+	"org": `The server's admins set an organisation's policy on its web page (/orgs/ORG): the longest token, GitHub proofs required, no server-signed removals, and how often access is reviewed. The server checks it; it can only refuse changes.
+
+` + examples(
+		"esec vault org                    # your organisations",
+		"esec vault org acme",
+		"esec vault org acme --json",
+	),
 	"access set": examples(
 		"esec vault access set alice --env dev,staging   # replaces what they read",
 		"esec vault access set alice --admin",

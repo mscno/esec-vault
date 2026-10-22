@@ -426,7 +426,11 @@ func (s *Server) teamWaiting(ctx context.Context, st *team.State, data map[strin
 	if data["Requests"], err = s.projectRequests(ctx, st.Project); err != nil {
 		return err
 	}
-	data["Expiries"], err = s.expiries(ctx, st.Project)
+	if data["Expiries"], err = s.expiries(ctx, st.Project); err != nil {
+		return err
+	}
+	data["Org"] = orgOf(st.Project)
+	data["ReviewStatus"], err = s.reviewStatus(ctx, st)
 	return err
 }
 

@@ -184,6 +184,11 @@ func (s *Server) accessPageData(ctx context.Context, ws *webSession) (map[string
 	if err != nil {
 		return nil, err
 	}
+	reviews, err := s.reviewNotices(ctx, ws.user.ID)
+	if err != nil {
+		return nil, err
+	}
+	notices = append(notices, reviews...)
 	data := s.page(ws, "access")
 	data["People"] = people
 	data["Notices"] = append(append(rnotices, notices...), gnotices...)

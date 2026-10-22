@@ -1,5 +1,5 @@
 {{template "head" .}}
-<p class="crumbs">{{if .Readable}}<a href="/groups">Groups</a>{{else}}<a href="/admin#groups">Admin</a>{{end}} › Group</p>
+<p class="crumbs">{{if .Readable}}<a href="/groups">Groups</a> › <a href="/orgs/{{.Org}}">{{.Org}}</a>{{else}}<a href="/admin#groups">Admin</a>{{end}} › Group</p>
 <h1>{{.Group}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .MyMember}}<span class="badge status-active">member</span>{{else if .Readable}}<span class="badge">reads your projects</span>{{else}}<span class="badge">read-only</span>{{end}}</h1>
 <p class="muted">Created by {{.Creator}} {{when .Created}}. Its admins, people, machines, tokens and the projects it takes keys from are recorded in a chain they sign; the server stores it but cannot change it. Everyone in it reads what it reads; machines check the chain from its first link, which their keys name.</p>
 <div id="live" {{dsLive (printf "/groups/%s/live" .Group) 10}}></div>
@@ -246,6 +246,7 @@
 {{- else if eq .Kind "member_add"}}add {{.Subject}}, who reads {{template "change-reads" .}}
 {{- else if eq .Kind "member_set"}}let {{.Subject}} read {{template "change-reads" .}}
 {{- else if eq .Kind "member_remove"}}remove {{.Subject}}
+{{- else if eq .Kind "machine_remove"}}remove the machine {{.Subject}}
 {{- else if eq .Kind "delegate_add"}}add a passkey (see Signing)
 {{- else if eq .Kind "delegate_server"}}let the server sign removals
 {{- else if eq .Kind "delegate_remove"}}remove a passkey or the server's signing

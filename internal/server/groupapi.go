@@ -397,6 +397,9 @@ func (s *Server) storeGroupLink(ctx context.Context, tx *sql.Tx, before, after *
 // person's account here, that a machine let in matches its join request,
 // and that a project the group trusts exists with that root.
 func (s *Server) checkGroupLink(ctx context.Context, tx *sql.Tx, gs *team.GroupState, l team.GroupLink, chains team.Chains, now time.Time) error {
+	if err := s.checkPolicyGroupLink(ctx, tx, gs.Group, l); err != nil {
+		return err
+	}
 	switch l.Type {
 	case team.GroupInit:
 		var b team.GroupInitBody

@@ -51,3 +51,27 @@ func (a *Account) TimedAccess(ctx context.Context, project string) ([]wire.Acces
 	}
 	return a.Client.Expiries(ctx, project)
 }
+
+// OrgPolicy returns the policy the server enforces for an organisation.
+func (a *Account) OrgPolicy(ctx context.Context, org string) (*wire.OrgPolicy, error) {
+	if err := a.requireConfirmed(); err != nil {
+		return nil, err
+	}
+	return a.Client.OrgPolicy(ctx, org)
+}
+
+// ReviewStatus says whether a project's access review is due.
+func (a *Account) ReviewStatus(ctx context.Context, project string) (*wire.ReviewStatus, error) {
+	if err := a.requireConfirmed(); err != nil {
+		return nil, err
+	}
+	return a.Client.Review(ctx, project)
+}
+
+// RecordReview records an access review of a project.
+func (a *Account) RecordReview(ctx context.Context, project string, kept, removed []string) error {
+	if err := a.requireConfirmed(); err != nil {
+		return err
+	}
+	return a.Client.RecordReview(ctx, project, wire.AccessReview{Kept: kept, Removed: removed})
+}

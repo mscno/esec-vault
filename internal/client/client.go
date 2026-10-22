@@ -416,6 +416,23 @@ func (c *Client) CancelExpiry(ctx context.Context, project string, id int64) err
 	return c.do(ctx, http.MethodDelete, projectPath(project)+"/expiries/"+strconv.FormatInt(id, 10), authenticated, nil, nil)
 }
 
+// OrgPolicy returns the policy the server enforces for an organisation.
+func (c *Client) OrgPolicy(ctx context.Context, org string) (*wire.OrgPolicy, error) {
+	var out wire.OrgPolicy
+	return &out, c.do(ctx, http.MethodGet, "/v1/orgs/"+url.PathEscape(org)+"/policy", authenticated, nil, &out)
+}
+
+// Review says whether a project's access review is due.
+func (c *Client) Review(ctx context.Context, project string) (*wire.ReviewStatus, error) {
+	var out wire.ReviewStatus
+	return &out, c.do(ctx, http.MethodGet, projectPath(project)+"/review", authenticated, nil, &out)
+}
+
+// RecordReview records an access review of a project.
+func (c *Client) RecordReview(ctx context.Context, project string, rv wire.AccessReview) error {
+	return c.do(ctx, http.MethodPost, projectPath(project)+"/review", authenticated, rv, nil)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, m mode, in, out any) error {
 	var body []byte
 	if in != nil {

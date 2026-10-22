@@ -26,6 +26,7 @@ type TeamCmd struct {
 	Offboard AccessOffboardCmd `cmd:"" help:"Take everything a person reads away: every project and group you administer."`
 	Request  AccessRequestCmd  `cmd:"" help:"Ask a project's admins for environments."`
 	Requests AccessRequestsCmd `cmd:"" help:"List access requests; grant, turn down or withdraw one."`
+	Review   AccessReviewCmd   `cmd:"" help:"Review who reads a project: keep those who need it, remove the rest, and record it."`
 	Add      TeamAddCmd        `cmd:"" help:"Add a member and send them the keys they may read."`
 	Set      TeamSetCmd        `cmd:"" help:"Change what a member reads (replacing it), or make them an admin."`
 	Remove   TeamRemoveCmd     `cmd:"" help:"Remove a member."`

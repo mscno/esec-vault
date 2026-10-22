@@ -374,6 +374,20 @@ var schema = []string{
 		decided_at INTEGER NOT NULL DEFAULT 0)`,
 	`CREATE INDEX IF NOT EXISTS access_requests_project ON access_requests(project, status)`,
 	`CREATE INDEX IF NOT EXISTS access_requests_user ON access_requests(user_id, status)`,
+	// Organisation policies and access reviews (org.go).
+	`CREATE TABLE IF NOT EXISTS org_policies (
+		org TEXT PRIMARY KEY,
+		policy TEXT NOT NULL,
+		updated_by TEXT NOT NULL,
+		updated_at INTEGER NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS access_reviews (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project TEXT NOT NULL,
+		kept TEXT NOT NULL,
+		removed TEXT NOT NULL,
+		reviewed_by TEXT NOT NULL,
+		reviewed_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS access_reviews_project ON access_reviews(project, id)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 

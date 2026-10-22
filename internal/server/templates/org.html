@@ -1,0 +1,88 @@
+{{template "head" .}}
+<p class="crumbs"><a href="/access">Access</a> › Organisation</p>
+<h1>{{.Org}}</h1>
+<p class="muted">What you can see of {{.Org}}'s shared projects and groups. Each is its own signed chain; the policy below is the server's own check on top, and can only refuse changes, never grant access.</p>
+
+<h2 id="projects">Projects</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Project</th><th>You</th><th>Members</th><th>Machines</th><th>Needs</th></tr></thead>
+  <tbody>
+  {{range .Teams}}
+  <tr>
+    <td><a href="/teams/{{.ID}}"><strong>{{.ID}}</strong></a></td>
+    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .Access}}read {{range $i, $e := .Access}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{.Members}}</td>
+    <td>{{.Machines}}</td>
+    <td>{{if .Rotations}}<span class="badge status-pending">{{plural .Rotations "key"}} to rotate</span>{{else}}<span class="muted">nothing</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">None you are a member of.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2 id="groups">Groups</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Group</th><th>You</th><th>People</th><th>Machines</th><th>Reads</th></tr></thead>
+  <tbody>
+  {{range .Groups}}
+  <tr>
+    <td><a href="/groups/{{.ID}}"><strong>{{.ID}}</strong></a></td>
+    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .Member}}<span class="badge status-active">member</span>{{else}}<span class="muted">reads your projects</span>{{end}}</td>
+    <td>{{range $i, $p := .People}}{{if $i}}, {{end}}{{$p}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{.Machines}}</td>
+    <td>{{range $i, $p := .Projects}}{{if $i}}, {{end}}{{$p}}{{else}}<span class="muted">nothing yet</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">None you can see.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2 id="people">People</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Person</th><th>Reads</th></tr></thead>
+  <tbody>
+  {{range .People}}
+  <tr>
+    <td><a href="/people/{{.Login}}"><strong>{{.Login}}</strong></a></td>
+    <td>{{range .Reads}}<div>{{.Project}}: {{if .Admin}}<span class="badge status-active">admin</span>{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">nothing</span>{{end}}{{with .Via}} <span class="muted">through {{.}}</span>{{end}}</div>{{end}}{{if .Groups}}<div class="muted">in {{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g}}{{end}}</div>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="2" class="muted">Nobody you can see.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<h2 id="policy">Policy</h2>
+{{template "org-policy" .}}
+{{template "foot" .}}
+
+{{define "org-policy"}}<div id="org-policy">
+<ul>
+  <li>Enrollment tokens: {{if .Policy.MaxTokenDays}}at most {{plural .Policy.MaxTokenDays "day"}}, none that never expire{{else}}<span class="muted">no limit</span>{{end}}</li>
+  <li>Adding people: {{if .Policy.RequireGitHubProof}}only with a GitHub SSH proof{{else}}a GitHub SSH proof, or account key words read out{{end}}</li>
+  <li>Removals made on the web: {{if .Policy.NoServerSigning}}always signed by a passkey or device{{else}}the server may sign them for people who let it{{end}}</li>
+  <li>Access reviews: {{if .Policy.ReviewDays}}every {{plural .Policy.ReviewDays "day"}}{{else}}<span class="muted">none asked for</span>{{end}}</li>
+</ul>
+{{if .PolicyBy}}<p class="muted">Set by {{.PolicyBy}} {{when .Policy.Updated}}.</p>{{end}}
+{{if .CanSetPolicy}}
+<details class="help" data-preserve-attr="open">
+  <summary>Change the policy (server admins)</summary>
+  <form method="post" action="/orgs/{{.Org}}/policy" class="grid-form" data-confirm="Change {{.Org}}'s policy?" {{dsPost (printf "/orgs/%s/policy" .Org)}}>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Longest token, in days (0: no limit) <input name="max_token_days" type="number" min="0" max="3660" value="{{.Policy.MaxTokenDays}}"></label>
+    <label>Review access every … days (0: never) <input name="review_days" type="number" min="0" max="3660" value="{{.Policy.ReviewDays}}"></label>
+    <div><label class="check"><input type="checkbox" name="require_github_proof"{{if .Policy.RequireGitHubProof}} checked{{end}}> require a GitHub SSH proof</label> <label class="check"><input type="checkbox" name="no_server_signing"{{if .Policy.NoServerSigning}} checked{{end}}> the server signs no removals</label></div>
+    <div><button type="submit">Save</button></div>
+  </form>
+  <p class="muted">The server checks it on every change it stores from now on. Devices that sign changes still check the chains themselves.</p>
+</details>
+{{end}}
+</div>{{end}}

@@ -1,5 +1,6 @@
 {{template "head" .}}
-<p class="crumbs">{{if .Member}}<a href="/projects#shared">Projects</a>{{else}}<a href="/admin#projects">Admin</a>{{end}} › Shared project</p>
+<p class="crumbs">{{if .Member}}<a href="/projects#shared">Projects</a> › <a href="/orgs/{{.Org}}">{{.Org}}</a>{{else}}<a href="/admin#projects">Admin</a>{{end}} › Shared project</p>
+{{if and .MyAdmin .ReviewStatus}}{{if .ReviewStatus.Due}}<div class="notice notice-info"><p>Time to review who reads this project. <a href="/teams/{{.Project}}/review">Review</a></p></div>{{end}}{{end}}
 <h1>{{.Project}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .Member}}<span class="badge">member</span>{{else}}<span class="badge">read-only</span>{{end}}</h1>
 <p class="muted">Created by {{.Creator}} {{when .Created}}. Who may read which environment is recorded in a chain signed by the project's admins; the server stores it but cannot change it. Keys reach each member sealed to their own key.</p>
 <div id="live" {{dsLive (printf "/teams/%s/live" .Project) 15}}></div>
@@ -59,6 +60,7 @@
 </table>
 </div>
 
+{{if .MyAdmin}}<p><a href="/teams/{{.Project}}/review">Review who reads it</a>{{with .ReviewStatus}}{{with .Last}} <span class="muted">(last reviewed by {{.By}} {{when .Reviewed}})</span>{{end}}{{end}}</p>{{end}}
 <h2 id="history">History</h2>
 <p class="muted">Export the whole history, signed changes and what the server recorded: <a href="/teams/{{.Project}}/export" download>CSV</a> · <a href="/teams/{{.Project}}/export?format=json" download>JSON</a></p>
 {{template "team-history" .}}

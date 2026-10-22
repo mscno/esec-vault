@@ -84,6 +84,30 @@ When the time comes, the server signs the removal for you if you let it
 (`esec vault delegate server`); otherwise it waits in `esec vault changes`
 (and `changes --yes` signs it, since it only takes access away).
 
+### Review who reads a project
+
+```sh
+esec vault access review                       # asks about each reader; admins stay
+esec vault access review --remove bob,machine:old-ci --yes
+```
+
+It records the review on the server. An organisation's policy can ask for
+one every so many days; the overview and the project's page then remind its
+admins. On the web: the project's page › **Review who reads it**.
+
+### Set an organisation's rules
+
+```sh
+esec vault org                 # your organisations
+esec vault org acme            # its projects, groups and policy
+```
+
+The server's admins set the policy on the organisation's web page
+(`/orgs/acme`): the longest enrollment token (and none that never expire),
+GitHub SSH proofs required to add people, no removals signed by the server,
+and how often access is reviewed. The server refuses changes that break it;
+it is a check on top of the signed chains and can never grant anything.
+
 ### Ask for access, and answer
 
 ```sh
@@ -113,7 +137,7 @@ steps:
   - uses: actions/checkout@v5
   - name: Install esec and esec-vault
     run: |
-      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.14.0/esec-vault_0.14.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
+      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.15.0/esec-vault_0.15.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
       curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
   - run: esec-vault machine run -- esec run prod -- ./deploy.sh
     env:
@@ -137,7 +161,7 @@ fly secrets set -a store ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/p
 ```dockerfile
 FROM alpine:3.21 AS esec
 RUN apk add --no-cache curl \
- && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.14.0/esec-vault_0.14.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
+ && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.15.0/esec-vault_0.15.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
  && curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
 
 FROM your-app-image
@@ -427,6 +451,9 @@ Sign in at your server with GitHub. The pages never decrypt anything.
   or through a group, and what needs doing (keys to rotate, requests to
   answer). Each person has a page listing what they read, with an
   **Offboard** button. Ask for access to any project here too.
+- **Organisations** (`/orgs/acme`, linked from projects and groups): what you
+  can see of one organisation's projects, groups and people, and its policy,
+  which the server's admins set there.
 - **Groups**: your groups of people and machines. Each group's page shows
   its people (add and remove them there), its machines
   (when and from where each last fetched its keys), its tokens, which
@@ -1709,6 +1736,8 @@ Migration is explicit; installing the binary does not alter live keys.
 | Take everything away from someone leaving | `esec vault access offboard alice` |
 | Give access for a while | `esec vault access grant alice --env prod --for 8h` |
 | Ask for access, or answer requests | `esec vault access request --env staging`, `esec vault access requests` |
+| Review who reads a project | `esec vault access review` |
+| See an organisation and its policy | `esec vault org acme` |
 | Receive and send team keys now | `esec vault access sync` |
 | List a project's machines | `esec vault machine list` |
 | List groups | `esec vault group` |

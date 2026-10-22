@@ -1,3 +1,27 @@
+# v0.15.0
+
+Organisations, their policies, and access reviews.
+
+- **Organisation pages** (`/orgs/acme`, linked from projects' and groups'
+  pages) and **`esec vault org [ORG]`**: what you can see of an
+  organisation's shared projects, groups and people, and its policy. With
+  `--json`.
+- **Policies**, set on the organisation's page by the server's admins and
+  enforced by the server on every new change (a check on top of the signed
+  chains, which can refuse but never grant):
+  - the longest enrollment token, and no tokens that never expire;
+  - people added only with a GitHub SSH proof, not account key words;
+  - no removals signed by the server, even for people who let it;
+  - an access review every so many days.
+- **Access reviews.** `esec vault access review` asks about each member,
+  group and machine of a project (admins stay), takes access away from those
+  you say (`--remove bob,machine:old-ci`, `--keep-all`), and records the
+  review. On the web: the project's page › **Review who reads it**. When a
+  policy asks for reviews, the overview and the project's page remind its
+  admins when one is due.
+- Machines of a project can be removed from the web too (in a review); the
+  device or passkey signs it like any removal.
+
 # v0.14.0
 
 More of it on the web, access requests, and access that ends by itself.
