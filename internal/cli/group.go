@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -320,15 +321,38 @@ type GroupTokenCmd struct {
 	Out     string `help:"Write the token to this file (0600), or - for standard output only"`
 }
 
-// oidcFlags bind a key to GitHub Actions jobs.
+// printPolicy says who a key's keys go to, when it is bound.
+func printPolicy(w io.Writer, policy *team.OIDCPolicy) {
+	switch {
+	case policy == nil:
+	case policy.Provider == team.ProviderFly:
+		fmt.Fprintf(w, "  Its keys are handed out only to %s, which esec-vault proves with the Machine's Fly.io OIDC token.\n", policy.Describe())
+	default:
+		fmt.Fprintf(w, "  Its keys are handed out only to %s; the job needs 'permissions: id-token: write'.\n", policy.Describe())
+	}
+}
+
+// oidcFlags bind a key to GitHub Actions jobs or Fly.io Machines.
 type oidcFlags struct {
 	GitHubRepo        string   `name:"github-repo" help:"Hand its keys only to GitHub Actions jobs of this owner/name repository (OIDC)"`
 	GitHubRepoID      int64    `name:"github-repo-id" help:"The repository's numeric id, which survives renames (gh api repos/OWNER/NAME --jq .id)"`
 	GitHubRef         []string `name:"github-ref" sep:"," help:"Only these refs, e.g. refs/heads/main or refs/tags/v* (with --github-repo)"`
 	GitHubEnvironment []string `name:"github-environment" sep:"," help:"Only jobs in these GitHub deployment environments (with --github-repo)"`
+	FlyOrg            string   `name:"fly-org" help:"Hand its keys only to Fly.io Machines of this organisation (its slug, from 'fly orgs list'), proven with Fly.io's OIDC tokens"`
+	FlyApp            []string `name:"fly-app" sep:"," help:"Only Machines of these Fly.io apps (with --fly-org)"`
 }
 
 func (f oidcFlags) policy() (*team.OIDCPolicy, error) {
+	if f.FlyOrg != "" || len(f.FlyApp) > 0 {
+		if f.FlyOrg == "" {
+			return nil, errors.New("--fly-app needs --fly-org")
+		}
+		if f.GitHubRepo != "" || f.GitHubRepoID != 0 || len(f.GitHubRef) > 0 || len(f.GitHubEnvironment) > 0 {
+			return nil, errors.New("bind a key to GitHub Actions or to Fly.io, not both")
+		}
+		p := &team.OIDCPolicy{Provider: team.ProviderFly, FlyOrg: f.FlyOrg, FlyApps: team.SortEnvs(f.FlyApp)}
+		return p, p.Validate()
+	}
 	if f.GitHubRepo == "" {
 		if f.GitHubRepoID != 0 || len(f.GitHubRef) > 0 || len(f.GitHubEnvironment) > 0 {
 			return nil, errors.New("--github-repo-id, --github-ref and --github-environment need --github-repo")
@@ -400,9 +424,7 @@ func newCred(ctx *cliCtx, group, kind, name string, ttl time.Duration, flags oid
 	if !expires.IsZero() {
 		fmt.Fprintf(info, "  It works until %s.\n", expires.Local().Format("2006-01-02 15:04")) //nolint:gosmopolitan // shown to the local user
 	}
-	if policy != nil {
-		fmt.Fprintf(info, "  Its keys are handed out only to %s; the job needs 'permissions: id-token: write'.\n", policy.Describe())
-	}
+	printPolicy(info, policy)
 	secret := key.String()
 	switch out {
 	case "-":

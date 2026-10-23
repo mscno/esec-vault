@@ -57,7 +57,7 @@ type Server struct {
 	alertKick chan struct{}
 	alertHTTP *http.Client
 	// oidc checks machines' OIDC tokens.
-	oidc *oidcVerifier
+	oidc *oidcIssuers
 	// signer is the server's own key, which people may let sign removals.
 	signer serverSigner
 	// webauthn holds passkey ceremonies in progress.
@@ -97,7 +97,7 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 	s := &Server{cfg: cfg, db: db, log: log, now: time.Now, version: "dev", anon: newLimiter(), limits: newLimiter(), notify: newNotifier(), bodies: newBodyBudget(maxBodyActive, maxBodyPerAccount), pendingSmall: newBodyBudget(maxPendingSmall, maxPendingPerDevice), pendingLarge: newBodyBudget(maxPendingLarge, maxLargeBody), maxRegistrations: maxOpenRegistrations, maxOAuthStates: maxOpenOAuthStates, regPerAddr: 10, regPerNet: 100}
 	s.github = &githubClient{cfg: cfg.GitHub, http: &http.Client{Timeout: 15 * time.Second}}
 	s.alertKick, s.alertHTTP = make(chan struct{}, 1), newAlertClient()
-	s.oidc = newOIDCVerifier(githubIssuer, githubJWKS, nil)
+	s.oidc = newOIDCIssuers()
 	for _, o := range opts {
 		o(s)
 	}

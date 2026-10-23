@@ -426,3 +426,31 @@ func TestArchive(t *testing.T) {
 		t.Fatalf("reverify: %v", err)
 	}
 }
+
+func TestFlyOIDCPolicy(t *testing.T) {
+	p := &team.OIDCPolicy{Provider: team.ProviderFly, FlyOrg: "acme", FlyApps: []string{"store"}}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if p.Issuer() != "https://oidc.fly.io/acme" {
+		t.Fatalf("issuer %s", p.Issuer())
+	}
+	if err := p.Allows(&team.Claims{OrgName: "acme", AppName: "store"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []team.Claims{{OrgName: "acme", AppName: "other"}, {OrgName: "evil", AppName: "store"}} {
+		if p.Allows(&c) == nil {
+			t.Fatalf("allowed %+v", c)
+		}
+	}
+	for _, bad := range []team.OIDCPolicy{
+		{Provider: team.ProviderFly, FlyOrg: "Acme Inc"},
+		{Provider: team.ProviderFly, FlyOrg: "acme", Repository: "acme/store"},
+		{Provider: team.ProviderGitHub, Repository: "acme/store", FlyOrg: "acme"},
+		{Provider: team.ProviderFly, FlyOrg: "acme", FlyApps: []string{"../x"}},
+	} {
+		if bad.Validate() == nil {
+			t.Fatalf("valid: %+v", bad)
+		}
+	}
+}

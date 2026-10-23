@@ -873,7 +873,7 @@ func sameOIDC(a, b *OIDCPolicy) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.Provider == b.Provider && a.Repository == b.Repository && a.RepositoryID == b.RepositoryID && slices.Equal(a.Refs, b.Refs) && slices.Equal(a.Environments, b.Environments)
+	return a.Provider == b.Provider && a.Repository == b.Repository && a.RepositoryID == b.RepositoryID && slices.Equal(a.Refs, b.Refs) && slices.Equal(a.Environments, b.Environments) && a.FlyOrg == b.FlyOrg && slices.Equal(a.FlyApps, b.FlyApps)
 }
 
 func decodeGroupBody(l GroupLink, v any) error {

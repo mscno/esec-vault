@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +24,21 @@ import (
 const (
 	// ProviderGitHub is GitHub Actions' OIDC issuer.
 	ProviderGitHub = "github"
+	// ProviderFly is Fly.io's issuer of OIDC tokens for Machines, one per
+	// organisation: https://oidc.fly.io/ORG.
+	ProviderFly = "fly"
 )
+
+// FlyIssuerBase starts the issuer of a Fly.io organisation's tokens.
+const FlyIssuerBase = "https://oidc.fly.io"
+
+// Issuer returns the OIDC issuer a policy's tokens come from.
+func (p *OIDCPolicy) Issuer() string {
+	if p.Provider == ProviderFly {
+		return FlyIssuerBase + "/" + p.FlyOrg
+	}
+	return "https://token.actions.githubusercontent.com"
+}
 
 // OIDCPolicy restricts a machine to workloads that prove who they are with
 // an OIDC token, such as a GitHub Actions job: the server releases the
@@ -42,18 +57,30 @@ type OIDCPolicy struct {
 	// Environments, when set, are the GitHub deployment environments
 	// allowed; a job outside every environment is refused.
 	Environments []string `json:"environments,omitempty"`
+	// FlyOrg is the Fly.io organisation (its slug) whose Machines may
+	// fetch the keys; FlyApps, when set, the apps among them.
+	FlyOrg  string   `json:"fly_org,omitempty"`
+	FlyApps []string `json:"fly_apps,omitempty"`
 }
 
 var (
 	refPattern      = regexp.MustCompile(`^refs/[A-Za-z0-9._/-]{1,200}\*?$`)
+	flyNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	ghEnvPattern    = regexp.MustCompile(`^[A-Za-z0-9 _.-]{1,255}$`)
 	repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
 )
 
 // Validate checks a policy.
 func (p *OIDCPolicy) Validate() error {
-	if p.Provider != ProviderGitHub {
+	switch p.Provider {
+	case ProviderFly:
+		return p.validateFly()
+	case ProviderGitHub:
+	default:
 		return fmt.Errorf("unknown OIDC provider %q", p.Provider)
+	}
+	if p.FlyOrg != "" || len(p.FlyApps) > 0 {
+		return errors.New("a GitHub policy names no Fly.io organisation or apps")
 	}
 	if !repoNamePattern.MatchString(p.Repository) {
 		return fmt.Errorf("invalid repository %q: use owner/name", p.Repository)
@@ -77,7 +104,8 @@ func (p *OIDCPolicy) Validate() error {
 	return nil
 }
 
-// Claims are the OIDC token claims a policy checks.
+// Claims are the OIDC token claims a policy checks: GitHub Actions' and
+// Fly.io's.
 type Claims struct {
 	Repository   string `json:"repository"`
 	RepositoryID string `json:"repository_id"`
@@ -87,10 +115,37 @@ type Claims struct {
 	Workflow string `json:"workflow_ref"`
 	RunID    string `json:"run_id"`
 	Actor    string `json:"actor"`
+
+	// Fly.io's.
+	OrgName     string `json:"org_name"`
+	AppName     string `json:"app_name"`
+	MachineID   string `json:"machine_id"`
+	MachineName string `json:"machine_name"`
+	Region      string `json:"region"`
+	ImageDigest string `json:"image_digest"`
+}
+
+// Detail describes the workload a token names, for the audit log.
+func (c *Claims) Detail() string {
+	if c.AppName != "" {
+		return strings.Join([]string{"fly", c.OrgName + "/" + c.AppName, c.MachineName, c.MachineID, c.Region}, " ")
+	}
+	return strings.Join([]string{c.Repository, c.Ref, c.Environment, "run " + c.RunID, c.Actor}, " ")
 }
 
 // Allows reports why c does not match the policy, or nil.
 func (p *OIDCPolicy) Allows(c *Claims) error {
+	if p.Provider == ProviderFly {
+		// The issuer, checked with the token's signature, names the
+		// organisation already; its claim must agree.
+		if c.OrgName != p.FlyOrg {
+			return fmt.Errorf("the Machine is in the Fly.io organisation %q, not %q", c.OrgName, p.FlyOrg)
+		}
+		if len(p.FlyApps) > 0 && !slices.Contains(p.FlyApps, c.AppName) {
+			return fmt.Errorf("the Fly.io app %q is not allowed", c.AppName)
+		}
+		return nil
+	}
 	if !strings.EqualFold(c.Repository, p.Repository) {
 		return fmt.Errorf("the job runs in %q, not %q", c.Repository, p.Repository)
 	}
@@ -132,6 +187,13 @@ func (p *OIDCPolicy) Describe() string {
 	if p == nil {
 		return ""
 	}
+	if p.Provider == ProviderFly {
+		s := "Fly.io Machines of " + p.FlyOrg
+		if len(p.FlyApps) > 0 {
+			s += " (app " + strings.Join(p.FlyApps, ", ") + ")"
+		}
+		return s
+	}
 	parts := []string{"GitHub Actions in " + p.Repository}
 	if len(p.Refs) > 0 {
 		parts = append(parts, "on "+strings.Join(p.Refs, ", "))
@@ -140,6 +202,24 @@ func (p *OIDCPolicy) Describe() string {
 		parts = append(parts, "in environment "+strings.Join(p.Environments, ", "))
 	}
 	return strings.Join(parts, " ")
+}
+
+func (p *OIDCPolicy) validateFly() error {
+	if p.Repository != "" || p.RepositoryID != 0 || len(p.Refs) > 0 || len(p.Environments) > 0 {
+		return errors.New("a Fly.io policy names no GitHub repository, refs or environments")
+	}
+	if !flyNamePattern.MatchString(p.FlyOrg) {
+		return fmt.Errorf("invalid Fly.io organisation %q: use its slug (fly orgs list)", p.FlyOrg)
+	}
+	if len(p.FlyApps) > 20 {
+		return errors.New("too many Fly.io apps")
+	}
+	for _, a := range p.FlyApps {
+		if !flyNamePattern.MatchString(a) {
+			return fmt.Errorf("invalid Fly.io app name %q", a)
+		}
+	}
+	return nil
 }
 
 // MachineKey is a machine's private identity. It is the one secret a CI

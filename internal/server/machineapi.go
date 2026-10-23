@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/mscno/esec-vault/internal/chain"
@@ -99,10 +98,10 @@ func (s *Server) apiMachineKeys(w http.ResponseWriter, r *http.Request) { //noli
 	detail := m.Name
 	if m.OIDC != nil {
 		if req.OIDCToken == "" {
-			writeErr(w, http.StatusForbidden, wire.ErrForbidden, "this machine needs an OIDC token from "+m.OIDC.Describe()+" (in GitHub Actions, give the job 'permissions: id-token: write')")
+			writeErr(w, http.StatusForbidden, wire.ErrForbidden, "this machine needs an OIDC token from "+m.OIDC.Describe()+oidcHint(m.OIDC))
 			return
 		}
-		claims, err := s.oidc.Verify(ctx, req.OIDCToken, s.cfg.BaseURL, now)
+		claims, err := s.oidc.Verify(ctx, m.OIDC, req.OIDCToken, s.cfg.BaseURL, now)
 		if err != nil {
 			if errors.Is(err, errOIDC) {
 				writeErr(w, http.StatusForbidden, wire.ErrForbidden, err.Error())
@@ -116,7 +115,7 @@ func (s *Server) apiMachineKeys(w http.ResponseWriter, r *http.Request) { //noli
 			writeErr(w, http.StatusForbidden, wire.ErrForbidden, "the OIDC token does not match this machine's policy: "+err.Error())
 			return
 		}
-		detail += " " + truncate(strings.Join([]string{claims.Repository, claims.Ref, claims.Environment, "run " + claims.RunID, claims.Actor}, " "), 300)
+		detail += " " + truncate(claims.Detail(), 300)
 	}
 	grants, err := s.db.grants(ctx, s.db.sql, `project = ? AND to_id = ?`, req.Project, req.Machine)
 	if err != nil {

@@ -161,7 +161,7 @@ steps:
   - uses: actions/checkout@v5
   - name: Install esec and esec-vault
     run: |
-      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.16.0/esec-vault_0.16.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
+      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.17.0/esec-vault_0.17.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
       curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
   - run: esec-vault machine run -- esec run prod -- ./deploy.sh
     env:
@@ -173,19 +173,26 @@ repository, so each works only from its own.
 
 ### Run a Fly.io app with its secrets
 
-Give the app's machines a token of a group, and start the app through
-`esec-vault`, which hands it the keys of its project:
+Give the app's machines a token of a group, bound to the Fly.io app, and
+start the app through `esec-vault`, which hands it the keys of its project:
 
 ```sh
 esec vault group create acme/production
-esec vault group grant acme/production --env prod
-fly secrets set -a store ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/production fly-store --expires never --out -)"
+esec vault access grant acme/production --env prod
+fly secrets set -a store ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/production fly-store \
+  --expires 90d --fly-org acme --fly-app store --out -)"
 ```
+
+With `--fly-org` (the organisation's slug, from `fly orgs list`) and
+`--fly-app`, the server hands the sealed keys only to Machines of that app:
+`esec-vault` proves it with the Machine's own OIDC token from `/.fly/api`,
+signed by Fly.io (`https://oidc.fly.io/ORG`). A leaked token is useless
+anywhere else. `esec vault machine create` takes the same flags.
 
 ```dockerfile
 FROM alpine:3.21 AS esec
 RUN apk add --no-cache curl \
- && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.16.0/esec-vault_0.16.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
+ && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.17.0/esec-vault_0.17.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
  && curl -fsSL https://github.com/mscno/esec/releases/download/v0.11.0/esec_0.11.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
 
 FROM your-app-image
@@ -1854,3 +1861,48 @@ Writers use private atomic file replacements and kernel-managed cross-process
 locks. The kernel releases locks on process exit/crash; reusable `.mutation-lock`
 files persist with vault data and are removed by purge. Do not unlink lock files
 while writers are running.
+
+
+## Shared file preferences and encrypted example templates
+
+esec and esec-vault share `~/.config/esec/config.toml` (honoring
+`XDG_CONFIG_HOME`, `ESEC_VAULT_HOME`, or an explicit `ESEC_CONFIG` file).
+For example:
+
+```toml
+default_format = "etoml"
+[files]
+patterns = [".{format}.{env}", "{env}.{format}"]
+create = "{env}.{format}"
+templates = ["example.{format}", ".{format}.example"]
+[aliases]
+prod = "production"
+```
+
+Put public defaults and dummy placeholders in `example.etoml`, `example.ejson`
+or `.env.example`. Omit the public key. `esec vault project init` and
+`esec vault env add prod` insert the new public key and encrypt defaults in
+memory before creating the file. The configured `default_format` applies to
+both commands; `-f` or `ESEC_FORMAT` overrides it. Filenames use the literal
+environment argument: the config above creates `prod.etoml`. Templates are
+parsed and re-serialized, so comments and formatting are not preserved.
+Ambiguous templates and existing mismatched files fail without overwriting.
+
+```sh
+esec vault env add prod -f etoml
+esec run prod -- ./server
+esec vault run prod -- ./server
+```
+
+Both core `run` and broker-based `vault run` support TOML scalar values and
+nested tables, using `DATABASE__HOST` for `database.host`. Discovery fails on
+zero or multiple matches; use a filename or `--format` to narrow it. Files are
+not searched recursively except through explicitly configured relative paths.
+Use `--no-template` for key-only environment creation. If `env add --project`
+runs outside that project's repository without `--dir`, it creates only the
+key and explains how to specify a destination.
+
+Development note: the local, ignored `go.work` links this checkout to the
+sibling `../esec` module for the new shared config/discovery API. Release that
+core API and update the required esec version in `go.mod` before publishing
+vault; standalone builds need the released dependency.

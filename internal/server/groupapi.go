@@ -906,10 +906,10 @@ func (s *Server) apiFleetEnroll(w http.ResponseWriter, r *http.Request) { //noli
 // the refusal when it does not match.
 func (s *Server) checkOIDC(w http.ResponseWriter, r *http.Request, token string, p *team.OIDCPolicy, now time.Time) (*team.Claims, bool) {
 	if token == "" {
-		writeErr(w, http.StatusForbidden, wire.ErrForbidden, "this needs an OIDC token from "+p.Describe()+" (in GitHub Actions, give the job 'permissions: id-token: write')")
+		writeErr(w, http.StatusForbidden, wire.ErrForbidden, "this needs an OIDC token from "+p.Describe()+oidcHint(p))
 		return nil, false
 	}
-	claims, err := s.oidc.Verify(r.Context(), token, s.cfg.BaseURL, now)
+	claims, err := s.oidc.Verify(r.Context(), p, token, s.cfg.BaseURL, now)
 	if err != nil {
 		if errors.Is(err, errOIDC) {
 			writeErr(w, http.StatusForbidden, wire.ErrForbidden, err.Error())
@@ -925,8 +925,14 @@ func (s *Server) checkOIDC(w http.ResponseWriter, r *http.Request, token string,
 	return claims, true
 }
 
-func claimsDetail(c *team.Claims) string {
-	return truncate(strings.Join([]string{c.Repository, c.Ref, c.Environment, "run " + c.RunID, c.Actor}, " "), 300)
+func claimsDetail(c *team.Claims) string { return truncate(c.Detail(), 300) }
+
+// oidcHint says how a workload gets the token a policy wants.
+func oidcHint(p *team.OIDCPolicy) string {
+	if p.Provider == team.ProviderFly {
+		return " (esec-vault asks the Machine's /.fly/api for it; run it on a Fly.io Machine)"
+	}
+	return " (in GitHub Actions, give the job 'permissions: id-token: write')"
 }
 
 // apiFleetKeys gives a machine or token its sealed keys: the group key

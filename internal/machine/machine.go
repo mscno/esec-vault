@@ -6,6 +6,7 @@
 package machine
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -129,6 +131,62 @@ func Verify(key *team.MachineKey, resp *wire.MachineKeys) (*Keys, error) {
 		return nil, fmt.Errorf("the machine's keys do not verify: %w", err)
 	}
 	return &Keys{Project: key.Project, Machine: key.ID, Name: m.Name, Projects: map[string]map[string]string{key.Project: keys}}, nil
+}
+
+// FlyAPIEnv names the Machines API socket, /.fly/api on a Fly.io Machine
+// (tests set it).
+const FlyAPIEnv = "ESEC_VAULT_FLY_API"
+
+// WorkloadToken returns an OIDC token for audience that proves where this
+// runs: a GitHub Actions job, or a Fly.io Machine. It returns "" when it
+// runs in neither, or the job may not ask.
+func WorkloadToken(ctx context.Context, audience string) (string, error) {
+	if t, err := GitHubToken(ctx, audience); err != nil || t != "" {
+		return t, err
+	}
+	return FlyToken(ctx, audience)
+}
+
+// FlyToken returns a Fly.io OIDC token for audience from the Machine's API
+// socket, or "" when this is not a Fly.io Machine.
+func FlyToken(ctx context.Context, audience string) (string, error) {
+	sock := os.Getenv(FlyAPIEnv)
+	if sock == "" {
+		sock = "/.fly/api"
+	}
+	if fi, err := os.Stat(sock); err != nil || fi.Mode()&os.ModeSocket == 0 { //nolint:gosec // the operator's own socket path
+		return "", nil
+	}
+	c := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}}
+	body, err := json.Marshal(map[string]string{"aud": audience})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/v1/tokens/oidc", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request a Fly.io OIDC token: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("the Fly.io Machines API refused an OIDC token: HTTP %d", resp.StatusCode)
+	}
+	// The body is the token itself, bare or as a JSON string.
+	token := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if strings.Count(token, ".") != 2 {
+		return "", errors.New("the Fly.io Machines API returned no OIDC token")
+	}
+	return token, nil
 }
 
 // GitHubToken returns a GitHub Actions OIDC token for audience, or "" when

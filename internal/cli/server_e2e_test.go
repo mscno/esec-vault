@@ -403,7 +403,7 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	decryptsTo(t, vm3, repo)
 
 	// --- A key added on the laptop reaches the VMs. ---
-	added := laptop.run("", "env", "add", "qa", "--project", "acme/store")
+	added := laptop.run("", "env", "add", "qa", "--project", "acme/store", "--no-template")
 	qaPub := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(added), "ESEC_PUBLIC_KEY="))
 	if len(qaPub) != 64 {
 		t.Fatalf("env add output: %q", added)

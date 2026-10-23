@@ -15,7 +15,9 @@ import (
 	"github.com/mscno/esec"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/storage"
+	"github.com/mscno/esec/pkg/config"
 	"github.com/mscno/esec/pkg/crypto"
+	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
 )
 
@@ -30,7 +32,7 @@ type ProjectInitCmd struct {
 	Project  string   `help:"Project id; otherwise infer from origin"`
 	Dir      string   `default:"." type:"path" help:"Project directory"`
 	Env      []string `name:"env" sep:"," default:"dev" help:"Environment names"`
-	Format   string   `short:"f" default:".env" help:"env, ejson, eyaml, eyml or etoml"`
+	Format   string   `short:"f" default:"" help:"env, ejson, eyaml, eyml or etoml"`
 	Template bool     `default:"true" negatable:"" help:"Create secrets templates"`
 	Force    bool     `help:"Replace a different existing project marker"`
 }
@@ -82,7 +84,10 @@ func (c *ProjectInitCmd) projectID() (string, error) {
 }
 
 func (c *ProjectInitCmd) create(project string) error {
-	format := "." + strings.TrimPrefix(c.Format, ".")
+	format, err := creationFormat(c.Format)
+	if err != nil {
+		return err
+	}
 	if _, err := templateContent(format, "", ""); err != nil {
 		return err
 	}
@@ -106,7 +111,7 @@ func (c *ProjectInitCmd) create(project string) error {
 		return err
 	}
 	for file, content := range files {
-		if err := storage.Write(file, []byte(content)); err != nil {
+		if err := writeNewTemplate(file, []byte(content)); err != nil {
 			return err
 		}
 	}
@@ -134,8 +139,21 @@ func prepareEnvironments(c *ProjectInitCmd, format string, entries map[string]st
 		if err != nil {
 			return nil, err
 		}
-		file := filepath.Join(c.Dir, format+"."+env)
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, err
+		}
+		filename, err := config.Expand(cfg.Files.Create, env, format)
+		if err != nil {
+			return nil, err
+		}
+		file := filepath.Join(c.Dir, filename)
 		if c.Template {
+			if existing, _, err := fileutils.Resolve(c.Dir, env, format); err == nil {
+				file = existing
+			} else if !errors.Is(err, fileutils.ErrNotFound) {
+				return nil, err
+			}
 			data, readErr := os.ReadFile(file) //nolint:gosec // user-selected project directory and validated environment
 			switch {
 			case readErr == nil:
@@ -146,11 +164,11 @@ func prepareEnvironments(c *ProjectInitCmd, format string, entries map[string]st
 			case !errors.Is(readErr, os.ErrNotExist):
 				return nil, readErr
 			default:
-				content, err := templateContent(format, env, pub)
+				_, content, err := secretsTemplate(c.Dir, format, env, pub)
 				if err != nil {
 					return nil, err
 				}
-				files[file] = content
+				files[file] = string(content)
 			}
 		}
 		entries[name] = priv
@@ -223,7 +241,7 @@ func validateEnvName(env string) error {
 
 // EnvCmd manages human-named environments.
 type EnvCmd struct {
-	Add     EnvAddCmd     `cmd:"" help:"Create an environment key."`
+	Add     EnvAddCmd     `cmd:"" help:"Create an environment key and encrypted secrets template."`
 	List    EnvListCmd    `cmd:"" help:"List environment public keys."`
 	ShowKey EnvShowKeyCmd `cmd:"" help:"Print an environment private key after confirmation."`
 	Rotate  EnvRotateCmd  `cmd:"" help:"Replace an environment key and re-encrypt its files."`
@@ -264,8 +282,11 @@ func (c *EnvShowKeyCmd) Run(ctx *cliCtx) error {
 
 // EnvAddCmd stores a new key and prints only its public half.
 type EnvAddCmd struct {
-	Env     string `arg:"" help:"Environment name"`
-	Project string `help:"Project id"`
+	Env      string `arg:"" help:"Environment name"`
+	Project  string `help:"Project id"`
+	Format   string `short:"f" help:"Template format (default: esec config)"`
+	Dir      string `type:"path" help:"Secrets directory (default: project marker directory)"`
+	Template bool   `default:"true" negatable:"" help:"Create an encrypted secrets file from an example or empty template"`
 }
 
 // Run stores a new key pair atomically.
@@ -290,10 +311,20 @@ func (c *EnvAddCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
+	file, content, err := c.prepareTemplate(project, pub)
+	if err != nil {
+		return err
+	}
 	entries[name] = priv
 	entries[esec.EsecPrivateKey+"_"+strings.ToUpper(pub)] = priv
 	if err := ks.Write(project, entries, true); err != nil {
 		return err
+	}
+	if file != "" {
+		if err := writeNewTemplate(file, content); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Created encrypted secrets file %s\n", file)
 	}
 	markDirty("env add")
 	fmt.Printf("ESEC_PUBLIC_KEY=%s\n", pub)

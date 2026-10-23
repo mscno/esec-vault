@@ -1,3 +1,17 @@
+# v0.17.0
+
+Fly.io workload identity.
+
+- Machines and group tokens can be bound to Fly.io Machines:
+  `--fly-org ORG [--fly-app APP,...]` on `machine create`, `group token`
+  and `group add-machine`. The server then hands the sealed keys only to
+  requests carrying an OIDC token from `https://oidc.fly.io/ORG` for one of
+  those apps, verified against Fly.io's published keys. On a Fly.io Machine,
+  `esec-vault machine run`, `machine env` and `machine join` ask the
+  Machine's `/.fly/api` for the token by themselves. A leaked
+  `ESEC_VAULT_MACHINE_KEY` is useless outside the app.
+- The audit log names the Fly.io app, Machine and region that fetched keys.
+
 # v0.16.0
 
 Project settings and device management on the web.

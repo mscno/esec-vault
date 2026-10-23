@@ -246,6 +246,7 @@ var commandDetails = map[string]string{
 
 ` + examples(
 		"esec vault group token acme/production autoscale --expires 90d",
+		"esec vault group token acme/production fly-store --expires 90d --fly-org acme --fly-app store",
 		"fly secrets set ESEC_VAULT_MACHINE_KEY=\"$(esec vault group token acme/production fly --expires never --out -)\"",
 	),
 	"group add-machine": examples(

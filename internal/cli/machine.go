@@ -28,14 +28,12 @@ type MachineCmd struct {
 
 // MachineCreateCmd creates a machine.
 type MachineCreateCmd struct {
-	Name              string   `arg:"" help:"Machine name, e.g. deploy or ci"`
-	Env               []string `name:"env" sep:"," required:"" help:"Environments it may read"`
-	Project           string   `help:"Project id (default: nearest .esec-project)"`
-	GitHubRepo        string   `name:"github-repo" help:"Hand its keys only to GitHub Actions jobs of this owner/name repository (OIDC)"`
-	GitHubRepoID      int64    `name:"github-repo-id" help:"The repository's numeric id, which survives renames (gh api repos/OWNER/NAME --jq .id)"`
-	GitHubRef         []string `name:"github-ref" sep:"," help:"Only these refs, e.g. refs/heads/main or refs/tags/v* (with --github-repo)"`
-	GitHubEnvironment []string `name:"github-environment" sep:"," help:"Only jobs in these GitHub deployment environments (with --github-repo)"`
-	Out               string   `help:"Write the machine key to this file (0600), or - for standard output only"`
+	oidcFlags
+
+	Name    string   `arg:"" help:"Machine name, e.g. deploy or ci"`
+	Env     []string `name:"env" sep:"," required:"" help:"Environments it may read"`
+	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Out     string   `help:"Write the machine key to this file (0600), or - for standard output only"`
 }
 
 // Run implements machine create.
@@ -44,14 +42,9 @@ func (c *MachineCreateCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	var policy *team.OIDCPolicy
-	if c.GitHubRepo != "" {
-		policy = &team.OIDCPolicy{Provider: team.ProviderGitHub, Repository: c.GitHubRepo, RepositoryID: c.GitHubRepoID, Refs: c.GitHubRef, Environments: c.GitHubEnvironment}
-		if err := policy.Validate(); err != nil {
-			return err
-		}
-	} else if c.GitHubRepoID != 0 || len(c.GitHubRef) > 0 || len(c.GitHubEnvironment) > 0 {
-		return errors.New("--github-repo-id, --github-ref and --github-environment need --github-repo")
+	policy, err := c.policy()
+	if err != nil {
+		return err
 	}
 	a, err := openAccount(ctx)
 	if err != nil {
@@ -69,9 +62,7 @@ func (c *MachineCreateCmd) Run(ctx *cliCtx) error {
 		info = os.Stderr
 	}
 	fmt.Fprintf(info, "✓ Machine %s (%s) reads %s of %s.\n", c.Name, key.ID, strings.Join(team.SortEnvs(c.Env), ", "), project)
-	if policy != nil {
-		fmt.Fprintf(info, "  Its keys are handed out only to %s; the job needs 'permissions: id-token: write'.\n", policy.Describe())
-	}
+	printPolicy(info, policy)
 	switch c.Out {
 	case "-":
 		fmt.Println(token)
@@ -177,7 +168,7 @@ func fetchMachineKeys() (*machine.Keys, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	token, err := machine.GitHubToken(ctx, cred.Server())
+	token, err := machine.WorkloadToken(ctx, cred.Server())
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +313,7 @@ func (c *MachineJoinCmd) Run(ctx *cliCtx) error {
 			return fmt.Errorf("the token is for %s, not %s", tok.Group, c.Group)
 		}
 		opts.Token, opts.Group = tok, tok.Group
-		if opts.OIDCToken, err = machine.GitHubToken(bg, tok.Server); err != nil {
+		if opts.OIDCToken, err = machine.WorkloadToken(bg, tok.Server); err != nil {
 			return err
 		}
 	} else {

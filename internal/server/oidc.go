@@ -45,10 +45,45 @@ func newOIDCVerifier(issuer, jwksURL string, client *http.Client) *oidcVerifier 
 	return &oidcVerifier{issuer: issuer, jwksURL: jwksURL, http: client}
 }
 
+// oidcIssuers holds a verifier per issuer a policy may name: GitHub
+// Actions', and each Fly.io organisation's (https://oidc.fly.io/ORG). The
+// issuer follows from the policy in the signed chain, never from a token,
+// and Fly.io's are all under one host.
+type oidcIssuers struct {
+	github  *oidcVerifier
+	flyBase string
+
+	mu  sync.Mutex
+	fly map[string]*oidcVerifier
+}
+
+func newOIDCIssuers() *oidcIssuers {
+	return &oidcIssuers{github: newOIDCVerifier(githubIssuer, githubJWKS, nil), flyBase: team.FlyIssuerBase, fly: map[string]*oidcVerifier{}}
+}
+
+// Verify checks token against the issuer p names, and p itself.
+func (o *oidcIssuers) Verify(ctx context.Context, p *team.OIDCPolicy, token, audience string, now time.Time) (*team.Claims, error) {
+	v := o.github
+	if p.Provider == team.ProviderFly {
+		o.mu.Lock()
+		if v = o.fly[p.FlyOrg]; v == nil {
+			issuer := o.flyBase + "/" + p.FlyOrg
+			v = newOIDCVerifier(issuer, issuer+"/.well-known/jwks", nil)
+			o.fly[p.FlyOrg] = v
+		}
+		o.mu.Unlock()
+	}
+	return v.Verify(ctx, token, audience, now)
+}
+
 // WithOIDCIssuer replaces GitHub Actions' OIDC issuer and key URL (tests).
 func WithOIDCIssuer(issuer, jwksURL string) Option {
-	return func(s *Server) { s.oidc = newOIDCVerifier(issuer, jwksURL, nil) }
+	return func(s *Server) { s.oidc.github = newOIDCVerifier(issuer, jwksURL, nil) }
 }
+
+// WithFlyOIDCBase replaces https://oidc.fly.io, where Fly.io's issuers are
+// (tests).
+func WithFlyOIDCBase(base string) Option { return func(s *Server) { s.oidc.flyBase = base } }
 
 // errOIDC marks a token that is refused; the message is safe to return.
 var errOIDC = errors.New("OIDC token refused")

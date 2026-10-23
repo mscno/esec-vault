@@ -32,37 +32,12 @@ func resolveSecretsFile(dir, fileOrEnv, format string) (path string, fileFormat 
 	if fileOrEnv == "" {
 		return "", "", fmt.Errorf("no environment or file given")
 	}
-	// Explicit path containing a separator or a leading format prefix.
-	if strings.ContainsAny(fileOrEnv, `/\`) || strings.HasPrefix(fileOrEnv, ".") {
-		f, ferr := fileutils.ParseFormat(fileOrEnv)
-		if ferr != nil {
-			return "", "", ferr
-		}
-		abs, aerr := filepath.Abs(fileOrEnv)
-		return abs, string(f), aerr
+	p, f, err := fileutils.Resolve(dir, fileOrEnv, format)
+	if err != nil {
+		return "", "", err
 	}
-	env := fileOrEnv
-	if format != "" {
-		f, ferr := fileutils.ParseFormat(format)
-		if ferr != nil {
-			return "", "", ferr
-		}
-		name := fileutils.GenerateFilename(f, env)
-		if _, serr := os.Stat(filepath.Join(dir, name)); serr != nil {
-			return "", "", fmt.Errorf("secrets file %s does not exist", name)
-		}
-		abs, aerr := filepath.Abs(filepath.Join(dir, name))
-		return abs, string(f), aerr
-	}
-	// Auto-detect across formats.
-	for _, f := range fileutils.ValidFormats() {
-		name := fileutils.GenerateFilename(f, env)
-		if _, serr := os.Stat(filepath.Join(dir, name)); serr == nil {
-			abs, aerr := filepath.Abs(filepath.Join(dir, name))
-			return abs, string(f), aerr
-		}
-	}
-	return "", "", fmt.Errorf("no secrets file found for environment %q in %s", env, dir)
+	abs, err := filepath.Abs(p)
+	return abs, string(f), err
 }
 
 // Run resolves the project from .esec-project, fetches decrypted secrets from
