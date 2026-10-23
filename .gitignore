@@ -3,7 +3,3 @@
 *.keyring
 coverage.out
 /tmp/
-
-# Local workspace for developing with the sibling esec checkout.
-/go.work
-/go.work.sum

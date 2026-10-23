@@ -333,7 +333,15 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		return &Response{OK: false, Error: fmt.Sprintf("decryption failed: %v", err)}
 	}
 
-	secrets, err := esec.EnvVars(plain.Bytes(), format)
+	var secrets map[string]string
+	switch format {
+	case esec.FileFormatEjson:
+		secrets, err = esec.EjsonToEnv(plain.Bytes())
+	case esec.FileFormatEnv:
+		secrets, err = esec.DotEnvToEnv(plain.Bytes())
+	default:
+		err = fmt.Errorf("format %s is not supported for secret injection", format)
+	}
 	if err != nil {
 		return &Response{OK: false, Error: err.Error()}
 	}
