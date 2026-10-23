@@ -62,6 +62,9 @@ const (
 	// group key is wrapped by a KMS key that only workloads matching its
 	// OIDC policy may unwrap with.
 	GroupWorkloadAdd = "workload_add"
+	// GroupWorkloadRekey moves a workload to another KMS key (a new key
+	// version, or another KMS); its id and descriptor stay.
+	GroupWorkloadRekey = "workload_rekey"
 )
 
 // Credential kinds: a machine is one host; a token is a shared secret for
@@ -186,6 +189,11 @@ type (
 	// GroupWorkloadAddBody adds a workload.
 	GroupWorkloadAddBody struct {
 		Workload Credential `json:"workload"`
+	}
+	// GroupWorkloadRekeyBody gives a workload another KMS key.
+	GroupWorkloadRekeyBody struct {
+		ID  string  `json:"id"`
+		KMS kms.Key `json:"kms"`
 	}
 	// GroupRemoveBody removes a machine or token. Destroyed says the admin
 	// knows its keys are gone (a deleted VM), so nothing needs rotating.
@@ -629,6 +637,8 @@ func (s *GroupState) apply(l GroupLink) error {
 			return err
 		}
 		return s.addCred(b.Workload, KindWorkload, "", l)
+	case GroupWorkloadRekey:
+		return s.applyWorkloadRekey(l)
 	case GroupRemove:
 		return s.applyRemove(l)
 	case GroupKeyRotate:
@@ -853,6 +863,27 @@ func (s *GroupState) addCred(c Credential, kind, join string, l GroupLink) error
 	}
 	s.Creds[c.ID] = &CredState{Credential: c, Kind: kind, Active: true, AddedBy: l.Signer, AddedSeq: l.Seq, AddedTime: l.CTime, Join: join}
 	s.active++
+	return nil
+}
+
+func (s *GroupState) applyWorkloadRekey(l GroupLink) error {
+	var b GroupWorkloadRekeyBody
+	if err := decodeGroupBody(l, &b); err != nil {
+		return err
+	}
+	c, ok := s.Cred(b.ID)
+	if !ok || c.Kind != KindWorkload {
+		return fmt.Errorf("%s is not an active workload of the group", b.ID)
+	}
+	if err := b.KMS.Validate(); err != nil {
+		return err
+	}
+	if b.KMS.Fingerprint() == c.EncPub {
+		return errors.New("the workload has that key already")
+	}
+	k := b.KMS
+	// Its key grants wrapped with the old key no longer count.
+	c.KMS, c.EncPub = &k, k.Fingerprint()
 	return nil
 }
 

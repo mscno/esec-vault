@@ -463,3 +463,41 @@ func TestGroupWorkload(t *testing.T) {
 		t.Fatalf("reverify: %v", err)
 	}
 }
+
+// A workload moves to a new KMS key in place: its id stays, grants wrapped
+// with the old key stop counting.
+func TestGroupWorkloadRekey(t *testing.T) {
+	alice := newAcct(t, 1, "alice")
+	w := newWorld(t, alice)
+	g := newGroupWorld(t, w, alice)
+	mk := func(version string) (*kms.Key, *rsa.PrivateKey) {
+		priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+		der, _ := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+		return &kms.Key{Provider: "gcp", Name: "projects/acme-vault/locations/europe-west1/keyRings/esec/cryptoKeys/workloads/cryptoKeyVersions/" + version, Audience: "projects/123456789/locations/global/workloadIdentityPools/esec-fly/providers/fly-acme", PublicKey: base64.StdEncoding.EncodeToString(der)}, priv
+	}
+	k1, _ := mk("1")
+	k2, p2 := mk("2")
+	wl := team.Credential{ID: "w_abcdefghij", Name: "store", EncPub: k1.Fingerprint(), KMS: k1, OIDC: &team.OIDCPolicy{Provider: team.ProviderFly, FlyOrg: "acme"}, Created: w.now}
+	g.add(alice, team.GroupWorkloadAdd, team.GroupWorkloadAddBody{Workload: wl})
+	c, _ := g.st.Cred(wl.ID)
+	old, err := team.NewWorkloadKeyGrant(g.st, alice.user, alice.st.UKeyVersion, alice.u.Sign, c, g.key, w.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.apply(g.link(alice, team.GroupWorkloadRekey, team.GroupWorkloadRekeyBody{ID: wl.ID, KMS: *k1})); err == nil {
+		t.Fatal("rekeyed to the same key")
+	}
+	g.add(alice, team.GroupWorkloadRekey, team.GroupWorkloadRekeyBody{ID: wl.ID, KMS: *k2})
+	if _, err := team.CheckKeyGrant(old, g.st, w.chains); err == nil {
+		t.Fatal("a grant wrapped with the old key still counts")
+	}
+	c, _ = g.st.Cred(wl.ID)
+	kg, err := team.NewWorkloadKeyGrant(g.st, alice.user, alice.st.UKeyVersion, alice.u.Sign, c, g.key, w.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := team.OpenWorkloadKeyGrant(kg, g.st, w.chains, wl.ID, func(box []byte) ([]byte, error) { return rsa.DecryptOAEP(sha256.New(), nil, p2, box, nil) })
+	if err != nil || got != g.key {
+		t.Fatalf("open with the new key: %v", err)
+	}
+}

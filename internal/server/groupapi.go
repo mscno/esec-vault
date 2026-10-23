@@ -1125,6 +1125,10 @@ func groupLinkSummary(before, after *team.GroupState, l team.GroupLink) string {
 		var wl team.GroupWorkloadAddBody
 		_ = json.Unmarshal(l.Body, &wl)
 		return wl.Workload.Name + " " + wl.Workload.ID
+	case team.GroupWorkloadRekey:
+		var rk team.GroupWorkloadRekeyBody
+		_ = json.Unmarshal(l.Body, &rk)
+		return rk.ID + " " + rk.KMS.Provider + " " + rk.KMS.Name
 	case team.GroupRemove:
 		if c := before.Creds[b.ID]; c != nil {
 			return c.Kind + " " + c.Name + " " + b.ID

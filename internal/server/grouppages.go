@@ -626,6 +626,14 @@ func groupLinkText(gs *team.GroupState, l team.GroupLink) string { //nolint:gocy
 		var wl team.GroupWorkloadAddBody
 		_ = json.Unmarshal(l.Body, &wl)
 		return "added the workload " + wl.Workload.Name + " (" + wl.Workload.OIDC.Describe() + ", keys unwrapped with " + wl.Workload.KMS.Provider + " KMS)"
+	case team.GroupWorkloadRekey:
+		var rk team.GroupWorkloadRekeyBody
+		_ = json.Unmarshal(l.Body, &rk)
+		name := rk.ID
+		if c := gs.Creds[rk.ID]; c != nil {
+			name = c.Name
+		}
+		return "moved the workload " + name + " to the " + rk.KMS.Provider + " key " + rk.KMS.Name
 	case team.GroupTokenAdd:
 		t := "created the enrollment token " + b.Token.Name
 		if !b.Token.Expires.IsZero() {

@@ -1093,6 +1093,8 @@ func describeGroupLink(gs *team.GroupState, l team.GroupLink) string {
 	switch l.Type {
 	case team.GroupWorkloadAdd:
 		return "added a workload"
+	case team.GroupWorkloadRekey:
+		return "moved a workload to another KMS key"
 	case team.GroupMachineAdd:
 		return "added a machine"
 	case team.GroupTokenAdd:

@@ -53,3 +53,38 @@ func TestGCPWrapUnwrap(t *testing.T) {
 		t.Fatal("fingerprint ignores the key name")
 	}
 }
+
+func TestOpenBaoWrapUnwrap(t *testing.T) {
+	bao := servertest.NewFakeOpenBao(t, map[string]any{"org_name": "acme", "app_name": "store"})
+	fly := servertest.NewFakeFly(t, "acme", "store")
+	pemText, err := kms.OpenBaoPublicKey(context.Background(), bao.KeyName(), "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := kms.PublicKeyFromPEM(pemText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := kms.Key{Provider: "openbao", Name: bao.KeyName(), Audience: bao.Audience, Principal: "jwt/" + bao.Role, PublicKey: pub}
+	if err := key.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	box, err := key.Wrap([]byte("the group key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := func(_ context.Context, aud string) (string, error) { return fly.Token(aud), nil }
+	plain, err := key.Unwrap(context.Background(), box, token)
+	if err != nil || string(plain) != "the group key" {
+		t.Fatalf("unwrap: %q %v", plain, err)
+	}
+	fly.SetMachine("acme", "web")
+	if _, err := key.Unwrap(context.Background(), box, token); err == nil || !strings.Contains(err.Error(), "bound claim") {
+		t.Fatalf("another app: %v", err)
+	}
+	for _, bad := range []string{"http://bao.example.com/transit/k/1", "https://bao.example.com/transit/k", "https://bao.example.com/transit/k/v1"} {
+		if (kms.Key{Provider: "openbao", Name: bad, Audience: "a", Principal: "jwt/r", PublicKey: pub}).Validate() == nil {
+			t.Fatalf("valid: %s", bad)
+		}
+	}
+}

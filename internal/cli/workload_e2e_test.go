@@ -92,3 +92,55 @@ func TestWorkloadKMSEndToEnd(t *testing.T) {
 		t.Fatalf("a removed workload:\n%s", out)
 	}
 }
+
+// TestWorkloadRekeyEndToEnd moves a workload from Google Cloud KMS to a
+// self-hosted OpenBao, keeping its descriptor: the app restarts and reads
+// on, now through OpenBao.
+func TestWorkloadRekeyEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds binaries")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets")
+	}
+	bin := buildBinaries(t)
+	fly := servertest.NewFakeFly(t, "acme", "store")
+	gcp := servertest.NewFakeGCP(t)
+	bao := servertest.NewFakeOpenBao(t, map[string]any{"org_name": "acme", "app_name": "store"})
+	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(100, 1000), server.WithFlyOIDCBase(fly.URL)}, 53101343)
+	h.GitHub.AddUser(53101343, "mscno")
+	const p = "--project=acme/store"
+	owner := newMachine(t, bin, "owner").with("ESEC_VAULT_GITHUB_URL="+h.GitHub.URL, "BAO_TOKEN=root")
+	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	repo := t.TempDir()
+	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "prod", "--format", "env")
+	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
+	owner.run("", "access", "create", p)
+	owner.run("", "group", "create", "acme/store")
+	owner.run("", "access", "grant", "acme/store", "--env", "prod", p)
+	pemFile := filepath.Join(t.TempDir(), "key.pem")
+	if err := os.WriteFile(pemFile, []byte(gcp.PublicKeyPEM()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := owner.run("", "group", "workload", "acme/store", "store", "--fly-org", "acme", "--fly-app", "store", "--gcp-key", gcp.KeyName, "--gcp-provider", gcp.Provider, "--public-key", pemFile)
+	desc := regexpFind(t, out, `ESEC_VAULT_WORKLOAD = "(esecw1_[A-Za-z0-9_-]+)"`)
+	app := newMachine(t, bin, "app").with(append(gcp.Env(), vaultmachine.WorkloadEnv+"="+desc, vaultmachine.FlyAPIEnv+"="+fly.Socket)...)
+	run := func() (bool, string) {
+		o, err := app.cmd(repo, "", "esec-vault", "machine", "run", "--", "esec", "decrypt", ".env.prod").CombinedOutput()
+		return err == nil, string(o)
+	}
+	if ok, out := run(); !ok || !strings.Contains(out, "postgres://db-prod") {
+		t.Fatalf("through Cloud KMS:\n%s", out)
+	}
+	if out := owner.run("", "group", "rekey-workloads", "acme/store", "--openbao-key", bao.KeyName(), "--openbao-role", "jwt/"+bao.Role, "--openbao-audience", bao.Audience); !strings.Contains(out, "store now unwrap with") {
+		t.Fatalf("rekey-workloads:\n%s", out)
+	}
+	gcpBefore := gcp.Decrypts()
+	if ok, out := run(); !ok || !strings.Contains(out, "postgres://db-prod") {
+		t.Fatalf("through OpenBao, with the same descriptor:\n%s", out)
+	}
+	if gcp.Decrypts() != gcpBefore || bao.Decrypts() != 1 {
+		t.Fatalf("decrypts: gcp %d (was %d), openbao %d", gcp.Decrypts(), gcpBefore, bao.Decrypts())
+	}
+}

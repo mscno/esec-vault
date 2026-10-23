@@ -21,21 +21,22 @@ import (
 // machines (production or staging servers), or both, that read the same
 // environments of one or more projects.
 type GroupCmd struct {
-	List       GroupListCmd       `cmd:"" default:"withargs" help:"List your groups (default)."`
-	Show       GroupShowCmd       `cmd:"" help:"Show a group: its people, machines, tokens, projects and what needs doing."`
-	Create     GroupCreateCmd     `cmd:"" help:"Create a group, with you as its admin."`
-	Add        GroupAddCmd        `cmd:"" help:"Add a person to a group: they read what it reads."`
-	Grant      GroupGrantCmd      `cmd:"" help:"Let a group read environments of a shared project (replacing what it read)."`
-	Revoke     GroupRevokeCmd     `cmd:"" help:"Stop a group reading a project."`
-	Token      GroupTokenCmd      `cmd:"" help:"Create an enrollment token: CI jobs use it directly, and machines join the group with it."`
-	AddMachine GroupAddMachineCmd `cmd:"" name:"add-machine" help:"Create a machine of the group and print its key, for a machine you set up yourself."`
-	Workload   GroupWorkloadCmd   `cmd:"" help:"Add a workload with no secret: it proves where it runs (OIDC) and unwraps its keys with your cloud KMS."`
-	Approve    GroupApproveCmd    `cmd:"" help:"Let in machines waiting to join, and sign changes made on the web pages."`
-	Remove     GroupRemoveCmd     `cmd:"" help:"Remove a person, machine or token; the group gets a new key."`
-	Leave      GroupLeaveCmd      `cmd:"" help:"Leave a group you are a member of."`
-	Rotate     GroupRotateCmd     `cmd:"" help:"Give the group a new key, sealed to every machine still in it."`
-	Admin      GroupAdminCmd      `cmd:"" help:"Make someone an admin of a group."`
-	Sync       TeamSyncCmd        `cmd:"" help:"Send keys machines and admins are missing (the background service does this too)."`
+	List           GroupListCmd           `cmd:"" default:"withargs" help:"List your groups (default)."`
+	Show           GroupShowCmd           `cmd:"" help:"Show a group: its people, machines, tokens, projects and what needs doing."`
+	Create         GroupCreateCmd         `cmd:"" help:"Create a group, with you as its admin."`
+	Add            GroupAddCmd            `cmd:"" help:"Add a person to a group: they read what it reads."`
+	Grant          GroupGrantCmd          `cmd:"" help:"Let a group read environments of a shared project (replacing what it read)."`
+	Revoke         GroupRevokeCmd         `cmd:"" help:"Stop a group reading a project."`
+	Token          GroupTokenCmd          `cmd:"" help:"Create an enrollment token: CI jobs use it directly, and machines join the group with it."`
+	AddMachine     GroupAddMachineCmd     `cmd:"" name:"add-machine" help:"Create a machine of the group and print its key, for a machine you set up yourself."`
+	Workload       GroupWorkloadCmd       `cmd:"" help:"Add a workload with no secret: it proves where it runs (OIDC) and unwraps its keys with your cloud KMS."`
+	RekeyWorkloads GroupRekeyWorkloadsCmd `cmd:"" name:"rekey-workloads" help:"Move a group's workloads to another KMS key (a new version, or another KMS), keeping their descriptors."`
+	Approve        GroupApproveCmd        `cmd:"" help:"Let in machines waiting to join, and sign changes made on the web pages."`
+	Remove         GroupRemoveCmd         `cmd:"" help:"Remove a person, machine or token; the group gets a new key."`
+	Leave          GroupLeaveCmd          `cmd:"" help:"Leave a group you are a member of."`
+	Rotate         GroupRotateCmd         `cmd:"" help:"Give the group a new key, sealed to every machine still in it."`
+	Admin          GroupAdminCmd          `cmd:"" help:"Make someone an admin of a group."`
+	Sync           TeamSyncCmd            `cmd:"" help:"Send keys machines and admins are missing (the background service does this too)."`
 }
 
 // groupID returns a group id, taking a bare name as this account's own:

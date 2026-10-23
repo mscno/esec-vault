@@ -61,7 +61,7 @@ type TokenSource func(ctx context.Context, audience string) (string, error)
 
 var (
 	mu        sync.RWMutex
-	providers = map[string]Provider{"gcp": &GCP{}}
+	providers = map[string]Provider{"gcp": &GCP{}, "openbao": &OpenBao{}}
 	// namePattern bounds what a key's names may hold.
 	namePattern = regexp.MustCompile(`^[A-Za-z0-9:/._@+-]{1,512}$`)
 )
