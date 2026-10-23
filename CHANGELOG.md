@@ -1,3 +1,36 @@
+# v0.18.0
+
+Workloads with no secret: Fly.io OIDC and a cloud KMS.
+
+- **Workloads** (`esec vault group workload GROUP NAME --fly-org ORG
+  --fly-app APP --gcp-key ... --gcp-provider ...`): a member of a group that
+  holds no secret. Its group key is wrapped, on the admin's device, with the
+  public half of a key in Google Cloud KMS. At each start the app proves
+  where it runs with its Fly.io OIDC token (to the vault, which checks the
+  workload's policy, and to Google, whose workload identity federation lets
+  it decrypt with that one key), unwraps the group key in memory and opens
+  its project keys. The vault server can open none of it; the KMS never sees
+  a secret. The app's configuration holds only a descriptor
+  (`ESEC_VAULT_WORKLOAD=esecw1_...`), no secret; `esec-vault machine run`,
+  `machine env` and `machine whoami` use it.
+- **`esec vault kms setup gcp`** prints, or with `--apply` runs, the gcloud
+  commands for the one-time setup: one software RSA key, a workload identity
+  pool trusting `https://oidc.fly.io/ORG` for the apps named, and their IAM
+  bindings. About $0.06 a month for the key and $0.03 per 10,000 app starts.
+- **KMS providers sit behind one interface** (`internal/kms`): wrapping is
+  local (RSA-OAEP-SHA256), and a provider only unwraps, so AWS KMS, Azure
+  Key Vault or OpenBao can follow. Google Cloud is the first, over plain
+  REST (token exchange, optional service account impersonation, KMS
+  asymmetric decrypt with checksums).
+- New group keys reach workloads with no KMS call on the admin's side; a
+  removed workload gets nothing from its next start. Group pages list
+  workloads, with their KMS key and where they run.
+- **Runbook** (`docs/runbook.md`): bootstrapping a project, people, Fly.io
+  apps, CI, decrypting on your laptop and VMs, and rotating every kind of
+  key.
+
+Older versions cannot verify a group chain with a workload in it.
+
 # v0.17.0
 
 Fly.io workload identity.

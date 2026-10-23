@@ -301,7 +301,7 @@ func (s *Server) webGroup(w http.ResponseWriter, r *http.Request) {
 // groupLiveParts are the parts of a group's page that refresh on their own;
 // groupParts adds the forms a submission changes.
 var (
-	groupLiveParts = []string{"group-alerts", "group-tiles", "group-joins", "group-members", "group-machines", "group-tokens", "group-changes", "group-history", "group-activity"}
+	groupLiveParts = []string{"group-alerts", "group-tiles", "group-joins", "group-members", "group-workloads", "group-machines", "group-tokens", "group-changes", "group-history", "group-activity"}
 	groupParts     = append([]string{"group-access"}, groupLiveParts...)
 )
 
@@ -425,6 +425,7 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 	}
 	data["Machines"] = view(team.KindMachine)
 	data["Tokens"] = view(team.KindToken)
+	data["Workloads"] = view(team.KindWorkload)
 	data["Matrix"] = matrix
 	data["Joins"] = status.Joins
 	data["Changes"] = status.Changes
@@ -592,7 +593,7 @@ func groupHistoryOf(gs *team.GroupState) []teamHistory {
 	return out
 }
 
-func groupLinkText(gs *team.GroupState, l team.GroupLink) string {
+func groupLinkText(gs *team.GroupState, l team.GroupLink) string { //nolint:gocyclo // one case per link type
 	var b struct {
 		Admin     team.Person     `json:"admin"`
 		User      string          `json:"user"`
@@ -621,6 +622,10 @@ func groupLinkText(gs *team.GroupState, l team.GroupLink) string {
 			return "let in the machine " + b.Machine.Name + ", which asked to join"
 		}
 		return "added the machine " + b.Machine.Name
+	case team.GroupWorkloadAdd:
+		var wl team.GroupWorkloadAddBody
+		_ = json.Unmarshal(l.Body, &wl)
+		return "added the workload " + wl.Workload.Name + " (" + wl.Workload.OIDC.Describe() + ", keys unwrapped with " + wl.Workload.KMS.Provider + " KMS)"
 	case team.GroupTokenAdd:
 		t := "created the enrollment token " + b.Token.Name
 		if !b.Token.Expires.IsZero() {

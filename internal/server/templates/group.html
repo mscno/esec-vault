@@ -31,6 +31,13 @@
   {{template "cmd" (printf "esec vault group add-machine %s web-1" .Group)}}
   <p class="muted">The machine then runs commands with the keys of every project the group reads: <code>esec-vault machine run -- esec run prod -- ./server</code>. A machine deleted with its disk is removed with <code>--destroyed</code>, which leaves nothing to rotate. <code>esec vault group show {{.Group}}</code> prints the group's fingerprint, which <code>machine join --fingerprint</code> checks.</p>
 </details>
+<h2 id="workloads">Workloads</h2>
+{{template "group-workloads" .}}
+<details class="help" data-preserve-attr="open">
+  <summary>Add a workload (no secret to store)</summary>
+  <p>A workload is an app that proves where it runs with an OIDC token (a Fly.io app, a GitHub Actions job) and unwraps the group key with a key in your cloud KMS. Nothing secret goes into its configuration. On a device:</p>
+  {{template "cmd" (printf "esec vault group workload %s store --fly-org acme --fly-app store --gcp-key projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/1 --gcp-provider projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER" .Group)}}
+</details>
 <h2 id="tokens">Enrollment tokens</h2>
 {{template "group-tokens" .}}
 <h2 id="access">What it reads</h2>
@@ -145,6 +152,25 @@
   {{end}}
   </tbody>
 </table>
+</div>{{end}}
+
+{{define "group-workloads"}}<div id="group-workloads" class="scroll">
+{{if .Workloads}}
+<table>
+  <thead><tr><th>Workload</th><th>Runs as</th><th>KMS key</th><th>Last used</th><th></th></tr></thead>
+  <tbody>
+  {{range .Workloads}}
+  <tr id="cred-{{.ID}}">
+    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{else if not .HasKey}} <span class="badge status-pending">key not sent</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
+    <td>{{.Policy}}</td>
+    <td>{{with .KMS}}<span class="badge">{{.Provider}}</span> <code title="{{.Name}}">{{short .Name}}</code>{{end}}</td>
+    <td>{{when .LastUsed}}{{if and $.ShowOps .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "fetch"}}</span>{{end}}</td>
+    <td>{{if and $.MyAdmin (not .Suspended)}}<form method="post" action="/groups/{{$.Group}}/remove" data-confirm="Remove the workload {{.Name}}? It gets no keys from its next start." {{dsPost (printf "/groups/%s/remove" $.Group)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="cred" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}<p class="muted">No workloads. A workload holds no secret: it proves where it runs with an OIDC token, and a key in your cloud KMS unwraps its keys.</p>{{end}}
 </div>{{end}}
 
 {{define "group-tokens"}}<div id="group-tokens" class="scroll">

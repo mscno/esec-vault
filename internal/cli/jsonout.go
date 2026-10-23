@@ -219,7 +219,10 @@ func machinesJSON(ms []*team.MachineState, used map[string]time.Time) any {
 
 func whoamiJSON(cred *machine.Credential, keys *machine.Keys) any {
 	kind := "project machine"
-	if keys.Group != "" {
+	switch {
+	case cred.Workload != nil:
+		kind = "workload"
+	case keys.Group != "":
 		kind = "machine"
 		if cred.Group.Kind() == team.KindToken {
 			kind = "token"

@@ -190,6 +190,10 @@ func (t *teamCtx) gcommit(next *team.GroupState, links, grants []*envelope.Envel
 func (t *teamCtx) keyGrant(gs *team.GroupState, to string, key [32]byte) (*envelope.Envelope, error) {
 	var r team.Recipient
 	if c, ok := gs.Cred(to); ok {
+		if c.Kind == team.KindWorkload {
+			// Wrapped with the workload's KMS key, here: no KMS call.
+			return team.NewWorkloadKeyGrant(gs, t.a.State.User, t.own.UKeyVersion, t.id.Sign, c, key, t.a.Now())
+		}
 		pub, err := chain.ParseKey32(c.EncPub)
 		if err != nil {
 			return nil, err
@@ -1087,6 +1091,8 @@ func joinOrNone(list []string) string {
 // describeGroupLink says what a group link did, for people.
 func describeGroupLink(gs *team.GroupState, l team.GroupLink) string {
 	switch l.Type {
+	case team.GroupWorkloadAdd:
+		return "added a workload"
 	case team.GroupMachineAdd:
 		return "added a machine"
 	case team.GroupTokenAdd:

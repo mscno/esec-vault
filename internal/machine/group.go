@@ -53,6 +53,9 @@ func DefaultFile() string {
 type Credential struct {
 	Project *team.MachineKey
 	Group   *team.CredKey
+	// Workload is a workload's descriptor: no secret, its keys open with
+	// a KMS key.
+	Workload *team.WorkloadRef
 	// From says where it was found.
 	From string
 }
@@ -60,6 +63,13 @@ type Credential struct {
 // LoadCredential reads the machine's key from ESEC_VAULT_MACHINE_KEY (a key,
 // or @file), or else from the key file a host joined a group with.
 func LoadCredential() (*Credential, error) {
+	if w := strings.TrimSpace(os.Getenv(WorkloadEnv)); w != "" {
+		ref, err := team.ParseWorkloadRef(w)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", WorkloadEnv, err)
+		}
+		return &Credential{Workload: ref, From: WorkloadEnv}, nil
+	}
 	v := strings.TrimSpace(os.Getenv(KeyEnv))
 	from := KeyEnv
 	if path, ok := strings.CutPrefix(v, "@"); ok {
@@ -80,6 +90,13 @@ func LoadCredential() (*Credential, error) {
 		}
 		v, from = strings.TrimSpace(string(data)), path
 	}
+	if strings.HasPrefix(v, team.WorkloadPrefix) {
+		ref, err := team.ParseWorkloadRef(v)
+		if err != nil {
+			return nil, err
+		}
+		return &Credential{Workload: ref, From: from}, nil
+	}
 	if strings.HasPrefix(v, team.CredPrefix) {
 		k, err := team.ParseCredKey(v)
 		if err != nil {
@@ -96,6 +113,9 @@ func LoadCredential() (*Credential, error) {
 
 // Fetch gets the keys of either kind of credential.
 func (c *Credential) Fetch(ctx context.Context, oidcToken string) (*Keys, error) {
+	if c.Workload != nil {
+		return FetchWorkload(ctx, c.Workload)
+	}
 	if c.Group != nil {
 		return FetchGroup(ctx, c.Group, oidcToken)
 	}
@@ -104,6 +124,9 @@ func (c *Credential) Fetch(ctx context.Context, oidcToken string) (*Keys, error)
 
 // Server returns the credential's server.
 func (c *Credential) Server() string {
+	if c.Workload != nil {
+		return c.Workload.Server
+	}
 	if c.Group != nil {
 		return c.Group.Server
 	}

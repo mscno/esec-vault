@@ -366,7 +366,10 @@ func (c *MachineWhoamiCmd) Run(ctx *cliCtx) error {
 	where := "project " + keys.Project
 	if keys.Group != "" {
 		kind := "machine"
-		if cred.Group.Kind() == team.KindToken {
+		switch {
+		case cred.Workload != nil:
+			kind = "workload (keys unwrapped with its KMS key)"
+		case cred.Group.Kind() == team.KindToken:
 			kind = "token"
 		}
 		where = kind + " of the group " + keys.Group

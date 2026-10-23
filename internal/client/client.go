@@ -379,6 +379,12 @@ func (c *Client) FleetKeys(ctx context.Context, req wire.GroupKeysRequest) (*wir
 	return &out, c.do(ctx, http.MethodPost, "/v1/fleet/keys", unsigned, req, &out)
 }
 
+// WorkloadKeys fetches a workload's sealed keys with its OIDC token.
+func (c *Client) WorkloadKeys(ctx context.Context, req wire.WorkloadKeysRequest) (*wire.GroupKeys, error) {
+	var out wire.GroupKeys
+	return &out, c.do(ctx, http.MethodPost, "/v1/fleet/workload-keys", unsigned, req, &out)
+}
+
 // ---- access requests and timed access ----
 
 // Requests lists the access requests the caller can decide, and their own.

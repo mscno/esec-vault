@@ -219,6 +219,15 @@ type GroupKeysRequest struct {
 	Sig       []byte `json:"sig"`
 }
 
+// WorkloadKeysRequest is a workload asking for its keys. A workload holds
+// no secret: its OIDC token proves who it is, and what comes back opens only
+// with the KMS key its group chain names.
+type WorkloadKeysRequest struct {
+	Group     string `json:"group"`
+	ID        string `json:"id"`
+	OIDCToken string `json:"oidc_token"`
+}
+
 // GroupProjectKeys is one project's chain and its grant to the group.
 type GroupProjectKeys struct {
 	Project string               `json:"project"`

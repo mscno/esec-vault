@@ -29,6 +29,7 @@ type GroupCmd struct {
 	Revoke     GroupRevokeCmd     `cmd:"" help:"Stop a group reading a project."`
 	Token      GroupTokenCmd      `cmd:"" help:"Create an enrollment token: CI jobs use it directly, and machines join the group with it."`
 	AddMachine GroupAddMachineCmd `cmd:"" name:"add-machine" help:"Create a machine of the group and print its key, for a machine you set up yourself."`
+	Workload   GroupWorkloadCmd   `cmd:"" help:"Add a workload with no secret: it proves where it runs (OIDC) and unwraps its keys with your cloud KMS."`
 	Approve    GroupApproveCmd    `cmd:"" help:"Let in machines waiting to join, and sign changes made on the web pages."`
 	Remove     GroupRemoveCmd     `cmd:"" help:"Remove a person, machine or token; the group gets a new key."`
 	Leave      GroupLeaveCmd      `cmd:"" help:"Leave a group you are a member of."`

@@ -1121,6 +1121,10 @@ func groupLinkSummary(before, after *team.GroupState, l team.GroupLink) string {
 		return b.Machine.Name + " " + b.Machine.ID
 	case team.GroupTokenAdd:
 		return b.Token.Name + " " + b.Token.ID
+	case team.GroupWorkloadAdd:
+		var wl team.GroupWorkloadAddBody
+		_ = json.Unmarshal(l.Body, &wl)
+		return wl.Workload.Name + " " + wl.Workload.ID
 	case team.GroupRemove:
 		if c := before.Creds[b.ID]; c != nil {
 			return c.Kind + " " + c.Name + " " + b.ID
@@ -1163,4 +1167,88 @@ func (s *Server) groupPeople(ctx context.Context, tx *sql.Tx, group, project str
 		out = append(out, p.User)
 	}
 	return out, nil
+}
+
+// readWorkloadRequest reads and checks a workload's request, writing the
+// refusal.
+func readWorkloadRequest(w http.ResponseWriter, r *http.Request) (*wire.WorkloadKeysRequest, bool) {
+	body, err := readBody(w, r, maxSmallBody)
+	if err != nil {
+		writeErr(w, http.StatusRequestEntityTooLarge, wire.ErrInvalidRequest, "request body too large")
+		return nil, false
+	}
+	var req wire.WorkloadKeysRequest
+	if err := decodeStrict(body, &req); err != nil || team.ValidGroup(req.Group) != nil || !strings.HasPrefix(req.ID, "w_") || team.ValidCredID(req.ID) != nil {
+		writeErr(w, http.StatusBadRequest, wire.ErrInvalidRequest, "invalid request")
+		return nil, false
+	}
+	return &req, true
+}
+
+// apiWorkloadKeys gives a workload its sealed keys, like apiFleetKeys gives
+// a machine its: the group chain, its group key grant (wrapped with its
+// KMS key) and each project's grant to the group. A workload has no key to
+// sign with; its OIDC token, checked against the policy the chain names,
+// is what lets it ask, and nothing it gets opens without the KMS.
+func (s *Server) apiWorkloadKeys(w http.ResponseWriter, r *http.Request) {
+	now := s.now()
+	ip := s.clientIP(r)
+	if !s.allowAnon("workload-keys", ip, 600, 3000, time.Hour) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many workload requests from this address")
+		return
+	}
+	req, ok := readWorkloadRequest(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	unknown := func() {
+		writeErr(w, http.StatusUnauthorized, wire.ErrUnauthorized, "unknown, removed or suspended workload")
+	}
+	row, err := s.db.credRow(ctx, req.Group, req.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if row == nil || !row.Active || !row.Suspended.IsZero() {
+		unknown()
+		return
+	}
+	if !s.limits.allow("workload:"+req.Group+":"+req.ID, 600, time.Hour, now) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests for this workload; try again later")
+		return
+	}
+	gs, links, err := s.db.groupState(ctx, s.db.sql, req.Group)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if gs == nil {
+		unknown()
+		return
+	}
+	cred, ok := gs.Cred(req.ID)
+	if !ok || cred.Kind != team.KindWorkload || cred.OIDC == nil {
+		unknown()
+		return
+	}
+	claims, ok := s.checkOIDC(w, r, req.OIDCToken, cred.OIDC, now)
+	if !ok {
+		_ = s.db.groupAudit(ctx, s.db.sql, req.Group, req.ID, ip, "keys_refused", cred.Name, now)
+		return
+	}
+	out, err := s.fleetKeys(ctx, gs, links, req.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if _, err := s.db.sql.ExecContext(ctx, `UPDATE group_creds SET last_used_at = ?, last_ip = ?, uses = uses + 1 WHERE group_id = ? AND id = ?`, now.Unix(), ip, req.Group, req.ID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.db.groupAudit(ctx, s.db.sql, req.Group, req.ID, ip, "keys", truncate(cred.Name+" "+claimsDetail(claims), 500), now); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/fpwords"
 	"github.com/mscno/esec-vault/internal/identity"
+	"github.com/mscno/esec-vault/internal/kms"
 )
 
 // Envelope kinds of machine groups.
@@ -57,6 +58,10 @@ const (
 	GroupAccessRemove = "access_remove"
 	GroupMemberAdd    = "member_add"
 	GroupMemberRemove = "member_remove"
+	// GroupWorkloadAdd adds a workload: an identity with no secret, whose
+	// group key is wrapped by a KMS key that only workloads matching its
+	// OIDC policy may unwrap with.
+	GroupWorkloadAdd = "workload_add"
 )
 
 // Credential kinds: a machine is one host; a token is a shared secret for
@@ -64,7 +69,14 @@ const (
 const (
 	KindMachine = "machine"
 	KindToken   = "token"
+	// KindWorkload is a workload that holds no secret: its group key is
+	// wrapped with an external KMS key (internal/kms).
+	KindWorkload = "workload"
 )
+
+// SealKMS marks a key grant wrapped with a KMS key rather than sealed to
+// an X25519 key.
+const SealKMS = "kms"
 
 // Bounds of a group.
 const (
@@ -82,7 +94,7 @@ const GroupHolderPrefix = "g:"
 func GroupHolder(group string) string { return GroupHolderPrefix + group }
 
 var (
-	credPattern = regexp.MustCompile(`^[mt]_[a-z0-9]{8,40}$`)
+	credPattern = regexp.MustCompile(`^[mtw]_[a-z0-9]{8,40}$`)
 )
 
 // ValidGroup checks a group id ("org/name").
@@ -137,8 +149,11 @@ type Credential struct {
 	// Expires ends a token's use; zero never.
 	Expires time.Time `json:"expires,omitzero"`
 	// OIDC, when set, hands the credential's keys only to matching
-	// workloads.
+	// workloads; a workload must have one.
 	OIDC *OIDCPolicy `json:"oidc,omitempty"`
+	// KMS is a workload's key, which wraps its group key; EncPub is then
+	// the key's fingerprint, and SignPub empty.
+	KMS *kms.Key `json:"kms,omitempty"`
 }
 
 // Group link bodies.
@@ -167,6 +182,10 @@ type (
 	// GroupTokenAddBody adds an enrollment token.
 	GroupTokenAddBody struct {
 		Token Credential `json:"token"`
+	}
+	// GroupWorkloadAddBody adds a workload.
+	GroupWorkloadAddBody struct {
+		Workload Credential `json:"workload"`
 	}
 	// GroupRemoveBody removes a machine or token. Destroyed says the admin
 	// knows its keys are gone (a deleted VM), so nothing needs rotating.
@@ -604,6 +623,12 @@ func (s *GroupState) apply(l GroupLink) error {
 			return err
 		}
 		return s.addCred(b.Token, KindToken, "", l)
+	case GroupWorkloadAdd:
+		var b GroupWorkloadAddBody
+		if err := decodeGroupBody(l, &b); err != nil {
+			return err
+		}
+		return s.addCred(b.Workload, KindWorkload, "", l)
 	case GroupRemove:
 		return s.applyRemove(l)
 	case GroupKeyRotate:
@@ -791,17 +816,14 @@ func (s *GroupState) addCred(c Credential, kind, join string, l GroupLink) error
 	if err := ValidCredID(c.ID); err != nil {
 		return err
 	}
-	if (kind == KindMachine) != strings.HasPrefix(c.ID, "m_") {
-		return errors.New("machine ids start with m_, token ids with t_")
+	if c.ID[:2] != map[string]string{KindMachine: "m_", KindToken: "t_", KindWorkload: "w_"}[kind] {
+		return errors.New("machine ids start with m_, token ids with t_, workload ids with w_")
 	}
 	if err := chain.ValidDeviceName(c.Name); err != nil {
 		return errors.New("a name is 1-64 letters, digits, spaces or ._()'- characters")
 	}
-	if _, err := chain.ParseKey32(c.EncPub); err != nil {
-		return fmt.Errorf("encryption key: %w", err)
-	}
-	if _, err := chain.ParseSignKey(c.SignPub); err != nil {
-		return fmt.Errorf("signing key: %w", err)
+	if err := checkCredKeys(c, kind); err != nil {
+		return err
 	}
 	if c.Created.IsZero() {
 		return errors.New("creation time missing")
@@ -818,7 +840,11 @@ func (s *GroupState) addCred(c Credential, kind, join string, l GroupLink) error
 		return errors.New("id reused")
 	}
 	for _, o := range s.Creds {
-		if o.SignPub == c.SignPub || o.EncPub == c.EncPub {
+		// Workloads may share a KMS key (two apps reading the same).
+		if kind == KindWorkload && o.Kind == KindWorkload {
+			continue
+		}
+		if (c.SignPub != "" && o.SignPub == c.SignPub) || o.EncPub == c.EncPub {
 			return errors.New("keys reused")
 		}
 	}
@@ -827,6 +853,45 @@ func (s *GroupState) addCred(c Credential, kind, join string, l GroupLink) error
 	}
 	s.Creds[c.ID] = &CredState{Credential: c, Kind: kind, Active: true, AddedBy: l.Signer, AddedSeq: l.Seq, AddedTime: l.CTime, Join: join}
 	s.active++
+	return nil
+}
+
+// checkCredKeys checks a credential's keys: a workload's KMS key, or a
+// machine's or token's own keys.
+func checkCredKeys(c Credential, kind string) error {
+	if kind == KindWorkload {
+		return checkWorkload(c)
+	}
+	if c.KMS != nil {
+		return errors.New("only a workload has a KMS key")
+	}
+	if _, err := chain.ParseKey32(c.EncPub); err != nil {
+		return fmt.Errorf("encryption key: %w", err)
+	}
+	if _, err := chain.ParseSignKey(c.SignPub); err != nil {
+		return fmt.Errorf("signing key: %w", err)
+	}
+	return nil
+}
+
+// checkWorkload checks a workload: a valid KMS key it is named by, and an
+// OIDC policy, since nothing else proves who asks for its keys.
+func checkWorkload(c Credential) error {
+	if c.KMS == nil {
+		return errors.New("a workload names its KMS key")
+	}
+	if err := c.KMS.Validate(); err != nil {
+		return err
+	}
+	if c.EncPub != c.KMS.Fingerprint() || c.SignPub != "" {
+		return errors.New("a workload's key is its KMS key's fingerprint, and it signs nothing")
+	}
+	if c.OIDC == nil {
+		return errors.New("a workload needs an OIDC policy: it has no secret of its own")
+	}
+	if !c.Expires.IsZero() {
+		return errors.New("only tokens expire")
+	}
 	return nil
 }
 
@@ -975,6 +1040,9 @@ type KeyGrant struct {
 	ToEncPub string    `json:"to_enc_pub"`
 	CTime    time.Time `json:"ctime"`
 	Box      []byte    `json:"box"`
+	// Seal is SealKMS for a grant to a workload, wrapped with its KMS key;
+	// empty for one sealed to an X25519 key.
+	Seal string `json:"seal,omitempty"`
 }
 
 type keyPayload struct {
@@ -999,6 +1067,67 @@ func NewKeyGrant(gs *GroupState, from string, fromVersion uint64, sign ed25519.P
 		return nil, err
 	}
 	return envelope.New(KindGroupKey, g, sign)
+}
+
+// NewWorkloadKeyGrant wraps the group's current private key with a
+// workload's KMS key, locally: no KMS call is made.
+func NewWorkloadKeyGrant(gs *GroupState, from string, fromVersion uint64, sign ed25519.PrivateKey, to *CredState, priv [32]byte, now time.Time) (*envelope.Envelope, error) {
+	pub := identity.PublicFromPrivate(priv)
+	if hex.EncodeToString(pub[:]) != gs.Key.EncPub {
+		return nil, errors.New("that is not the group's current key")
+	}
+	if to.Kind != KindWorkload || to.KMS == nil {
+		return nil, errors.New("not a workload")
+	}
+	plain, err := json.Marshal(keyPayload{Group: gs.Group, To: to.ID, Version: gs.Key.Version, Key: hex.EncodeToString(priv[:])})
+	if err != nil {
+		return nil, err
+	}
+	g := KeyGrant{Group: gs.Group, Version: gs.Key.Version, EncPub: gs.Key.EncPub, From: from, FromKey: fromVersion, To: to.ID, ToEncPub: to.EncPub, CTime: now.UTC().Truncate(time.Second), Seal: SealKMS}
+	if g.Box, err = to.KMS.Wrap(plain); err != nil {
+		return nil, err
+	}
+	return envelope.New(KindGroupKey, g, sign)
+}
+
+// OpenWorkloadKeyGrant verifies a workload's key grant and has unwrap open
+// it (with the KMS). It returns the group's private key, checked against
+// the chain.
+func OpenWorkloadKeyGrant(e *envelope.Envelope, gs *GroupState, chains Chains, id string, unwrap func(box []byte) ([]byte, error)) ([32]byte, error) {
+	var none [32]byte
+	g, err := CheckKeyGrant(e, gs, chains)
+	if err != nil {
+		return none, err
+	}
+	if g.To != id || g.Seal != SealKMS {
+		return none, errors.New("the key grant is not this workload's")
+	}
+	plain, err := unwrap(g.Box)
+	if err != nil {
+		return none, err
+	}
+	return openPayload(plain, g, gs)
+}
+
+// openPayload checks a key grant's content against the grant and chain.
+func openPayload(plain []byte, g *KeyGrant, gs *GroupState) ([32]byte, error) {
+	var none [32]byte
+	var p keyPayload
+	if err := envelope.DecodeStrict(plain, &p); err != nil {
+		return none, fmt.Errorf("invalid key grant content: %w", err)
+	}
+	if p.Group != g.Group || p.To != g.To || p.Version != g.Version {
+		return none, errors.New("the key grant's content does not match it")
+	}
+	k, err := chain.ParseKey32(p.Key)
+	if err != nil {
+		return none, errors.New("invalid group key in the grant")
+	}
+	pub := identity.PublicFromPrivate(k)
+	if hex.EncodeToString(pub[:]) != gs.Key.EncPub {
+		return none, errors.New("the key in the grant is not the group's key")
+	}
+	return k, nil
 }
 
 // PeekKeyGrant decodes a key grant without verifying it.
@@ -1043,10 +1172,13 @@ func CheckKeyGrant(e *envelope.Envelope, gs *GroupState, chains Chains) (*KeyGra
 		return nil, err
 	}
 	if c, ok := gs.Cred(g.To); ok {
-		if g.ToKey != 0 || g.ToEncPub != c.EncPub {
+		if g.ToKey != 0 || g.ToEncPub != c.EncPub || (g.Seal == SealKMS) != (c.Kind == KindWorkload) || (g.Seal != "" && g.Seal != SealKMS) {
 			return nil, errors.New("the key grant is not sealed to that machine's key")
 		}
 		return g, nil
+	}
+	if g.Seal != "" {
+		return nil, errors.New("only a workload's key grant is wrapped with a KMS key")
 	}
 	if !gs.HoldsKey(g.To) {
 		return nil, fmt.Errorf("%w: %s is no longer in the group", ErrStale, g.To)
@@ -1100,22 +1232,7 @@ func OpenKeyGrant(e *envelope.Envelope, gs *GroupState, chains Chains, me Recipi
 	if err != nil {
 		return none, errors.New("the key grant does not open with this key")
 	}
-	var p keyPayload
-	if err := envelope.DecodeStrict(plain, &p); err != nil {
-		return none, fmt.Errorf("invalid key grant content: %w", err)
-	}
-	if p.Group != g.Group || p.To != g.To || p.Version != g.Version {
-		return none, errors.New("the key grant's content does not match it")
-	}
-	k, err := chain.ParseKey32(p.Key)
-	if err != nil {
-		return none, errors.New("invalid group key in the grant")
-	}
-	pub := identity.PublicFromPrivate(k)
-	if hex.EncodeToString(pub[:]) != gs.Key.EncPub {
-		return none, errors.New("the key in the grant is not the group's key")
-	}
-	return k, nil
+	return openPayload(plain, g, gs)
 }
 
 // NewGroupKey creates a group key pair.
@@ -1273,3 +1390,61 @@ func JoinWords(group, root string, c Credential) string {
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func unb64(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
+
+// ---- workloads ----
+
+// WorkloadPrefix starts a workload descriptor.
+const WorkloadPrefix = "esecw1_"
+
+// WorkloadRef is what a workload is told to be: its server, group, the root
+// of the group chain it verifies everything from, and its id. It holds no
+// secret, so it belongs in plain configuration (fly.toml [env]): what it
+// fetches opens only with the KMS key the group chain names, and only for
+// a workload whose OIDC token matches the chain's policy.
+type WorkloadRef struct {
+	Server string `json:"server"`
+	Group  string `json:"group"`
+	Root   string `json:"root"`
+	ID     string `json:"id"`
+}
+
+// String encodes r as one string.
+func (r *WorkloadRef) String() string {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		panic(err) // strings always marshal
+	}
+	return WorkloadPrefix + b64(raw)
+}
+
+// ParseWorkloadRef decodes a workload descriptor.
+func ParseWorkloadRef(s string) (*WorkloadRef, error) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(s), WorkloadPrefix)
+	if !ok {
+		return nil, errors.New("not an esec vault workload descriptor (it starts with " + WorkloadPrefix + ")")
+	}
+	raw, err := unb64(rest)
+	if err != nil {
+		return nil, errors.New("the workload descriptor is damaged")
+	}
+	var r WorkloadRef
+	if err := envelope.DecodeStrict(raw, &r); err != nil {
+		return nil, errors.New("the workload descriptor is damaged")
+	}
+	if err := ValidGroup(r.Group); err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(r.ID, "w_") || ValidCredID(r.ID) != nil || !rootPattern.MatchString(r.Root) || r.Server == "" {
+		return nil, errors.New("the workload descriptor is damaged")
+	}
+	return &r, nil
+}
+
+// NewWorkloadID returns a new workload id.
+func NewWorkloadID() (string, error) {
+	b := make([]byte, 15)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return "w_" + base32Lower(b), nil
+}

@@ -2,6 +2,11 @@ package team_test
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -9,6 +14,7 @@ import (
 
 	"github.com/mscno/esec-vault/internal/chain"
 	"github.com/mscno/esec-vault/internal/envelope"
+	"github.com/mscno/esec-vault/internal/kms"
 	"github.com/mscno/esec-vault/internal/team"
 )
 
@@ -389,5 +395,71 @@ func TestGroupMemberPromoted(t *testing.T) {
 	g.add(alice, team.GroupAdminRemove, team.GroupAdminRemoveBody{User: bob.user})
 	if g.st.HoldsKey(bob.user) {
 		t.Fatal("a former admin who was a member still holds the group key")
+	}
+}
+
+// A workload holds no secret: its group key is wrapped with a KMS key the
+// chain names, and it must have an OIDC policy.
+func TestGroupWorkload(t *testing.T) {
+	alice := newAcct(t, 1, "alice")
+	w := newWorld(t, alice)
+	g := newGroupWorld(t, w, alice)
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	key := &kms.Key{Provider: "gcp", Name: "projects/acme-vault/locations/europe-west1/keyRings/esec/cryptoKeys/workloads/cryptoKeyVersions/1", Audience: "projects/123456789/locations/global/workloadIdentityPools/esec-fly/providers/fly-acme", PublicKey: base64.StdEncoding.EncodeToString(der)}
+	policy := &team.OIDCPolicy{Provider: team.ProviderFly, FlyOrg: "acme", FlyApps: []string{"store"}}
+	wl := team.Credential{ID: "w_abcdefghij", Name: "store", EncPub: key.Fingerprint(), KMS: key, OIDC: policy, Created: w.now}
+
+	noPolicy := wl
+	noPolicy.OIDC = nil
+	if err := g.apply(g.link(alice, team.GroupWorkloadAdd, team.GroupWorkloadAddBody{Workload: noPolicy})); err == nil {
+		t.Fatal("a workload without an OIDC policy")
+	}
+	wrongFP := wl
+	wrongFP.EncPub = strings.Repeat("ab", 32)
+	if err := g.apply(g.link(alice, team.GroupWorkloadAdd, team.GroupWorkloadAddBody{Workload: wrongFP})); err == nil {
+		t.Fatal("a workload whose key is not its KMS key")
+	}
+	g.add(alice, team.GroupWorkloadAdd, team.GroupWorkloadAddBody{Workload: wl})
+	c, ok := g.st.Cred(wl.ID)
+	if !ok || c.Kind != team.KindWorkload {
+		t.Fatalf("workload: %+v", c)
+	}
+	// A second app on the same KMS key.
+	wl2 := wl
+	wl2.ID, wl2.Name, wl2.OIDC = "w_bcdefghijk", "web", &team.OIDCPolicy{Provider: team.ProviderFly, FlyOrg: "acme", FlyApps: []string{"web"}}
+	g.add(alice, team.GroupWorkloadAdd, team.GroupWorkloadAddBody{Workload: wl2})
+
+	kg, err := team.NewWorkloadKeyGrant(g.st, alice.user, alice.st.UKeyVersion, alice.u.Sign, c, g.key, w.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unwrap := func(box []byte) ([]byte, error) { return rsa.DecryptOAEP(sha256.New(), nil, priv, box, nil) }
+	got, err := team.OpenWorkloadKeyGrant(kg, g.st, w.chains, wl.ID, unwrap)
+	if err != nil || got != g.key {
+		t.Fatalf("open: %v", err)
+	}
+	// It opens for that workload only, and a sealed grant cannot pose as
+	// one.
+	if _, err := team.OpenWorkloadKeyGrant(kg, g.st, w.chains, wl2.ID, unwrap); err == nil {
+		t.Fatal("another workload opened the grant")
+	}
+	var body team.KeyGrant
+	_ = kg.Decode(&body)
+	body.Seal = ""
+	forged, _ := envelope.New(team.KindGroupKey, body, alice.u.Sign)
+	if _, err := team.CheckKeyGrant(forged, g.st, w.chains); err == nil {
+		t.Fatal("a workload's grant without the KMS seal")
+	}
+	// Removing it exposes the group key, like a machine.
+	g.add(alice, team.GroupRemove, team.GroupRemoveBody{ID: wl.ID})
+	if len(g.st.KeyExposed) != 1 {
+		t.Fatalf("exposures: %+v", g.st.KeyExposed)
+	}
+	if again, err := team.VerifyGroup(group, g.links, w.chains); err != nil || again.Head() != g.st.Head() {
+		t.Fatalf("reverify: %v", err)
 	}
 }

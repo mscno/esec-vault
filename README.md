@@ -8,6 +8,7 @@ Both forms run the same program.
 
 ## Find a guide
 
+- [Runbook: new projects, people, keyless Fly.io apps with a cloud KMS, key rotation](docs/runbook.md).
 - [Quick recipes: people, CI, servers, Fly.io apps, fleets](#quick-recipes).
 - [Set up your personal vault](#first-setup).
 - [Sync keys between machines with a vault server](#sync-keys-with-a-vault-server).

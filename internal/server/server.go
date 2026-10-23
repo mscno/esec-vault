@@ -328,6 +328,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /v1/fleet/join/status", s.apiFleetJoinStatus)
 	m.HandleFunc("POST /v1/fleet/enroll", s.apiFleetEnroll)
 	m.HandleFunc("POST /v1/fleet/keys", s.apiFleetKeys)
+	m.HandleFunc("POST /v1/fleet/workload-keys", s.apiWorkloadKeys)
 	m.HandleFunc("GET /v1/server/key", s.apiServerKey)
 	// The passkey signer page, hosted apart (passkeys.go).
 	m.HandleFunc("OPTIONS /signer/v1/", s.signerCORS(func(http.ResponseWriter, *http.Request) {}))
