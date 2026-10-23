@@ -1,14 +1,17 @@
 package team_test
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/chain"
 	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/kms"
 	"github.com/mscno/esec-vault/internal/team"
@@ -212,5 +215,49 @@ func TestOrgForgery(t *testing.T) {
 	}
 	if _, err := fresh.Next(e, w.chains); err == nil {
 		t.Fatal("an init signed by someone else than its creator")
+	}
+}
+
+// A link a delegate signed (the server, a passkey on a page) is not one the
+// person signed with their user key, so it anchors nothing; removals signed
+// by a delegate, or marked so, leave admin roles alone.
+func TestOrgDelegateLinks(t *testing.T) {
+	alice, bob, carol := newAcct(t, 1, "alice"), newAcct(t, 2, "bob"), newAcct(t, 3, "carol")
+	w := newWorld(t, alice, bob, carol)
+	o := newOrgWorld(t, w, bob)
+	o.add(bob, team.OrgAdminAdd, team.OrgAdminAddBody{Admin: alice.person(), Verified: team.VerifiedGitHubSSH})
+	o.add(bob, team.OrgMemberAdd, team.OrgMemberAddBody{Member: carol.person(), Verified: team.VerifiedGitHubSSH})
+	if o.st.SignedWithUserKey(alice.user) {
+		t.Fatal("alice signed nothing")
+	}
+	srvPub, srvKey, _ := ed25519.GenerateKey(rand.Reader)
+	alice.add(chain.TypeDelegateAdd, chain.DelegateAddBody{Delegate: chain.Delegate{ID: "dl_server0001", Kind: chain.DelegateServer, Name: "vault server", Scope: chain.ScopeRemove, SignPub: hex.EncodeToString(srvPub), Created: t0}}, t0, alice.u.Sign)
+	w.now = w.now.Add(time.Minute)
+	e, err := o.st.DelegateLink(team.OrgMemberRemove, team.OrgMemberRemoveBody{User: carol.user}, w.now, alice.user, "dl_server0001", alice.st.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.AddSignature(srvKey)
+	next, err := o.st.Next(e, w.chains)
+	if err != nil {
+		t.Fatalf("the server removes a member for alice: %v", err)
+	}
+	o.st = next
+	if o.st.SignedWithUserKey(alice.user) {
+		t.Fatal("a link the server signed counts as alice's own")
+	}
+	if !o.st.KeepsAdminRoles(carol.user) {
+		t.Fatal("a removal the server signed takes admin roles away")
+	}
+	// A removal with the user key takes everything, unless it says not to.
+	o.add(bob, team.OrgMemberAdd, team.OrgMemberAddBody{Member: carol.person(), Verified: team.VerifiedGitHubSSH})
+	o.add(alice, team.OrgMemberRemove, team.OrgMemberRemoveBody{User: carol.user})
+	if o.st.KeepsAdminRoles(carol.user) || !o.st.SignedWithUserKey(alice.user) {
+		t.Fatal("a removal alice signed")
+	}
+	o.add(bob, team.OrgMemberAdd, team.OrgMemberAddBody{Member: carol.person(), Verified: team.VerifiedGitHubSSH})
+	o.add(alice, team.OrgMemberRemove, team.OrgMemberRemoveBody{User: carol.user, KeepAdminRoles: true})
+	if !o.st.KeepsAdminRoles(carol.user) {
+		t.Fatal("a removal that keeps admin roles")
 	}
 }

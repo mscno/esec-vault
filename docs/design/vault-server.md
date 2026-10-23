@@ -1205,11 +1205,14 @@ accounts of its own, and anyone may set one up for a name nothing is named
 after yet (the first link of a used name needs an admin of the first
 project or group of it). So what a chain lets a device do by itself waits
 until the device anchored that chain's root: this account signed a link of
-it, or its person confirmed its fingerprint words (`org trust`). Before
+it with its user key (devices sign in a chain only once they anchored it,
+so a link of the person's delegates never counts), or its person confirmed
+its fingerprint words (`org trust`). Before
 that, the chain only adds refusals (rules, KMS keys not approved), and the
 note on a project's creator says it cannot vouch. Removals signed by a
-delegate, and those a device signs unasked (`changes --yes`), take away
-only roles that are not an admin's.
+delegate, and those a device signs unasked (`changes --yes`, which marks
+them `keep_admin_roles`), take away only roles that are not an admin's, on
+every device.
 
 **Threats.** A server can hide an organisation from a device that never
 saw it; one that did refuses the rollback. Hiding acme from its admins'

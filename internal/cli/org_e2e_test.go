@@ -79,7 +79,9 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	if out := owner.run("", "org", "add", "acme", "alice"); !strings.Contains(out, "Added alice to acme as a member") {
 		t.Fatalf("org add:\n%s", out)
 	}
-	owner.run("", "org", "add", "acme", "dave")
+	owner.run("", "org", "add", "acme", "dave", "--admin")
+	// Dave signs nothing in acme's chain until his device confirmed it.
+	failsWith(t, dave, "has not confirmed the organisation acme", "org", "set", "acme", "--review-days", "7")
 	if out := owner.run("", "org", "set", "acme", "--members-only", "--fly-org", "acme"); !strings.Contains(out, "only its people join") {
 		t.Fatalf("org set:\n%s", out)
 	}
@@ -153,7 +155,7 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 		Left    map[string][]string `json:"left"`
 	}
 	owner.runJSON(&shown, "org", "acme")
-	if !shown.Signed || strings.Join(shown.Admins, ",") != "mscno" || strings.Join(shown.Members, ",") != "alice,dave" {
+	if !shown.Signed || strings.Join(shown.Admins, ",") != "dave,mscno" || strings.Join(shown.Members, ",") != "alice" {
 		t.Fatalf("org --json: %+v", shown)
 	}
 

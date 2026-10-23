@@ -91,7 +91,7 @@ cost about $6 a month.
 
 ```sh
 esec vault kms setup openbao --addr https://bao.acme.dev --fly-org acme --fly-app store,api   # prints the bao commands
-BAO_TOKEN=... esec vault org kms add acme fly-store --openbao-key https://bao.acme.dev/transit/esec-store/1 \
+BAO_ADDR=https://bao.acme.dev BAO_TOKEN=... esec vault org kms add acme fly-store --openbao-key https://bao.acme.dev/transit/esec-store/1 \
   --openbao-role jwt/fly-store --groups acme/store
 ```
 

@@ -192,7 +192,9 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) { //nolint:go
 	}
 	for _, r := range res.OrgRemovals {
 		s.Logger.Info("organisations: " + r)
-		Notifier("esec vault: organisation", r)
+		if strings.HasPrefix(r, "Took ") || s.stillWaiting("org removal "+r) {
+			Notifier("esec vault: organisation", r)
+		}
 	}
 	for _, o := range res.OrgUntrusted {
 		org, words, _ := strings.Cut(o, " ")

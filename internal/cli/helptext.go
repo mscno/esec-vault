@@ -146,7 +146,7 @@ var commandDetails = map[string]string{
 ` + examples(
 		"esec vault org remove acme alice --yes",
 	),
-	"org kms add": `Reads the key's public half from the KMS itself (gcloud, or OpenBao with BAO_TOKEN), so the key is the one its name says, and approves it for the organisation's workloads. --groups limits it to some groups, such as the one group of the app a per-app key is for.
+	"org kms add": `Reads the key's public half from the KMS itself (gcloud, or OpenBao with BAO_TOKEN; the token goes only to BAO_ADDR), so the key is the one its name says, and approves it for the organisation's workloads. --groups limits it to some groups, such as the one group of the app a per-app key is for.
 
 ` + examples(
 		"esec vault org kms add acme gcp-prod --gcp-key projects/acme-vault/locations/europe-west1/keyRings/esec/cryptoKeys/workloads/cryptoKeyVersions/1 --gcp-provider projects/123/locations/global/workloadIdentityPools/esec-workloads/providers/fly-acme --default",

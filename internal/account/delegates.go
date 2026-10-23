@@ -426,6 +426,9 @@ func (a *Account) ApplyChangeNarrow(ctx context.Context, ch ChangeView) ([]strin
 		if v.State == nil {
 			return nil, fmt.Errorf("%s has no organisation chain", ch.Target)
 		}
+		if !v.Trusted {
+			return nil, fmt.Errorf("this device has not confirmed the organisation %s; it signs nothing there unasked (esec vault org trust %s)", ch.Target, ch.Target)
+		}
 		if p, ok := v.State.PersonByLogin(ch.Subject); !ok || v.State.Admin(p.User) {
 			return nil, fmt.Errorf("%s is not a member of %s; removing an admin is signed only after asking", ch.Subject, ch.Target)
 		}

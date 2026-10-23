@@ -32,7 +32,7 @@ type GroupWorkloadCmd struct {
 	OpenBaoRole     string `name:"openbao-role" help:"OpenBao JWT auth mount and role the workload logs in with, such as jwt/fly-store"`
 	OpenBaoAudience string `name:"openbao-audience" default:"esec-openbao" help:"The audience the OpenBao role binds"`
 
-	PublicKey string `name:"public-key" type:"existingfile" help:"The KMS key's public key (PEM); default: ask gcloud, or OpenBao with BAO_TOKEN"`
+	PublicKey string `name:"public-key" type:"existingfile" help:"The KMS key's public key (PEM); default: ask gcloud, or OpenBao with BAO_TOKEN and BAO_ADDR"`
 	Out       string `help:"Write the workload's descriptor to this file too"`
 }
 
@@ -123,7 +123,7 @@ type GroupRekeyWorkloadsCmd struct {
 	OpenBaoKey        string `name:"openbao-key" help:"Or the new OpenBao Transit key version: https://HOST/MOUNT/KEY/VERSION"`
 	OpenBaoRole       string `name:"openbao-role" help:"OpenBao JWT auth mount and role, such as jwt/fly-store"`
 	OpenBaoAudience   string `name:"openbao-audience" default:"esec-openbao" help:"The audience the OpenBao role binds"`
-	PublicKey         string `name:"public-key" type:"existingfile" help:"The new key's public key (PEM); default: ask gcloud, or OpenBao with BAO_TOKEN"`
+	PublicKey         string `name:"public-key" type:"existingfile" help:"The new key's public key (PEM); default: ask gcloud, or OpenBao with BAO_TOKEN and BAO_ADDR"`
 }
 
 // Run implements group rekey-workloads.
@@ -208,7 +208,7 @@ func (c *KMSSetupOpenBaoCmd) Run(_ *cliCtx) error {
 		fmt.Println("EOF")
 	}
 	app := c.FlyApp[0]
-	fmt.Println("\nThen add each app as a workload of its own group (BAO_TOKEN lets this read the public key):")
+	fmt.Println("\nThen add each app as a workload of its own group (BAO_TOKEN and BAO_ADDR, your OpenBao, let this read the public key):")
 	fmt.Printf("\n  esec vault group create %s/%s\n", c.FlyOrg, app)
 	fmt.Printf("  esec vault access grant %s/%s --env prod --project %s/PROJECT\n", c.FlyOrg, app, c.FlyOrg)
 	fmt.Printf("  esec vault group workload %s/%s %s --fly-org %s --fly-app %s \\\n    --openbao-key %s/transit/esec-%s/1 --openbao-role jwt/fly-%s --openbao-audience %s\n", c.FlyOrg, app, app, c.FlyOrg, app, addr, app, app, c.Audience)

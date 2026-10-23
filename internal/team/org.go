@@ -161,9 +161,13 @@ type (
 		Verified string `json:"verified"`
 	}
 	// OrgMemberRemoveBody removes a member; a member may remove themselves.
+	// KeepAdminRoles leaves them admin of the projects and groups they
+	// administer: a removal signed unasked (changes --yes) takes away only
+	// what is not an admin's.
 	OrgMemberRemoveBody struct {
-		User   string `json:"user"`
-		Reason string `json:"reason,omitempty"`
+		User           string `json:"user"`
+		Reason         string `json:"reason,omitempty"`
+		KeepAdminRoles bool   `json:"keep_admin_roles,omitempty"`
 	}
 	// OrgKMSAddBody approves a KMS key.
 	OrgKMSAddBody struct {
@@ -335,23 +339,33 @@ func (s *OrgState) Left(user string) (time.Time, bool) {
 	return last, !last.IsZero()
 }
 
-// LeftByDelegate reports whether the link that took user out of the
-// organisation was signed by a delegate (a passkey, or the server): such a
-// removal may take away only what is not an admin's.
-func (s *OrgState) LeftByDelegate(user string) bool {
+// KeepsAdminRoles reports whether the link that took user out of the
+// organisation leaves their admin roles in its projects and groups: one a
+// delegate signed (a passkey, or the server), or one that says so.
+func (s *OrgState) KeepsAdminRoles(user string) bool {
 	var seq uint64
 	for _, m := range []map[string]*GroupAdminState{s.Admins, s.Members} {
 		if p, ok := m[user]; ok && !p.Active && p.RemovedSeq > seq {
 			seq = p.RemovedSeq
 		}
 	}
-	return seq > 0 && s.Links[seq-1].SignerDelegate != ""
+	if seq == 0 {
+		return false
+	}
+	l := s.Links[seq-1]
+	if l.SignerDelegate != "" {
+		return true
+	}
+	var b OrgMemberRemoveBody
+	return l.Type == OrgMemberRemove && decodeOrgBody(l, &b) == nil && b.KeepAdminRoles
 }
 
-// Signed reports whether user signed a link of the chain.
-func (s *OrgState) Signed(user string) bool {
+// SignedWithUserKey reports whether user signed a link of the chain with
+// their own user key, as only their devices can: links of their delegates
+// (a passkey on a page, the server) do not count.
+func (s *OrgState) SignedWithUserKey(user string) bool {
 	for _, l := range s.Links {
-		if l.Signer == user {
+		if l.Signer == user && l.SignerDelegate == "" {
 			return true
 		}
 	}

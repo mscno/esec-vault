@@ -275,7 +275,7 @@ type OrgKMSAddCmd struct {
 	OpenBaoKey        string   `name:"openbao-key" help:"Or an OpenBao Transit key version: https://HOST/MOUNT/KEY/VERSION"`
 	OpenBaoRole       string   `name:"openbao-role" help:"OpenBao JWT auth mount and role, such as jwt/fly-store"`
 	OpenBaoAudience   string   `name:"openbao-audience" default:"esec-openbao" help:"The audience the OpenBao role binds"`
-	PublicKey         string   `name:"public-key" type:"existingfile" help:"The key's public key (PEM); default: ask gcloud, or OpenBao with BAO_TOKEN"`
+	PublicKey         string   `name:"public-key" type:"existingfile" help:"The key's public key (PEM); default: ask gcloud, or OpenBao with BAO_TOKEN and BAO_ADDR"`
 	Groups            []string `sep:"," help:"Only these groups' workloads may use it, such as acme/fly-store for a key of one app"`
 	Default           bool     `help:"Use it for new workloads by default"`
 }

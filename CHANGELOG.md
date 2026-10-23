@@ -1,3 +1,21 @@
+# v0.19.1
+
+Fixes from a review of the organisations.
+
+- A device signs in an organisation's chain only once it anchored it
+  (created it, or `esec vault org trust`), and only links signed with the
+  person's own user key anchor it on their other devices: a link the
+  server or a passkey signed for them no longer does, so neither can make
+  a device start acting on a chain it made up.
+- `changes --yes` signs nothing in an organisation this device has not
+  confirmed, and a removal it signs (marked `keep_admin_roles`) leaves the
+  person's admin roles alone on every admin's device, not only its own.
+- A former member who is still an admin somewhere no longer notifies every
+  device that can see it, only the devices of that project's admins, once.
+- Dismissing a change keeps the organisation page on its tab; OpenBao's
+  `BAO_ADDR` is named wherever `BAO_TOKEN` is; the page of an organisation
+  you are not in no longer says it has no rules.
+
 # v0.19.0
 
 Organisations with a signed chain, OpenBao, and rekeying workloads.

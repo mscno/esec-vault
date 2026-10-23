@@ -921,7 +921,12 @@ func (s *Server) webOrgWorkloadRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) webOrgDismiss(w http.ResponseWriter, r *http.Request) {
-	s.orgForm(w, r, orgTabOverview, func(ctx context.Context, ws *webSession, _ string, _ *team.OrgState) (string, error) {
+	// The changes show on every tab: come back to the one it was on.
+	tab := r.FormValue("tab")
+	if tab != orgTabPeople && tab != orgTabWorkloads && tab != orgTabSettings {
+		tab = orgTabOverview
+	}
+	s.orgForm(w, r, tab, func(ctx context.Context, ws *webSession, _ string, _ *team.OrgState) (string, error) {
 		return s.dismiss(ctx, ws, r)
 	})
 }

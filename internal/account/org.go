@@ -72,7 +72,9 @@ func (t *teamCtx) org(org string) (*team.OrgState, error) {
 func (t *teamCtx) opin(os *team.OrgState) {
 	t.pins.Orgs[os.Org] = Pin{Seq: os.Seq, Head: os.Head(), Root: os.Root()}
 	t.orgs[os.Org] = os
-	if os.Signed(t.a.State.User) {
+	// A link this account signed with its user key was signed by one of
+	// its devices, which signs in a chain only once it trusts it (below).
+	if os.SignedWithUserKey(t.a.State.User) {
 		t.pins.OrgTrust[os.Org] = os.Root()
 	}
 }
@@ -107,8 +109,13 @@ func (t *teamCtx) requireOrgAdmin(org string) (*team.OrgState, error) {
 	return os, nil
 }
 
-// olink signs the next link of an organisation.
+// olink signs the next link of an organisation. Past its first link, only
+// in a chain this device anchored: signing in one anchors it on this
+// account's other devices.
 func (t *teamCtx) olink(os *team.OrgState, typ string, body any) (*envelope.Envelope, *team.OrgState, error) {
+	if os.Seq > 0 && !t.trusted(os) {
+		return nil, nil, errUntrusted(os)
+	}
 	e, err := os.NewLink(typ, body, t.a.Now(), t.a.State.User, t.own.UKeyVersion, t.own.Seq, t.id.Sign)
 	if err != nil {
 		return nil, nil, err
@@ -376,7 +383,7 @@ func (a *Account) removeOrgPerson(ctx context.Context, org, login, reason string
 		if narrow && os.Admin(p.User) {
 			return fmt.Errorf("%s is an admin of %s; removing an admin is signed only after asking", p.Login, os.Org)
 		}
-		typ, body := team.OrgMemberRemove, any(team.OrgMemberRemoveBody{User: p.User, Reason: clipReason(reason)})
+		typ, body := team.OrgMemberRemove, any(team.OrgMemberRemoveBody{User: p.User, Reason: clipReason(reason), KeepAdminRoles: narrow})
 		if os.Admin(p.User) {
 			typ, body = team.OrgAdminRemove, team.OrgAdminRemoveBody{User: p.User, Reason: clipReason(reason)}
 		}
@@ -418,7 +425,7 @@ func (t *teamCtx) orgRemovals(os *team.OrgState, apply, narrow bool) ([]OrgRemov
 		}
 		at, _ := os.Left(p.User)
 		leftAt[p.User] = at
-		keepAdmin[p.User] = narrow || os.LeftByDelegate(p.User)
+		keepAdmin[p.User] = narrow || os.KeepsAdminRoles(p.User)
 	}
 	if len(leftAt) == 0 {
 		return nil, nil
@@ -448,9 +455,13 @@ func (t *teamCtx) orgRemovals(os *team.OrgState, apply, narrow bool) ([]OrgRemov
 				continue
 			}
 			r := OrgRemoval{Login: m.Login, Kind: HoldsProject, ID: st.Project}
-			if m.Admin && keepAdmin[m.User] {
-				r.Err = errAdminRole
-			} else if apply && st.Admin(t.a.State.User) {
+			mine := apply && st.Admin(t.a.State.User)
+			switch {
+			case m.Admin && keepAdmin[m.User]:
+				if mine {
+					r.Err = errAdminRole
+				}
+			case mine:
 				envs := st.Access(m.User)
 				e, next, err := t.link(st, team.TypeMemberRemove, team.MemberRemoveBody{User: m.User, Reason: "left the organisation " + os.Org})
 				if err == nil {
@@ -494,9 +505,13 @@ func (t *teamCtx) orgRemovals(os *team.OrgState, apply, narrow bool) ([]OrgRemov
 				kind = HoldsGroupAdmin
 			}
 			r := OrgRemoval{Login: p.Login, Kind: kind, ID: gs.Group}
-			if kind == HoldsGroupAdmin && keepAdmin[p.User] {
-				r.Err = errAdminRole
-			} else if apply && gs.Admin(t.a.State.User) {
+			mine := apply && gs.Admin(t.a.State.User)
+			switch {
+			case kind == HoldsGroupAdmin && keepAdmin[p.User]:
+				if mine {
+					r.Err = errAdminRole
+				}
+			case mine:
 				next, rotate, err := t.removeFromGroup(gs, p, "left the organisation "+os.Org)
 				if err == nil {
 					gs, r.Done, r.Rotate = next, true, rotate

@@ -69,7 +69,7 @@
     <td>{{.Text}}</td>
     <td>{{.By}}</td>
     <td class="nowrap">{{when .Created}}</td>
-    <td class="actions">{{if and .Passkey $.Passkeys $.SignerURL}}<a class="button secondary" href="{{$.SignerURL}}/#change={{.ID}}" target="_blank" rel="noopener">Sign with passkey</a> {{end}}<form method="post" action="/orgs/{{$.Org}}/changes/{{.ID}}/dismiss" class="inline" {{dsPost (printf "/orgs/%s/changes/%d/dismiss" $.Org .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form></td>
+    <td class="actions">{{if and .Passkey $.Passkeys $.SignerURL}}<a class="button secondary" href="{{$.SignerURL}}/#change={{.ID}}" target="_blank" rel="noopener">Sign with passkey</a> {{end}}<form method="post" action="/orgs/{{$.Org}}/changes/{{.ID}}/dismiss" class="inline" {{dsPost (printf "/orgs/%s/changes/%d/dismiss" $.Org .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="tab" value="{{$.Tab}}"><button type="submit" class="secondary">Dismiss</button></form></td>
   </tr>
   {{end}}
   </tbody>
@@ -313,7 +313,7 @@
     <label>Only for groups <span class="muted">(optional)</span> <input name="groups" placeholder="{{.Org}}/store" autocomplete="off" spellcheck="false"></label>
     <div><button type="submit">Propose</button></div>
   </form>
-  <p class="muted">Sign it in a terminal where the device can read the key (gcloud signed in, or <code>BAO_TOKEN</code> set): <code>esec vault changes</code>. Check that the project in its name is yours: whoever controls the key can read what its workloads read. On a device in one step: <code>esec vault org kms add {{.Org}} NAME --gcp-key ... --gcp-provider ...</code></p>
+  <p class="muted">Sign it in a terminal where the device can read the key (gcloud signed in, or <code>BAO_TOKEN</code> and <code>BAO_ADDR</code> set): <code>esec vault changes</code>. Check that the project in its name is yours: whoever controls the key can read what its workloads read. On a device in one step: <code>esec vault org kms add {{.Org}} NAME --gcp-key ... --gcp-provider ...</code></p>
 </details>
 {{end}}
 
@@ -351,7 +351,7 @@
 {{end}}
 
 {{define "org-policy"}}<div id="org-policy">
-<p class="muted">The stricter of {{.Org}}'s signed rules{{if not .Chain}} (none yet){{end}} and the server admins' policy.</p>
+<p class="muted">The stricter of {{.Org}}'s signed rules{{if not .Policy.Signed}} (none yet){{end}} and the server admins' policy.</p>
 <ul>
   <li>Enrollment tokens: {{if .Policy.MaxTokenDays}}at most {{plural .Policy.MaxTokenDays "day"}}, none that never expire{{else}}<span class="muted">no limit</span>{{end}}</li>
   <li>Adding people: {{if .Policy.RequireGitHubProof}}only with a GitHub SSH proof{{else}}a GitHub SSH proof, or account key words read out{{end}}{{if .Policy.MembersOnly}}; only {{.Org}}'s people{{end}}</li>
