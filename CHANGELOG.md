@@ -1,3 +1,61 @@
+# v0.19.0
+
+Organisations with a signed chain, OpenBao, and rekeying workloads.
+
+- **Organisations** (`esec vault org create acme`): the acme of acme/store
+  gets its own chain, signed on its admins' devices like a group's, and
+  pinned by every device that sees it. It records:
+  - **its people** (`org add`, `org remove`). Once it has a chain, only its
+    people create projects and groups named `acme/...` on the server.
+    Removing someone takes them out of every project and group of acme: the
+    remover's device at once, every other admin's device (and background
+    service) at its next sync, for what each administers. Someone added
+    again later is left alone.
+  - **approved KMS keys** (`org kms add`, `org kms remove`). Devices wrap
+    the group keys of acme's workloads only with them, so a server cannot
+    slip in a key of its own; the approving device reads a key's public half
+    from the KMS itself. A key can be limited to some groups (a per-app key).
+  - **rules and defaults** (`org set`): only its people join its projects
+    and groups, GitHub SSH proofs only, the longest token, no server-signed
+    removals, access reviews, and the Fly.io organisation and KMS key new
+    apps use. Devices check them when they sign; the server when it stores
+    links, together with its admins' policy (the stricter applies).
+  - A member's device says whether the creator of a project they are added
+    to belongs to acme, and asks before taking in its keys if not.
+  - What a chain lets a device do by itself (take people out, wrap keys
+    with an approved key named in a web change) waits until the device
+    anchored it: this account signed in it, or its person compared its
+    fingerprint with an admin's (`esec vault org trust acme`). A server
+    cannot make up an organisation to act through. Removals signed by a
+    passkey or the server, or with `changes --yes`, leave admins' roles
+    alone. Only an admin of the first project or group named after an
+    organisation (or a server admin) can set it up.
+- **`esec vault org fly-app acme store --read acme/store:prod`**: a Fly.io
+  app reading its keys with no secret, in one step: its group (made when
+  new), what it reads, and a workload bound to the app's OIDC tokens,
+  wrapped with an approved key. It prints the descriptor for `fly.toml`.
+- **Web pages for organisations** (`/orgs`, `/orgs/acme`): Overview (what
+  needs doing), People (add, remove, who left and where they still are),
+  Workloads (add a Fly.io app with one form, copy descriptors, move apps to
+  another key, remove them, export JSON) and Settings (approve and withdraw
+  KMS keys; rules and defaults). Each form proposes a change for a device
+  (a dialog of the background service, or `esec vault changes`) or, where
+  its scope allows, a passkey to sign; the server signs removals for people
+  who let it, unless the organisation forbids that.
+- **OpenBao** as a self-hosted KMS (`--openbao-key`, `--openbao-role`;
+  `esec vault kms setup openbao` prints a Transit key, a decrypt-only policy
+  and a JWT role per app).
+- **Rekeying workloads** (`esec vault group rekey-workloads`, or Workloads ›
+  Move): a workload moves to another KMS key or another KMS, keeping its id
+  and descriptor.
+- `esec vault group show` lists workloads with their descriptors.
+- `esec vault kms setup gcp --apply` leaves what exists alone when run again
+  for another app, and its provider trusts the Fly.io organisation, while
+  each key's IAM binding names the apps that may decrypt with it.
+
+Older versions cannot read organisation chains, and do not apply their
+rules or removals; projects and groups work as before.
+
 # v0.18.0
 
 Workloads with no secret: Fly.io OIDC and a cloud KMS.

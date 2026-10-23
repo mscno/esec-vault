@@ -36,9 +36,9 @@ func validOrg(org string) bool {
 	return org != "" && projectfile.ValidateOrgRepo(org+"/x") == nil
 }
 
-// orgPolicy returns an organisation's policy (the zero policy when none is
-// set).
-func (s *Server) orgPolicy(ctx context.Context, q queryer, org string) (wire.OrgPolicy, error) {
+// serverPolicy returns the policy the server's admins set for an
+// organisation (the zero policy when none is set).
+func (s *Server) serverPolicy(ctx context.Context, q queryer, org string) (wire.OrgPolicy, error) {
 	var p wire.OrgPolicy
 	var raw, by string
 	var at int64
@@ -57,8 +57,11 @@ func (s *Server) orgPolicy(ctx context.Context, q queryer, org string) (wire.Org
 }
 
 // checkPolicyPerson refuses a person added with account key words where the
-// organisation wants GitHub proofs.
-func (s *Server) checkPolicyPerson(ctx context.Context, q queryer, id, verified, login string) error {
+// organisation wants GitHub proofs, and one its signed settings keep out.
+func (s *Server) checkPolicyPerson(ctx context.Context, q queryer, id string, person team.Person, verified string) error {
+	if err := s.checkOrgPerson(ctx, q, id, person, verified); err != nil {
+		return err
+	}
 	if verified != team.VerifiedAccountKey {
 		return nil
 	}
@@ -67,7 +70,7 @@ func (s *Server) checkPolicyPerson(ctx context.Context, q queryer, id, verified,
 		return err
 	}
 	if p.RequireGitHubProof {
-		return clientErr(http.StatusForbidden, wire.ErrForbidden, "%s requires a GitHub SSH proof: %s publishes one with 'esec vault access prove', then add them without --account-key", orgOf(id), login)
+		return clientErr(http.StatusForbidden, wire.ErrForbidden, "%s requires a GitHub SSH proof: %s publishes one with 'esec vault access prove', then add them without --account-key", orgOf(id), person.Login)
 	}
 	return nil
 }
@@ -75,32 +78,45 @@ func (s *Server) checkPolicyPerson(ctx context.Context, q queryer, id, verified,
 // checkPolicyLink applies an organisation's policy to a project or group
 // link about to be stored.
 func (s *Server) checkPolicyProjectLink(ctx context.Context, q queryer, project string, l team.Link) error {
-	if l.Type != team.TypeMemberAdd {
-		return nil
+	switch l.Type {
+	case team.TypeInit:
+		var b team.InitBody
+		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+			return err
+		}
+		return s.checkNamespace(ctx, q, project, b.Creator.User, b.Creator.Login)
+	case team.TypeMemberAdd:
+		var b team.MemberAddBody
+		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+			return err
+		}
+		return s.checkPolicyPerson(ctx, q, project, b.Member, b.Verified)
 	}
-	var b team.MemberAddBody
-	if err := envelope.DecodeStrict(l.Body, &b); err != nil {
-		return err
-	}
-	return s.checkPolicyPerson(ctx, q, project, b.Verified, b.Member.Login)
+	return nil
 }
 
 // checkPolicyGroupLink applies an organisation's policy to a group link:
 // how people are checked, and how long tokens live.
 func (s *Server) checkPolicyGroupLink(ctx context.Context, q queryer, group string, l team.GroupLink) error {
 	switch l.Type {
+	case team.GroupInit:
+		var b team.GroupInitBody
+		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+			return err
+		}
+		return s.checkNamespace(ctx, q, group, b.Creator.User, b.Creator.Login)
 	case team.GroupMemberAdd:
 		var b team.GroupMemberAddBody
 		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 			return err
 		}
-		return s.checkPolicyPerson(ctx, q, group, b.Verified, b.Member.Login)
+		return s.checkPolicyPerson(ctx, q, group, b.Member, b.Verified)
 	case team.GroupAdminAdd:
 		var b team.GroupAdminAddBody
 		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
 			return err
 		}
-		return s.checkPolicyPerson(ctx, q, group, b.Verified, b.Admin.Login)
+		return s.checkPolicyPerson(ctx, q, group, b.Admin, b.Verified)
 	case team.GroupTokenAdd:
 		var b team.GroupTokenAddBody
 		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
@@ -150,77 +166,10 @@ func (s *Server) apiOrgPolicy(w http.ResponseWriter, r *http.Request, _ *reqCtx)
 	writeJSON(w, http.StatusOK, p)
 }
 
-// ---- the organisation page ----
-
-func (s *Server) webOrg(w http.ResponseWriter, r *http.Request) {
-	ws := s.requireWeb(w, r)
-	if ws == nil {
-		return
-	}
-	data, err := s.orgPageData(r.Context(), ws, r.PathValue("org"))
-	if err != nil {
-		s.webFail(w, r, err)
-		return
-	}
-	s.render(w, http.StatusOK, "org.html", data)
-}
-
-func (s *Server) orgPageData(ctx context.Context, ws *webSession, org string) (map[string]any, error) {
-	if !validOrg(org) {
-		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "That is not an organisation name.")
-	}
-	in := func(id string) bool { return strings.EqualFold(orgOf(id), org) }
-	teams, err := s.teamSummaries(ctx, ws.user.ID)
-	if err != nil {
-		return nil, err
-	}
-	teams = slices.DeleteFunc(teams, func(t teamSummary) bool { return !in(t.ID) })
-	groups, err := s.groupSummaries(ctx, ws.user.ID)
-	if err != nil {
-		return nil, err
-	}
-	groups = slices.DeleteFunc(groups, func(g groupSummary) bool { return !in(g.ID) })
-	people, err := s.accessView(ctx, ws.user.ID)
-	if err != nil {
-		return nil, err
-	}
-	var mine []*accessPerson
-	for _, p := range people {
-		q := *p
-		q.Reads = slices.DeleteFunc(slices.Clone(p.Reads), func(rd accessRead) bool { return !in(rd.Project) })
-		q.Groups = slices.DeleteFunc(slices.Clone(p.Groups), func(g string) bool { return !in(g) })
-		q.AdminOf = slices.DeleteFunc(slices.Clone(p.AdminOf), func(g string) bool { return !in(g) })
-		if len(q.Reads)+len(q.Groups)+len(q.AdminOf) > 0 {
-			mine = append(mine, &q)
-		}
-	}
-	isAdmin := s.cfg.Admin(ws.user.GitHubID)
-	if len(teams)+len(groups) == 0 && !isAdmin {
-		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "You have no shared project or group in %s.", org)
-	}
-	policy, err := s.orgPolicy(ctx, s.db.sql, org)
-	if err != nil {
-		return nil, err
-	}
-	logins, err := s.db.logins(ctx)
-	if err != nil {
-		return nil, err
-	}
-	data := s.page(ws, "access")
-	data["Org"] = org
-	data["Teams"] = teams
-	data["Groups"] = groups
-	data["People"] = mine
-	data["Policy"] = policy
-	data["PolicyBy"] = logins[policy.UpdatedBy]
-	data["CanSetPolicy"] = isAdmin
-	return data, nil
-}
-
 // webOrgPolicy sets an organisation's policy, for the server's admins.
 func (s *Server) webOrgPolicy(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
-	s.pageForm(w, r, "/orgs/"+org, func(ctx context.Context, ws *webSession) (string, error) {
+	s.pageForm(w, r, "/orgs/"+org+"/settings", func(ctx context.Context, ws *webSession) (string, error) {
 		if !s.cfg.Admin(ws.user.GitHubID) {
 			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "Only the server's admins set an organisation's policy.")
 		}
@@ -262,7 +211,7 @@ func (s *Server) webOrgPolicy(w http.ResponseWriter, r *http.Request) {
 		})
 		return "Saved the policy of " + org + ". It applies to new changes from now on.", err
 	}, func(ctx context.Context, ws *webSession) (map[string]any, []string, error) {
-		data, err := s.orgPageData(ctx, ws, org)
+		data, err := s.orgPageData(ctx, ws, org, orgTabSettings)
 		return data, []string{"org-policy"}, err
 	})
 }

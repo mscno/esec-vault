@@ -253,8 +253,60 @@ func (s *Server) changeLinks(ctx context.Context, user string, cs *chain.State, 
 		case wire.ChangeAccess:
 			return s.accessLinks(ctx, user, gs, d, c, now, seq)
 		}
+	case wire.ScopeOrg:
+		return s.orgChangeLinks(ctx, user, d, c, now, seq)
 	}
 	return nil, errNeedsDevice
+}
+
+// orgChangeLinks builds the organisation link of change c for delegate d
+// of user: adding a member checked on the web, removing a member, or
+// withdrawing a KMS key. Admins and keys are a device's to add.
+func (s *Server) orgChangeLinks(ctx context.Context, user string, d *chain.DelegateState, c wire.Change, now time.Time, seq uint64) ([]*envelope.Envelope, error) {
+	os, _, err := s.db.orgState(ctx, s.db.sql, c.Target)
+	if err != nil {
+		return nil, err
+	}
+	if os == nil {
+		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s has no organisation chain.", c.Target)
+	}
+	if !os.Admin(user) {
+		return nil, clientErr(http.StatusForbidden, wire.ErrForbidden, "Only an admin of %s can change it.", c.Target)
+	}
+	var typ string
+	var body any
+	switch c.Kind {
+	case wire.ChangeOrgAdd:
+		if c.Admin {
+			return nil, errNeedsDevice
+		}
+		p, err := s.personByLogin(ctx, c.Subject)
+		if err != nil {
+			return nil, err
+		}
+		typ, body = team.OrgMemberAdd, team.OrgMemberAddBody{Member: p, Verified: team.VerifiedWeb}
+	case wire.ChangeOrgRemove:
+		p, ok := os.PersonByLogin(c.Subject)
+		if !ok {
+			return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s is not in %s.", c.Subject, c.Target)
+		}
+		if os.Admin(p.User) {
+			return nil, errNeedsDevice
+		}
+		typ, body = team.OrgMemberRemove, team.OrgMemberRemoveBody{User: p.User, Reason: "removed on the web"}
+	case wire.ChangeOrgKMSRemove:
+		if _, ok := os.KMSByName(c.Subject); !ok {
+			return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "%s has no key %s.", c.Target, c.Subject)
+		}
+		typ, body = team.OrgKMSRemove, team.OrgKMSRemoveBody{Name: c.Subject, Reason: "withdrawn on the web"}
+	default:
+		return nil, errNeedsDevice
+	}
+	e, err := os.DelegateLink(typ, body, now, user, d.ID, seq)
+	if err != nil {
+		return nil, err
+	}
+	return []*envelope.Envelope{e}, nil
 }
 
 // accessLinks builds the links that make a group read c.Envs of c.Project:
@@ -351,8 +403,20 @@ func (s *Server) checkDelegateLinks(ctx context.Context, links []*envelope.Envel
 			if _, err := gs.Next(e, chains); err != nil {
 				return err
 			}
+		case team.KindOrgLink:
+			l, err := team.PeekOrgLink(e)
+			if err != nil {
+				return err
+			}
+			os, _, err := s.db.orgState(ctx, s.db.sql, l.Org)
+			if err != nil || os == nil {
+				return errors.Join(err, errors.New("no such organisation"))
+			}
+			if _, err := os.Next(e, chains); err != nil {
+				return err
+			}
 		default:
-			return errors.New("not a project or group link")
+			return errors.New("not a project, group or organisation link")
 		}
 	}
 	return nil
@@ -438,8 +502,20 @@ func (s *Server) commitDelegateLinks(ctx context.Context, user, ip string, links
 				for _, u := range users {
 					wake[u] = true
 				}
+			case team.KindOrgLink:
+				l, err := team.PeekOrgLink(e)
+				if err != nil || l.Signer != user || l.SignerDelegate == "" {
+					return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "not a link of your delegate")
+				}
+				_, users, err := s.orgCommit(ctx, tx, l.Org, user, false, ip, []*envelope.Envelope{e})
+				if err != nil {
+					return err
+				}
+				for _, u := range users {
+					wake[u] = true
+				}
 			default:
-				return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "not a project or group link")
+				return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "not a project, group or organisation link")
 			}
 		}
 		return nil

@@ -116,12 +116,54 @@ var commandDetails = map[string]string{
 		"esec vault access review --remove bob,machine:old-ci --yes --project acme/api",
 		"esec vault access review --keep-all",
 	),
-	"org": `The server's admins set an organisation's policy on its web page (/orgs/ORG): the longest token, GitHub proofs required, no server-signed removals, and how often access is reviewed. The server checks it; it can only refuse changes.
+	"org": `An organisation is the acme of acme/store. Set it up (org create) to give it a signed chain: its people, the KMS keys its workloads may use, and its rules, all signed on admins' devices. Then only its people create projects and groups named acme/..., removing someone from it takes them out of every project and group of it, and devices wrap workload keys only with approved KMS keys. Everything here is on its web page too (/orgs/ORG).
 
 ` + examples(
 		"esec vault org                    # your organisations",
 		"esec vault org acme",
 		"esec vault org acme --json",
+	),
+	"org create": `Signs the organisation's first link with you as its admin. Anyone may set up a name nothing is named after yet; once projects or groups are, an admin of one of them (or a server admin).
+
+` + examples(
+		"esec vault org create acme",
+	),
+	"org trust": `A server could show a made-up chain for an organisation, and anyone may set one up for a name nothing is named after yet. So a device applies an organisation's removals, and wraps workload keys with the keys it approved by name, only once it is anchored: this account signed in it, or you compared its fingerprint with an admin's here.
+
+` + examples(
+		"esec vault org trust acme",
+		"esec vault org trust acme --fingerprint word-word-word-word-word-word-word-word",
+	),
+	"org add": `Checks the person like a new project member (their GitHub SSH proof, or the account key words they read to you). Belonging gives no keys by itself.
+
+` + examples(
+		"esec vault org add acme alice",
+		"esec vault org add acme bob --admin",
+		"esec vault org add acme carol --account-key 'word-word-...'",
+	),
+	"org remove": `Removes them from the organisation, then takes them out of every project and group of it you administer, giving groups a new key; the devices of the other admins do the same for theirs on their next sync. Rotate what they could read afterwards. Your own login leaves the organisation.
+
+` + examples(
+		"esec vault org remove acme alice --yes",
+	),
+	"org kms add": `Reads the key's public half from the KMS itself (gcloud, or OpenBao with BAO_TOKEN), so the key is the one its name says, and approves it for the organisation's workloads. --groups limits it to some groups, such as the one group of the app a per-app key is for.
+
+` + examples(
+		"esec vault org kms add acme gcp-prod --gcp-key projects/acme-vault/locations/europe-west1/keyRings/esec/cryptoKeys/workloads/cryptoKeyVersions/1 --gcp-provider projects/123/locations/global/workloadIdentityPools/esec-workloads/providers/fly-acme --default",
+		"esec vault org kms add acme fly-store --openbao-key https://bao.acme.dev/transit/esec-store/1 --openbao-role jwt/fly-store --groups acme/store",
+	),
+	"org set": `Flags not given stay as they are. Devices check the rules when they sign; the server when it stores changes, together with its admins' own policy (the stricter applies).
+
+` + examples(
+		"esec vault org set acme --members-only --require-github-proof",
+		"esec vault org set acme --max-token-days 30 --review-days 90",
+		"esec vault org set acme --fly-org acme --default-kms gcp-prod",
+	),
+	"org fly-app": `Creates the app's group (ORG/APP) when it is missing, lets it read what --read names (you must administer those projects), and adds the app as a workload bound to Fly.io's OIDC tokens for it, wrapped with an approved KMS key. Prints the descriptor for fly.toml. Running it again changes nothing that is in place.
+
+` + examples(
+		"esec vault org fly-app acme store --read acme/store:prod",
+		"esec vault org fly-app acme api --read acme/api:prod --read acme/shared:prod --kms fly-api",
 	),
 	"access handover": `Only a device signs who is an admin. The web page's Hand over admin proposes the same changes for a device to sign.
 

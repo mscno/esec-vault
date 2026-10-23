@@ -28,6 +28,9 @@ func (a *Account) AddWorkload(ctx context.Context, id, name string, key kms.Key,
 		if err != nil {
 			return err
 		}
+		if err := t.checkOrgKMS(id, key); err != nil {
+			return err
+		}
 		for _, c := range gs.ActiveCreds(team.KindWorkload) {
 			if c.Name == name {
 				return fmt.Errorf("%s already has a workload named %s", id, name)
@@ -72,6 +75,9 @@ func (a *Account) RekeyWorkloads(ctx context.Context, id string, names []string,
 	err := a.withTeam(ctx, func(t *teamCtx) error {
 		gs, err := t.requireGroupAdmin(id)
 		if err != nil {
+			return err
+		}
+		if err := t.checkOrgKMS(id, key); err != nil {
 			return err
 		}
 		gkey, err := t.groupKey(gs)

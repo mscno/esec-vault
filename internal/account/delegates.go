@@ -162,7 +162,12 @@ func (a *Account) ApplyChange(ctx context.Context, ch ChangeView) ([]string, err
 	case wire.ScopeProject:
 		return a.applyProjectChange(ctx, ch)
 	case wire.ScopeGroup:
+		if ch.Kind == wire.ChangeWorkloadRekey {
+			return a.applyWorkloadRekey(ctx, ch)
+		}
 		return a.applyGroupChange(ctx, ch)
+	case wire.ScopeOrg:
+		return a.applyOrgChange(ctx, ch)
 	}
 	return nil, errUnknownChange(ch)
 }
@@ -220,6 +225,12 @@ func (a *Account) applyAccountChange(ctx context.Context, ch ChangeView) ([]stri
 		return []string{fmt.Sprintf("Revoked %s; your user key is now version %d. Rotate the keys of projects it could read if it may be compromised.", res.Device.Name, res.UKeyVersion)}, nil
 	case wire.ChangeDeviceApprove:
 		return nil, errors.New("approving a device needs the words it shows: run 'esec vault changes' in a terminal")
+	case wire.ChangeOrgCreate:
+		os, err := a.CreateOrg(ctx, ch.Subject)
+		if err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("Created the organisation %s; its fingerprint is %s.", os.Org, os.Words())}, nil
 	}
 	return nil, errUnknownChange(ch)
 }
@@ -375,7 +386,7 @@ func subsetOf(a, b []string) bool {
 // ApplyChangeNarrow signs a change unasked, as changes --yes does: only if
 // the chain it signs from shows it takes access away and gives nothing.
 // Each check runs on the same verified state the change is signed from.
-func (a *Account) ApplyChangeNarrow(ctx context.Context, ch ChangeView) ([]string, error) {
+func (a *Account) ApplyChangeNarrow(ctx context.Context, ch ChangeView) ([]string, error) { //nolint:gocyclo // one case per kind of change, each checked against its chain
 	switch {
 	case ch.Scope == wire.ScopeProject && ch.Kind == wire.ChangeMemberSet && !ch.Admin:
 		res, err := a.updateMember(ctx, ch.Target, ch.Subject, false, ch.Envs, true)
@@ -407,7 +418,28 @@ func (a *Account) ApplyChangeNarrow(ctx context.Context, ch ChangeView) ([]strin
 			out = append(out, fmt.Sprintf("Rotate %s of %s: the group may still hold the keys.", strings.Join(res.Exposed, ", "), ch.Project))
 		}
 		return out, nil
+	case ch.Scope == wire.ScopeOrg && ch.Kind == wire.ChangeOrgRemove:
+		v, err := a.Org(ctx, ch.Target)
+		if err != nil {
+			return nil, err
+		}
+		if v.State == nil {
+			return nil, fmt.Errorf("%s has no organisation chain", ch.Target)
+		}
+		if p, ok := v.State.PersonByLogin(ch.Subject); !ok || v.State.Admin(p.User) {
+			return nil, fmt.Errorf("%s is not a member of %s; removing an admin is signed only after asking", ch.Subject, ch.Target)
+		}
+		removals, err := a.removeOrgPerson(ctx, ch.Target, ch.Subject, "removed on the web", true)
+		if err != nil {
+			return nil, err
+		}
+		out := []string{fmt.Sprintf("Removed %s from %s.", ch.Subject, ch.Target)}
+		for _, r := range removals {
+			out = append(out, r.Line())
+		}
+		return out, nil
 	case ch.Kind == wire.ChangeRemove, ch.Kind == wire.ChangeDelegateRemove, ch.Kind == wire.ChangeMachineRemove,
+		ch.Scope == wire.ScopeOrg && ch.Kind == wire.ChangeOrgKMSRemove,
 		ch.Scope == wire.ScopeGroup && ch.Kind == wire.ChangeMemberRemove:
 		// Removals by what they are: a machine, token, delegate or group
 		// member; never an admin.
@@ -460,8 +492,10 @@ func changeName(c wire.Change) (string, error) {
 // Removes reports whether a change only takes access away.
 func (ch ChangeView) Removes() bool {
 	switch ch.Kind {
-	case wire.ChangeRemove, wire.ChangeMemberRemove, wire.ChangeDelegateRemove, wire.ChangeMachineRemove:
+	case wire.ChangeRemove, wire.ChangeMemberRemove, wire.ChangeDelegateRemove, wire.ChangeMachineRemove, wire.ChangeOrgKMSRemove:
 		return true
+	case wire.ChangeOrgRemove:
+		return !ch.Admin
 	case wire.ChangeAccess:
 		return len(ch.Envs) == 0
 	}
@@ -493,6 +527,9 @@ func (ch ChangeView) DescribeLines() []string {
 
 func (ch ChangeView) describe() []string {
 	if lines, ok := ch.describeSettings(); ok {
+		return lines
+	}
+	if lines, ok := ch.describeOrg(); ok {
 		return lines
 	}
 	switch ch.Kind {

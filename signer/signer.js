@@ -152,6 +152,22 @@
         }
       }
     }
+    if (kind === "org-link") {
+      const o = link.org;
+      switch (link.type) {
+        case "member_add": {
+          if (b.verified !== "web" || !b.member) return null;
+          const w = await who(b.member.user, b.member.login);
+          return { text: `In the organisation ${o}: add ${w.text} as a member`, ok: w.ok };
+        }
+        case "member_remove": {
+          const w = await who(b.user);
+          return { text: `In the organisation ${o}: remove ${w.text}, which takes them out of every project and group of ${o}`, ok: w.ok };
+        }
+        case "kms_remove":
+          return { text: `In the organisation ${o}: withdraw the KMS key ${b.name}; no new workload uses it`, ok: true };
+      }
+    }
     return null;
   };
 
@@ -201,7 +217,7 @@
       const bytes = dec(l.body);
       let link;
       try { link = JSON.parse(new TextDecoder().decode(bytes)); } catch { link = null; }
-      const d = link && (l.kind === "project-link" || l.kind === "group-link") && link.signer_delegate === delegate ? await describe(l.kind, link, me.user) : null;
+      const d = link && (l.kind === "project-link" || l.kind === "group-link" || l.kind === "org-link") && link.signer_delegate === delegate ? await describe(l.kind, link, me.user) : null;
       const div = document.createElement("div");
       div.className = "change" + (d && d.ok ? "" : " warn");
       const what = document.createElement("div");

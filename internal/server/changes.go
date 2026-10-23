@@ -92,6 +92,21 @@ func (s *Server) adminChanges(ctx context.Context, user string) ([]wire.Change, 
 		}
 		out = append(out, cs...)
 	}
+	orgs, err := s.db.orgsOf(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range orgs {
+		os, _, err := s.db.orgState(ctx, s.db.sql, o)
+		if err != nil || os == nil || !os.Admin(user) {
+			continue
+		}
+		cs, err := s.db.openChanges(ctx, wire.ScopeOrg, o)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, cs...)
+	}
 	projects, err := s.db.memberProjects(ctx, user)
 	if err != nil {
 		return nil, err
@@ -135,6 +150,16 @@ func (s *Server) changeAdmins(ctx context.Context, scope, target string) ([]stri
 			return nil, err
 		}
 		return adminIDs(st), nil
+	case wire.ScopeOrg:
+		os, _, err := s.db.orgState(ctx, s.db.sql, target)
+		if err != nil || os == nil {
+			return nil, err
+		}
+		var out []string
+		for _, a := range os.ActiveAdmins() {
+			out = append(out, a.User)
+		}
+		return out, nil
 	}
 	return nil, nil
 }
@@ -211,6 +236,8 @@ func (s *Server) changeAudit(ctx context.Context, q queryer, scope, target, user
 	switch scope {
 	case wire.ScopeAccount:
 		return s.db.audit(ctx, q, target, "", ip, action, detail, now)
+	case wire.ScopeOrg:
+		return s.db.audit(ctx, q, user, "", ip, action, target+": "+detail, now)
 	case wire.ScopeGroup:
 		return s.db.groupAudit(ctx, q, target, user, ip, action, detail, now)
 	}
@@ -232,8 +259,8 @@ func (s *Server) propose(ctx context.Context, user, ip string, c wire.Change) er
 	now := s.now()
 	err = s.db.tx(ctx, func(tx *sql.Tx) error {
 		var n, same int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(kind = ? AND project = ? AND envs = ? AND subject = ? AND admin = ?), 0) FROM changes WHERE scope = ? AND target = ? AND status = 'open'`,
-			c.Kind, c.Project, string(envs), c.Subject, c.Admin, c.Scope, c.Target).Scan(&n, &same); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(kind = ? AND project = ? AND envs = ? AND subject = ? AND admin = ? AND data = ?), 0) FROM changes WHERE scope = ? AND target = ? AND status = 'open'`,
+			c.Kind, c.Project, string(envs), c.Subject, c.Admin, string(c.Data), c.Scope, c.Target).Scan(&n, &same); err != nil {
 			return err
 		}
 		if same > 0 {
@@ -254,9 +281,12 @@ func (s *Server) propose(ctx context.Context, user, ip string, c wire.Change) er
 			return err
 		}
 		for _, a := range admins {
-			typ := wire.EventGroup
-			if c.Scope != wire.ScopeGroup {
-				typ = wire.EventProject
+			typ := wire.EventProject
+			switch c.Scope {
+			case wire.ScopeGroup:
+				typ = wire.EventGroup
+			case wire.ScopeOrg:
+				typ = wire.EventOrg
 			}
 			if err := s.db.addEvent(ctx, tx, a, typ, c.Target, now); err != nil {
 				return err

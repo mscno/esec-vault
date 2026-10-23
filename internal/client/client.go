@@ -428,6 +428,24 @@ func (c *Client) OrgPolicy(ctx context.Context, org string) (*wire.OrgPolicy, er
 	return &out, c.do(ctx, http.MethodGet, "/v1/orgs/"+url.PathEscape(org)+"/policy", authenticated, nil, &out)
 }
 
+// Orgs lists the organisations this account belongs to.
+func (c *Client) Orgs(ctx context.Context) ([]wire.OrgSummary, error) {
+	var out []wire.OrgSummary
+	return out, c.do(ctx, http.MethodGet, "/v1/orgs", authenticated, nil, &out)
+}
+
+// OrgChain returns an organisation's chain.
+func (c *Client) OrgChain(ctx context.Context, org string) (*wire.OrgChain, error) {
+	var out wire.OrgChain
+	return &out, c.do(ctx, http.MethodGet, "/v1/orgs/"+url.PathEscape(org)+"/chain", authenticated, nil, &out)
+}
+
+// OrgCommit appends links to an organisation's chain.
+func (c *Client) OrgCommit(ctx context.Context, org string, cm *wire.OrgCommit) (*wire.OrgCommitResult, error) {
+	var out wire.OrgCommitResult
+	return &out, c.do(ctx, http.MethodPost, "/v1/orgs/"+url.PathEscape(org)+"/commit", authenticated, cm, &out)
+}
+
 // Review says whether a project's access review is due.
 func (c *Client) Review(ctx context.Context, project string) (*wire.ReviewStatus, error) {
 	var out wire.ReviewStatus

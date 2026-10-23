@@ -114,6 +114,19 @@ func (k Key) Validate() error {
 	return p.Validate(k)
 }
 
+// ValidateNames checks a key's provider and names, without its public
+// half: what a person typed before a device reads the key from its KMS.
+func (k Key) ValidateNames() error {
+	p, err := provider(k.Provider)
+	if err != nil {
+		return err
+	}
+	if !namePattern.MatchString(k.Name) || !namePattern.MatchString(k.Audience) || (k.Principal != "" && !namePattern.MatchString(k.Principal)) {
+		return errors.New("invalid KMS key, audience or principal name")
+	}
+	return p.Validate(k)
+}
+
 // RSA returns the key's public half.
 func (k Key) RSA() (*rsa.PublicKey, error) {
 	der, err := base64.StdEncoding.DecodeString(k.PublicKey)

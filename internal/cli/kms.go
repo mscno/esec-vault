@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -86,8 +88,6 @@ func (c *GroupWorkloadCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
-var gcpKeyVersion = regexp.MustCompile(`^projects/([^/]+)/locations/([^/]+)/keyRings/([^/]+)/cryptoKeys/([^/]+)/cryptoKeyVersions/([^/]+)$`)
-
 // kmsKey names the KMS key from the flags: Google Cloud KMS or OpenBao.
 func (c *GroupWorkloadCmd) kmsKey() (kms.Key, error) {
 	switch {
@@ -109,29 +109,7 @@ func (c *GroupWorkloadCmd) publicKey(key kms.Key) ([]byte, error) {
 	if c.PublicKey != "" {
 		return os.ReadFile(c.PublicKey)
 	}
-	if key.Provider == "openbao" {
-		token := os.Getenv("BAO_TOKEN")
-		if token == "" {
-			token = os.Getenv("VAULT_TOKEN")
-		}
-		if token == "" {
-			return nil, errors.New("pass --public-key FILE, or set BAO_TOKEN to a token that may read the key")
-		}
-		bg, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		return kms.OpenBaoPublicKey(bg, key.Name, token)
-	}
-	m := gcpKeyVersion.FindStringSubmatch(c.GCPKey)
-	if m == nil {
-		return nil, errors.New("--gcp-key is a key version: projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N")
-	}
-	bg, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	out, err := exec.CommandContext(bg, "gcloud", "kms", "keys", "versions", "get-public-key", m[5], "--key", m[4], "--keyring", m[3], "--location", m[2], "--project", m[1], "--output-file", "-").Output()
-	if err != nil {
-		return nil, fmt.Errorf("ask gcloud for the key's public key (or pass --public-key FILE): %w", err)
-	}
-	return out, nil
+	return kms.FetchPublicKey(context.Background(), key)
 }
 
 // GroupRekeyWorkloadsCmd moves workloads to another KMS key.
@@ -244,7 +222,7 @@ type KMSSetupGCPCmd struct {
 	Project  string   `required:"" help:"GCP project id"`
 	Location string   `default:"europe-west1" help:"Where the key lives (pick one near your apps)"`
 	KeyRing  string   `name:"keyring" default:"esec" help:"Key ring"`
-	Key      string   `default:"workloads" help:"Key name: one key serves every workload"`
+	Key      string   `default:"workloads" help:"Key name: one key may serve every app, or name one per app, such as esec-store with --fly-app store"`
 	Pool     string   `default:"esec-workloads" help:"Workload identity pool"`
 	FlyOrg   string   `name:"fly-org" required:"" help:"Fly.io organisation slug (fly orgs list)"`
 	FlyApp   []string `name:"fly-app" sep:"," required:"" help:"Fly.io apps that may unwrap with the key"`
@@ -263,11 +241,10 @@ func (c *KMSSetupGCPCmd) Run(_ *cliCtx) error {
 	if len(provider) > 32 {
 		provider = provider[:32]
 	}
-	quoted := make([]string, len(c.FlyApp))
-	for i, a := range c.FlyApp {
-		quoted[i] = "'" + a + "'"
-	}
-	condition := fmt.Sprintf("assertion.org_name == '%s' && assertion.app_name in [%s]", c.FlyOrg, strings.Join(quoted, ", "))
+	// The provider admits the Fly.io organisation's apps; each key's IAM
+	// binding names the apps that may decrypt with it, so adding an app
+	// needs only its binding.
+	condition := fmt.Sprintf("assertion.org_name == '%s'", c.FlyOrg)
 	keyPath := []string{"--keyring", c.KeyRing, "--location", c.Location, "--project", c.Project}
 	steps := [][]string{
 		{"gcloud", "services", "enable", "cloudkms.googleapis.com", "sts.googleapis.com", "iamcredentials.googleapis.com", "--project", c.Project},
@@ -276,6 +253,9 @@ func (c *KMSSetupGCPCmd) Run(_ *cliCtx) error {
 		{"gcloud", "iam", "workload-identity-pools", "create", c.Pool, "--location", "global", "--display-name", "esec vault workloads", "--project", c.Project},
 		{"gcloud", "iam", "workload-identity-pools", "providers", "create-oidc", provider, "--location", "global", "--workload-identity-pool", c.Pool,
 			"--issuer-uri", team.FlyIssuerBase + "/" + c.FlyOrg, "--attribute-mapping", "google.subject=assertion.sub,attribute.org=assertion.org_name,attribute.app=assertion.app_name",
+			"--attribute-condition", condition, "--project", c.Project},
+		// Older setups listed the apps in the condition: widen it.
+		{"gcloud", "iam", "workload-identity-pools", "providers", "update-oidc", provider, "--location", "global", "--workload-identity-pool", c.Pool,
 			"--attribute-condition", condition, "--project", c.Project},
 	}
 	number := "PROJECT_NUMBER"
@@ -301,14 +281,26 @@ func (c *KMSSetupGCPCmd) Run(_ *cliCtx) error {
 	} else {
 		for _, s := range steps {
 			fmt.Println("$ " + shellJoin(s))
+			var out bytes.Buffer
 			cmd := exec.Command(s[0], s[1:]...)
-			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			cmd.Stdout, cmd.Stderr = io.MultiWriter(os.Stdout, &out), io.MultiWriter(os.Stderr, &out)
 			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("%s: %w (fix it and run again; steps that exist already fail harmlessly)", strings.Join(s[:4], " "), err)
+				// Running it again for another app finds the key ring,
+				// pool and provider there already.
+				if strings.Contains(strings.ToLower(out.String()), "already exists") {
+					fmt.Println("  (there already)")
+					continue
+				}
+				return fmt.Errorf("%s: %w (fix it and run again)", strings.Join(s[:4], " "), err)
 			}
 		}
 	}
-	fmt.Printf("\nThen add each app as a workload of its group:\n\n  esec vault group workload acme/production %s --fly-org %s --fly-app %s \\\n    --gcp-key %s \\\n    --gcp-provider %s\n", c.FlyApp[0], c.FlyOrg, c.FlyApp[0], gcpKey, gcpProvider)
+	groups := ""
+	if len(c.FlyApp) == 1 && c.Key != "workloads" {
+		groups = " --groups ORG/" + c.FlyApp[0]
+	}
+	fmt.Printf("\nThen approve the key in your organisation (ORG), and set up each app:\n\n  esec vault org kms add ORG %s --gcp-key %s \\\n    --gcp-provider %s%s\n  esec vault org fly-app ORG %s --read ORG/PROJECT:prod --kms %s\n", c.Key, gcpKey, gcpProvider, groups, c.FlyApp[0], c.Key)
+	fmt.Println("\nOr on the organisation's web page: Settings › Approve a key, then Workloads › Add a Fly.io app.")
 	fmt.Println("\nCost: a software key version is about $0.06 a month, and each workload start makes one decrypt (about $0.03 per 10,000). Token exchange is free.")
 	return nil
 }

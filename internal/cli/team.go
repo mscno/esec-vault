@@ -449,10 +449,13 @@ func (c *TeamSyncCmd) Run(ctx *cliCtx) error {
 		}
 		if inv.Group != "" {
 			fmt.Printf("%s added you to the group %s, which reads %s of the shared project %s.\n", safetext.Clean(inv.AddedBy), safetext.Clean(inv.Group), safetext.Clean(joinOr(inv.Envs, "nothing")), safetext.Clean(inv.Project))
-			return c.Yes || confirm("Take in its keys on this device? Say no if you did not expect it")
+		} else {
+			fmt.Printf("%s added you to the shared project %s (%s).\n", safetext.Clean(inv.AddedBy), inv.Project, reads)
 		}
-		fmt.Printf("%s added you to the shared project %s (%s).\n", safetext.Clean(inv.AddedBy), inv.Project, reads)
-		return c.Yes || confirm("Take in its keys on this device? Say no if you did not expect it")
+		if inv.Org != "" {
+			fmt.Println(safetext.Clean(inv.Org))
+		}
+		return (c.Yes && !inv.OrgWarning) || confirm("Take in its keys on this device? Say no if you did not expect it")
 	}
 	res, err := a.TeamSync(bg, account.TeamSyncOptions{Interactive: true, Accept: accept})
 	if err != nil {
@@ -487,6 +490,13 @@ func printTeamSync(res *account.TeamSyncResult) {
 	for _, s := range res.Problems {
 		fmt.Println("  ! " + safetext.Clean(s))
 	}
+	for _, s := range res.OrgRemovals {
+		fmt.Println("  − " + safetext.Clean(s))
+	}
+	for _, s := range res.OrgUntrusted {
+		org, words, _ := strings.Cut(s, " ")
+		fmt.Printf("  ! %s has an organisation chain this device has not confirmed (fingerprint %s); compare it with an admin's: esec vault org trust %s\n", org, words, org)
+	}
 	for _, inv := range res.Invites {
 		fmt.Printf("  ! did not take in the keys of %s; run 'esec vault access sync' again to accept it\n", inv.Project)
 	}
@@ -511,7 +521,7 @@ func printTeamSync(res *account.TeamSyncResult) {
 	for _, g := range res.GroupRotations {
 		fmt.Printf("  ! %s: a removed machine still holds the group key: esec vault group rotate %s\n", g, g)
 	}
-	if len(res.Imported)+len(res.Sent)+len(res.Conflicts)+len(res.Dropped)+len(res.Unsent)+len(res.Rotations)+len(res.Invites)+len(res.Problems)+len(res.GroupTodos)+len(res.GroupRotations)+res.Changes == 0 {
+	if len(res.Imported)+len(res.Sent)+len(res.Conflicts)+len(res.Dropped)+len(res.Unsent)+len(res.Rotations)+len(res.Invites)+len(res.Problems)+len(res.GroupTodos)+len(res.GroupRotations)+len(res.OrgRemovals)+len(res.OrgUntrusted)+res.Changes == 0 {
 		fmt.Println("✓ Shared projects are up to date.")
 	}
 }

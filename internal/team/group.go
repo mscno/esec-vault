@@ -536,25 +536,15 @@ func (s *GroupState) checkSigner(e *envelope.Envelope, l *GroupLink, chains Chai
 		}
 		return e.Require(KindGroupLink, pub)
 	}
-	a, ok := s.Admins[l.Signer]
-	if !ok || !a.Active || l.SignerKey != 0 || l.Seq == 1 {
-		return errors.New("only an admin's delegate signs group links")
-	}
-	if l.SignerSeq < s.signerSeqs[l.Signer] {
-		return fmt.Errorf("%s signed as of an earlier position of their user chain than before", l.Signer)
-	}
-	d, err := DelegateSigner(chains, l.Signer, a.Root, l.SignerDelegate, l.SignerSeq, l.CTime)
-	if err != nil {
-		return err
-	}
-	scope, err := groupScope(*l)
-	if err != nil {
-		return err
-	}
-	if !chain.DelegateAllows(d.Scope, scope) {
-		return fmt.Errorf("%w: the delegate %s may only sign %s changes", errNotInScope, d.Name, d.Scope)
-	}
-	return verifyDelegate(e, KindGroupLink, d)
+	return s.people().delegate(e, KindGroupLink, l.head(), chains, func() (string, error) { return groupScope(*l) })
+}
+
+func (s *GroupState) people() chainPeople {
+	return chainPeople{admins: s.Admins, members: s.Members, seqs: s.signerSeqs, leave: GroupMemberRemove, what: "group"}
+}
+
+func (l *GroupLink) head() signedHead {
+	return signedHead{Seq: l.Seq, Type: l.Type, Signer: l.Signer, SignerKey: l.SignerKey, SignerSeq: l.SignerSeq, SignerDelegate: l.SignerDelegate, CTime: l.CTime}
 }
 
 // signerKey returns the key a link must be signed with: an enrollment
@@ -574,10 +564,7 @@ func (s *GroupState) signerKey(l *GroupLink, chains Chains) (ed25519.PublicKey, 
 		}
 		return chain.ParseSignKey(t.SignPub)
 	}
-	if err := chain.ValidUser(l.Signer); err != nil {
-		return nil, err
-	}
-	var root string
+	var creator *Person
 	if l.Seq == 1 {
 		if l.Type != GroupInit {
 			return nil, errors.New("a group chain must start with an init link")
@@ -586,30 +573,9 @@ func (s *GroupState) signerKey(l *GroupLink, chains Chains) (ed25519.PublicKey, 
 		if err := decodeGroupBody(*l, &b); err != nil {
 			return nil, err
 		}
-		if b.Creator.User != l.Signer {
-			return nil, errors.New("the init link must be signed by its creator")
-		}
-		root = b.Creator.Root
-	} else {
-		a, ok := s.Admins[l.Signer]
-		if !ok || !a.Active {
-			// A member signs one link only: leaving the group.
-			m, member := s.Members[l.Signer]
-			if !member || !m.Active || l.Type != GroupMemberRemove {
-				return nil, fmt.Errorf("%s is not an admin of the group", l.Signer)
-			}
-			a = m
-		}
-		root = a.Root
+		creator = &b.Creator
 	}
-	pub, err := SignerKey(chains, l.Signer, root, l.SignerKey, l.SignerSeq)
-	if err != nil {
-		return nil, err
-	}
-	if l.SignerSeq < s.signerSeqs[l.Signer] {
-		return nil, fmt.Errorf("%s signed as of an earlier position of their user chain than before", l.Signer)
-	}
-	return pub, nil
+	return s.people().userKey(l.head(), creator, chains)
 }
 
 func (s *GroupState) apply(l GroupLink) error {

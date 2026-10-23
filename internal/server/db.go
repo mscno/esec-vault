@@ -388,6 +388,30 @@ var schema = []string{
 		reviewed_by TEXT NOT NULL,
 		reviewed_at INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS access_reviews_project ON access_reviews(project, id)`,
+	// Organisation chains (orgchain.go). org_links is the signed chain;
+	// org_people mirrors its verified roster for queries.
+	`CREATE TABLE IF NOT EXISTS orgs (
+		id TEXT PRIMARY KEY,
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		seq INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS org_links (
+		org TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		hash TEXT NOT NULL,
+		envelope BLOB NOT NULL,
+		signer TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (org, seq))`,
+	`CREATE TABLE IF NOT EXISTS org_people (
+		org TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		login TEXT NOT NULL,
+		admin INTEGER NOT NULL,
+		active INTEGER NOT NULL,
+		PRIMARY KEY (org, user_id))`,
+	`CREATE INDEX IF NOT EXISTS org_people_user ON org_people(user_id)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
 }
 
@@ -426,6 +450,8 @@ type DB struct {
 	// groups caches verified group chains by their head, since machines
 	// and pages read them far more often than they change.
 	groups groupCache
+	// orgs caches verified organisation chains the same way.
+	orgs orgCache
 }
 
 // OpenDB opens (and migrates) the database at path.

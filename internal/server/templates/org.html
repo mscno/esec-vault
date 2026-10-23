@@ -1,8 +1,98 @@
 {{template "head" .}}
-<p class="crumbs"><a href="/access">Access</a> › Organisation</p>
-<h1>{{.Org}}</h1>
-<p class="muted">What you can see of {{.Org}}'s shared projects and groups. Each is its own signed chain; the policy below is the server's own check on top, and can only refuse changes, never grant access.</p>
+<p class="crumbs"><a href="/orgs">Organisations</a> › {{.Org}}</p>
+<h1>{{.Org}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .MyMember}}<span class="badge status-active">member</span>{{end}}{{if .Chain}} <span class="badge">signed</span>{{end}}</h1>
+{{if .Chain}}
+<p class="muted">Its people, approved KMS keys and rules are a chain its admins sign on their devices; the server keeps it but cannot change it. Set up by {{.Creator}} {{when .Created}}. Fingerprint <code>{{.Words}}</code>.</p>
+<nav class="tabs" aria-label="{{.Org}}">
+  <a href="/orgs/{{.Org}}"{{if eq .Tab "overview"}} aria-current="page"{{end}}>Overview</a>
+  <a href="/orgs/{{.Org}}/people"{{if eq .Tab "people"}} aria-current="page"{{end}}>People <span class="count">{{len .Roster}}</span></a>
+  <a href="/orgs/{{.Org}}/workloads"{{if eq .Tab "workloads"}} aria-current="page"{{end}}>Workloads <span class="count">{{len .Workloads}}</span></a>
+  <a href="/orgs/{{.Org}}/settings"{{if eq .Tab "settings"}} aria-current="page"{{end}}>Settings</a>
+</nav>
+{{else if .Outside}}
+<p class="muted">{{.Org}} is an organisation with a signed chain (fingerprint <code>{{.Words}}</code>); you are in some of its projects or groups, not in it. What you can see of them:</p>
+{{else}}
+<p class="muted">What you can see of {{.Org}}'s shared projects and groups.</p>
+{{end}}
+{{template "org-alerts" .}}
+{{template "org-body" .}}
+{{template "foot" .}}
 
+{{define "org-alerts"}}<section id="org-alerts" class="notices" aria-label="Needs attention">
+{{if .Outside}}
+{{else if not .Chain}}
+  <div class="notice">
+    <p><strong>Set up {{.Org}} as an organisation.</strong> Its admins then decide, signed on their devices, who belongs to it, which KMS keys its workloads may use, and its rules. Only its people can then create projects and groups named {{.Org}}/…, and removing someone from it takes them out of all of them.</p>
+    {{if .Claiming}}
+    <p>You asked to set it up. Sign it on your device: your background service asks you in a dialog, or run <code>esec vault changes</code>.</p>
+    {{else if .CanClaim}}
+    <form method="post" action="/orgs/{{.Org}}/claim" class="inline" data-confirm="Set up {{.Org}} with you as its admin?" {{dsPost (printf "/orgs/%s/claim" .Org)}}>
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit">Set up {{.Org}}</button>
+    </form>
+    <span class="muted">or on a device:</span> {{template "cmd" (printf "esec vault org create %s" .Org)}}
+    {{else}}
+    <p class="muted">{{.ClaimWhy}}</p>
+    {{end}}
+  </div>
+{{else}}
+  {{range .Former}}
+  <div class="notice notice-warn">
+    <p><strong>{{.Login}}</strong> left {{$.Org}} {{ago .Left}}, but is still in {{range $i, $s := .StillIn}}{{if $i}}, {{end}}<a href="/{{if $s.Group}}groups{{else}}teams{{end}}/{{$s.ID}}">{{$s.ID}}</a>{{end}}. The devices of their admins take them out at their next sync{{with (index .StillIn 0).Admins}} ({{range $i, $a := .}}{{if $i}}, {{end}}{{$a}}{{end}}){{end}}; then rotate what they could read.</p>
+  </div>
+  {{end}}
+  {{if .KeyProblems}}
+  <div class="notice notice-warn">
+    <p><strong>{{plural .KeyProblems "workload"}}</strong> use a KMS key {{.Org}} has not approved, or withdrew. Move them to an approved key on the <a href="/orgs/{{.Org}}/workloads">Workloads</a> page.</p>
+  </div>
+  {{end}}
+  {{if and .MyAdmin (not .KMS)}}
+  <div class="notice">
+    <p>Approve a KMS key to let apps read their keys with no secret stored anywhere: <a href="/orgs/{{.Org}}/settings#kms">Settings › KMS keys</a>.</p>
+  </div>
+  {{end}}
+  {{if .Changes}}
+  <div class="notice notice-info">
+    <p><strong>{{plural (len .Changes) "change"}}</strong> wait to be signed. The server holds no key: a passkey signs what its scope allows, a device the rest (a dialog of your background service, or <code>esec vault changes</code>).</p>
+    {{template "org-changes" .}}
+  </div>
+  {{end}}
+{{end}}
+</section>{{end}}
+
+{{define "org-changes"}}<div class="scroll">
+<table>
+  <thead><tr><th>Change</th><th>By</th><th>When</th><th></th></tr></thead>
+  <tbody>
+  {{range .Changes}}
+  <tr id="change-{{.ID}}">
+    <td>{{.Text}}</td>
+    <td>{{.By}}</td>
+    <td class="nowrap">{{when .Created}}</td>
+    <td class="actions">{{if and .Passkey $.Passkeys $.SignerURL}}<a class="button secondary" href="{{$.SignerURL}}/#change={{.ID}}" target="_blank" rel="noopener">Sign with passkey</a> {{end}}<form method="post" action="/orgs/{{$.Org}}/changes/{{.ID}}/dismiss" class="inline" {{dsPost (printf "/orgs/%s/changes/%d/dismiss" $.Org .ID)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Dismiss</button></form></td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>{{end}}
+
+{{define "org-body"}}<div id="org-body">
+{{if and .Chain (eq .Tab "people")}}{{template "org-people" .}}
+{{else if and .Chain (eq .Tab "workloads")}}{{template "org-workloads" .}}
+{{else if and .Chain (eq .Tab "settings")}}{{template "org-settings" .}}
+{{else}}{{template "org-overview" .}}{{end}}
+</div>{{end}}
+
+{{define "org-overview"}}
+{{if .Chain}}
+<div class="tiles">
+  <a class="tile" href="/orgs/{{.Org}}/people"><span class="tile-label">People</span><span class="tile-value">{{len .Roster}}</span><span class="tile-note">{{if .Former}}{{plural (len .Former) "person"}} still to take out{{else}}{{plural (len .Admins) "admin"}}{{end}}</span></a>
+  <a class="tile" href="/orgs/{{.Org}}/workloads"><span class="tile-label">Workloads</span><span class="tile-value">{{len .Workloads}}</span><span class="tile-note">{{if .KeyProblems}}{{plural .KeyProblems "key problem"}}{{else}}apps with no secret{{end}}</span></a>
+  <a class="tile" href="/orgs/{{.Org}}/settings#kms"><span class="tile-label">Approved keys</span><span class="tile-value">{{len .KMS}}</span><span class="tile-note">{{with .Settings.DefaultKMS}}default {{.}}{{else}}no default{{end}}</span></a>
+  <a class="tile" href="/orgs/{{.Org}}/settings#rules"><span class="tile-label">Joining</span><span class="tile-value">{{if .Settings.MembersOnly}}members only{{else}}open{{end}}</span><span class="tile-note">{{if .Settings.RequireGitHubProof}}GitHub proofs only{{else}}proofs or key words{{end}}{{if .Settings.MaxTokenDays}}; tokens ≤ {{plural .Settings.MaxTokenDays "day"}}{{end}}</span></a>
+</div>
+{{end}}
+{{if or .Teams .Groups}}
 <h2 id="projects">Projects</h2>
 <div class="scroll">
 <table>
@@ -43,7 +133,7 @@
 </table>
 </div>
 
-<h2 id="people">People</h2>
+<h2 id="readers">Who reads what</h2>
 <div class="scroll">
 <table>
   <thead><tr><th>Person</th><th>Reads</th></tr></thead>
@@ -59,30 +149,227 @@
   </tbody>
 </table>
 </div>
-
+{{else}}
+<p class="muted">You are in none of {{.Org}}'s projects or groups.</p>
+{{end}}
+{{if not .Chain}}
 <h2 id="policy">Policy</h2>
 {{template "org-policy" .}}
-{{template "foot" .}}
+{{end}}
+{{end}}
+
+{{define "org-people"}}
+<h2 id="people">People</h2>
+<p class="muted">Belonging to {{.Org}} gives no keys by itself: people read what its projects grant them and the groups they are in. {{if .Settings.MembersOnly}}Only its people may be added to its projects and groups.{{end}}</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Person</th><th>Role</th><th>In {{.Org}}</th><th>Added</th><th></th></tr></thead>
+  <tbody>
+  {{range .Roster}}
+  <tr>
+    <td><a href="/people/{{.Login}}"><strong>{{.Login}}</strong></a>{{if eq .Verified "account_key"}} <span class="badge" title="checked with account key words, not a GitHub SSH proof">key words</span>{{end}}</td>
+    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else}}member{{end}}</td>
+    <td>{{range .Reads}}<div>{{.}}</div>{{else}}<span class="muted">reads nothing yet</span>{{end}}</td>
+    <td class="nowrap">{{when .Added}}{{with .AddedBy}}<br><span class="muted">by {{.}}</span>{{end}}</td>
+    <td class="actions">{{if and $.MyAdmin (ne .User $.User.ID)}}<form method="post" action="/orgs/{{$.Org}}/people/remove" class="inline" data-confirm="Remove {{.Login}} from {{$.Org}}? Every project and group of {{$.Org}} loses them: your device takes them out of what you administer, other admins' devices at their next sync." {{dsPost (printf "/orgs/%s/people/remove" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="login" value="{{.Login}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{if .Former}}
+<h2 id="left">Left, still reading</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Person</th><th>Left</th><th>Still in</th><th>Taken out by the devices of</th></tr></thead>
+  <tbody>
+  {{range .Former}}
+  {{$f := .}}
+  {{range .StillIn}}
+  <tr>
+    <td><strong>{{$f.Login}}</strong></td>
+    <td class="nowrap">{{when $f.Left}}</td>
+    <td><a href="/{{if .Group}}groups{{else}}teams{{end}}/{{.ID}}">{{.ID}}</a></td>
+    <td>{{range $i, $a := .Admins}}{{if $i}}, {{end}}{{$a}}{{else}}<span class="muted">no admin left</span>{{end}}</td>
+  </tr>
+  {{end}}
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+{{if .MyAdmin}}
+<details class="help" data-preserve-attr="open" open>
+  <summary>Add a person</summary>
+  <form method="post" action="/orgs/{{.Org}}/people" class="grid-form" {{dsPost (printf "/orgs/%s/people" .Org)}}>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>GitHub login <input name="login" required pattern="[A-Za-z0-9][A-Za-z0-9-]{0,38}" autocomplete="off" spellcheck="false"></label>
+    <label>Role <select name="role"><option value="member">member</option><option value="admin">admin: adds people, approves keys, sets rules</option></select></label>
+    <div><button type="submit">Add</button></div>
+  </form>
+  <p class="muted">They sign in to this server first and publish their GitHub SSH proof with <code>esec vault access prove</code>. A member can be signed with your passkey; an admin only on a device, which checks the proof against github.com. On a device, in one step: <code>esec vault org add {{.Org}} LOGIN</code>.</p>
+</details>
+{{end}}
+<p class="muted">Removing someone takes them out of every project and group of {{.Org}}: your device does it at once for what you administer, the devices of the other admins at their next sync. Rotate what they could read afterwards; the project pages list it. An admin of a project who never signed in {{.Org}}'s chain confirms its fingerprint once on their device first: <code>esec vault org trust {{.Org}}</code>.</p>
+{{end}}
+
+{{define "org-workloads"}}
+<h2 id="workloads">Workloads</h2>
+<p class="muted">Apps that hold no secret: each proves where it runs with an OIDC token, and a KMS key {{.Org}} approved unwraps its keys. <a href="/orgs/{{.Org}}/export" download>Export as JSON</a></p>
+<div class="scroll">
+<table>
+  <thead><tr><th>App</th><th>Reads</th><th>KMS key</th><th>Last start</th><th></th></tr></thead>
+  <tbody>
+  {{range .Workloads}}
+  <tr id="workload-{{.ID}}">
+    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{end}}<br><span class="muted">{{.Runs}}</span><br><span class="muted">in <a href="/groups/{{.Group}}#workloads">{{.Group}}</a></span></td>
+    <td>{{range .Reads}}<div>{{.}}</div>{{else}}<span class="muted">nothing yet</span>{{end}}</td>
+    <td>{{if .KeyProblem}}<span class="badge status-revoked" title="{{.KeyProblem}}">{{with .KMSName}}{{.}}: withdrawn{{else}}not approved{{end}}</span>{{else}}<span class="badge status-active">{{.KMSName}}</span>{{end}}{{with .KMS}}<br><code class="muted" title="{{.Name}}">{{short .Name}}</code>{{end}}{{with .Rekeying}}<br><span class="badge status-pending">moving to {{.}}</span>{{else}}{{if and .CanAdmin (not .Suspended) (or .KeyProblem (gt (len $.KMS) 1))}}<form method="post" action="/orgs/{{$.Org}}/workloads/rekey" class="rekey" {{dsPost (printf "/orgs/%s/workloads/rekey" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="group" value="{{.Group}}"><input type="hidden" name="id" value="{{.ID}}"><select name="kms" aria-label="Move to key">{{$cur := .KMSName}}{{range $.KMS}}{{if ne .Name $cur}}<option value="{{.Name}}">{{.Name}}</option>{{end}}{{end}}</select> <button type="submit" class="secondary">Move</button></form>{{end}}{{end}}</td>
+    <td class="nowrap">{{if .LastUsed.IsZero}}<span class="muted">never</span>{{else}}{{when .LastUsed}}<br><span class="muted">{{plural .Uses "start"}}</span>{{end}}</td>
+    <td class="actions">
+      <button type="button" class="copy secondary" data-copy="{{.Descriptor}}" hidden>Copy descriptor</button>
+      {{if and .CanAdmin (not .Suspended)}}
+      <form method="post" action="/orgs/{{$.Org}}/workloads/remove" class="inline" data-confirm="Remove the workload {{.Name}}? It gets no keys from its next start." {{dsPost (printf "/orgs/%s/workloads/remove" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="group" value="{{.Group}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No workloads yet.{{if $.MyAdmin}} Add a Fly.io app below.{{end}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{if .MyAdmin}}
+<h2 id="add-app">Add a Fly.io app</h2>
+{{if not .KMS}}
+<p class="notice">Approve a KMS key first: <a href="/orgs/{{.Org}}/settings#kms">Settings › KMS keys</a>.</p>
+{{else}}
+<form method="post" action="/orgs/{{.Org}}/fly-apps" class="stack-form" {{dsPost (printf "/orgs/%s/fly-apps" .Org)}}>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="grid-form">
+    <label>Fly.io app <input name="app" required pattern="[a-z0-9][a-z0-9-]{0,62}" autocomplete="off" spellcheck="false" placeholder="store"></label>
+    <label>Fly.io organisation <input name="fly_org" required pattern="[a-z0-9][a-z0-9-]{0,62}" value="{{.Settings.FlyOrg}}" autocomplete="off" spellcheck="false"></label>
+    <label>Group <span class="muted">(made when new)</span> <input name="group" list="org-groups" placeholder="{{.Org}}/APP" autocomplete="off" spellcheck="false"></label>
+    <label>KMS key <select name="kms">{{range .KMS}}<option value="{{.Name}}"{{if .Default}} selected{{end}}>{{.Name}}{{if .Groups}} (only {{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g}}{{end}}){{end}}</option>{{end}}</select></label>
+  </div>
+  <datalist id="org-groups">{{range .MyGroups}}<option value="{{.}}">{{end}}</datalist>
+  <fieldset>
+    <legend>It reads</legend>
+    {{range .MyProjects}}
+    <div class="read-row"><strong>{{.ID}}</strong> {{$p := .ID}}{{range .Envs}}<label class="check"><input type="checkbox" name="read" value="{{$p}} {{.}}"> {{.}}</label>{{end}}</div>
+    {{else}}
+    <p class="muted">You administer no project of {{.Org}}; an admin of one lets the group read it later.</p>
+    {{end}}
+  </fieldset>
+  <div><button type="submit">Set up the app</button></div>
+</form>
+<p class="muted">Your device signs it: it makes the group when it is new, lets it read what you ticked, binds a workload to Fly.io's OIDC tokens of that app alone, and wraps the group key with the KMS key, all without calling the KMS. The app's descriptor then shows above; it is not a secret.</p>
+<details class="help">
+  <summary>Run the app</summary>
+  <p>Put the descriptor in <code>fly.toml</code>:</p>
+  <pre><code>[env]
+  ESEC_VAULT_WORKLOAD = "esecw1_..."</code></pre>
+  <p>and start it through esec-vault; the image holds <code>esec</code>, <code>esec-vault</code>, <code>.esec-project</code> and the encrypted files:</p>
+  {{template "cmd" "CMD [\"esec-vault\", \"machine\", \"run\", \"--\", \"esec\", \"run\", \".env.prod\", \"--\", \"/app/server\"]"}}
+  <p class="muted">The KMS key's IAM (or OpenBao role) must let that app decrypt: <code>esec vault kms setup gcp --fly-org ORG --fly-app APP --apply</code>.</p>
+</details>
+{{end}}
+{{end}}
+{{end}}
+
+{{define "org-settings"}}
+<h2 id="kms">KMS keys</h2>
+<p class="muted">Devices wrap the keys of {{.Org}}'s workloads only with these, so a server cannot slip in a key of its own. The device that approves one reads its public half from the KMS itself.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Name</th><th>Key</th><th>Only for</th><th>Used by</th><th>Approved</th><th></th></tr></thead>
+  <tbody>
+  {{range .KMS}}
+  <tr>
+    <td><strong>{{.Name}}</strong>{{if .Default}} <span class="badge status-active">default</span>{{end}}</td>
+    <td><span class="badge">{{.Key.Provider}}</span> <code title="{{.Key.Name}}">{{short .Key.Name}}</code><br><span class="muted">fingerprint {{.Fingerprint}}</span></td>
+    <td>{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g}}{{else}}<span class="muted">any group</span>{{end}}</td>
+    <td>{{plural .Users "workload"}}</td>
+    <td class="nowrap">{{when .AddedTime}}{{with .AddedBy}}<br><span class="muted">by {{.}}</span>{{end}}</td>
+    <td class="actions">{{if $.MyAdmin}}<form method="post" action="/orgs/{{$.Org}}/kms/remove" class="inline" data-confirm="Withdraw {{.Name}}? No new workload uses it; those that do keep working until you move them." {{dsPost (printf "/orgs/%s/kms/remove" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit" class="danger">Withdraw</button></form>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">None yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{if .MyAdmin}}
+<details class="help" data-preserve-attr="open"{{if not .KMS}} open{{end}}>
+  <summary>Approve a key</summary>
+  <p>Make the key and its identity federation first (it prints the names to paste here): {{template "cmd" (printf "esec vault kms setup gcp --project PROJECT --fly-org %s --fly-app APP --apply" (or .Settings.FlyOrg .Org))}}</p>
+  <form method="post" action="/orgs/{{.Org}}/kms" class="grid-form" {{dsPost (printf "/orgs/%s/kms" .Org)}}>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,62}" placeholder="gcp-prod" autocomplete="off" spellcheck="false"></label>
+    <label>Provider <select name="provider"><option value="gcp">Google Cloud KMS</option><option value="openbao">OpenBao (self-hosted)</option></select></label>
+    <label class="wide">Key version <input name="key" required placeholder="projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/1" autocomplete="off" spellcheck="false"></label>
+    <label class="wide">Audience <input name="audience" required placeholder="projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER" autocomplete="off" spellcheck="false"></label>
+    <label>Acts as <span class="muted">(optional)</span> <input name="principal" placeholder="service account, or jwt/ROLE for OpenBao" autocomplete="off" spellcheck="false"></label>
+    <label>Only for groups <span class="muted">(optional)</span> <input name="groups" placeholder="{{.Org}}/store" autocomplete="off" spellcheck="false"></label>
+    <div><button type="submit">Propose</button></div>
+  </form>
+  <p class="muted">Sign it in a terminal where the device can read the key (gcloud signed in, or <code>BAO_TOKEN</code> set): <code>esec vault changes</code>. Check that the project in its name is yours: whoever controls the key can read what its workloads read. On a device in one step: <code>esec vault org kms add {{.Org}} NAME --gcp-key ... --gcp-provider ...</code></p>
+</details>
+{{end}}
+
+<h2 id="rules">Rules and defaults</h2>
+{{if .MyAdmin}}
+<form method="post" action="/orgs/{{.Org}}/settings" class="stack-form" data-confirm="Propose these rules for {{.Org}}?" {{dsPost (printf "/orgs/%s/settings" .Org)}}>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <fieldset>
+    <legend>Who may join</legend>
+    <label class="check"><input type="checkbox" name="members_only"{{if .Settings.MembersOnly}} checked{{end}}> only {{.Org}}'s people join its projects and groups</label>
+    <label class="check"><input type="checkbox" name="require_github_proof"{{if .Settings.RequireGitHubProof}} checked{{end}}> people are checked with a GitHub SSH proof, never account key words</label>
+    <label class="check"><input type="checkbox" name="no_server_signing"{{if .Settings.NoServerSigning}} checked{{end}}> the server never signs removals; passkeys and devices do</label>
+  </fieldset>
+  <div class="grid-form">
+    <label>Longest token, days <input name="max_token_days" type="number" min="0" max="3660" value="{{.Settings.MaxTokenDays}}"></label>
+    <label>Review access, days <input name="review_days" type="number" min="0" max="3660" value="{{.Settings.ReviewDays}}"></label>
+    <label>Fly.io organisation <input name="fly_org" pattern="[a-z0-9][a-z0-9-]{0,62}" value="{{.Settings.FlyOrg}}" autocomplete="off" spellcheck="false"></label>
+    <label>Default KMS key <select name="default_kms"><option value="">none</option>{{range .KMS}}<option value="{{.Name}}"{{if .Default}} selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+  </div>
+  <p class="muted">0 days: no limit, or no reviews. The Fly.io organisation and key are what new apps use unless you pick others.</p>
+  <div><button type="submit">Propose</button></div>
+</form>
+{{else}}
+<ul>
+  <li>{{if .Settings.MembersOnly}}Only {{.Org}}'s people join its projects and groups.{{else}}Anyone may be added to its projects and groups.{{end}}</li>
+  <li>{{if .Settings.RequireGitHubProof}}People are checked with a GitHub SSH proof only.{{else}}People are checked with a GitHub SSH proof or account key words.{{end}}</li>
+  <li>{{if .Settings.MaxTokenDays}}Enrollment tokens last at most {{plural .Settings.MaxTokenDays "day"}}.{{else}}Enrollment tokens have no limit.{{end}}</li>
+  <li>{{if .Settings.NoServerSigning}}The server signs no removals.{{else}}The server may sign removals for people who let it.{{end}}</li>
+</ul>
+{{end}}
+<p class="muted">{{if .SettingsBy}}Signed by {{.SettingsBy}} {{when .SettingsTime}}. {{end}}Devices check these when they sign; the server when it stores changes.</p>
+
+<h2 id="policy">What the server enforces</h2>
+{{template "org-policy" .}}
+{{end}}
 
 {{define "org-policy"}}<div id="org-policy">
+<p class="muted">The stricter of {{.Org}}'s signed rules{{if not .Chain}} (none yet){{end}} and the server admins' policy.</p>
 <ul>
   <li>Enrollment tokens: {{if .Policy.MaxTokenDays}}at most {{plural .Policy.MaxTokenDays "day"}}, none that never expire{{else}}<span class="muted">no limit</span>{{end}}</li>
-  <li>Adding people: {{if .Policy.RequireGitHubProof}}only with a GitHub SSH proof{{else}}a GitHub SSH proof, or account key words read out{{end}}</li>
+  <li>Adding people: {{if .Policy.RequireGitHubProof}}only with a GitHub SSH proof{{else}}a GitHub SSH proof, or account key words read out{{end}}{{if .Policy.MembersOnly}}; only {{.Org}}'s people{{end}}</li>
   <li>Removals made on the web: {{if .Policy.NoServerSigning}}always signed by a passkey or device{{else}}the server may sign them for people who let it{{end}}</li>
   <li>Access reviews: {{if .Policy.ReviewDays}}every {{plural .Policy.ReviewDays "day"}}{{else}}<span class="muted">none asked for</span>{{end}}</li>
 </ul>
-{{if .PolicyBy}}<p class="muted">Set by {{.PolicyBy}} {{when .Policy.Updated}}.</p>{{end}}
+{{if .PolicyBy}}<p class="muted">The server admins' part set by {{.PolicyBy}} {{when .ServerPolicy.Updated}}.</p>{{end}}
 {{if .CanSetPolicy}}
 <details class="help" data-preserve-attr="open">
   <summary>Change the policy (server admins)</summary>
-  <form method="post" action="/orgs/{{.Org}}/policy" class="grid-form" data-confirm="Change {{.Org}}'s policy?" {{dsPost (printf "/orgs/%s/policy" .Org)}}>
+  <form method="post" action="/orgs/{{.Org}}/policy" class="grid-form" data-confirm="Change the server's policy for {{.Org}}?" {{dsPost (printf "/orgs/%s/policy" .Org)}}>
     <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <label>Longest token, in days (0: no limit) <input name="max_token_days" type="number" min="0" max="3660" value="{{.Policy.MaxTokenDays}}"></label>
-    <label>Review access every … days (0: never) <input name="review_days" type="number" min="0" max="3660" value="{{.Policy.ReviewDays}}"></label>
-    <div><label class="check"><input type="checkbox" name="require_github_proof"{{if .Policy.RequireGitHubProof}} checked{{end}}> require a GitHub SSH proof</label> <label class="check"><input type="checkbox" name="no_server_signing"{{if .Policy.NoServerSigning}} checked{{end}}> the server signs no removals</label></div>
+    <label>Longest token, in days (0: no limit) <input name="max_token_days" type="number" min="0" max="3660" value="{{.ServerPolicy.MaxTokenDays}}"></label>
+    <label>Review access every … days (0: never) <input name="review_days" type="number" min="0" max="3660" value="{{.ServerPolicy.ReviewDays}}"></label>
+    <div><label class="check"><input type="checkbox" name="require_github_proof"{{if .ServerPolicy.RequireGitHubProof}} checked{{end}}> require a GitHub SSH proof</label> <label class="check"><input type="checkbox" name="no_server_signing"{{if .ServerPolicy.NoServerSigning}} checked{{end}}> the server signs no removals</label></div>
     <div><button type="submit">Save</button></div>
   </form>
-  <p class="muted">The server checks it on every change it stores from now on. Devices that sign changes still check the chains themselves.</p>
+  <p class="muted">The server checks it on every change it stores from now on, on top of the organisation's own rules.</p>
 </details>
 {{end}}
 </div>{{end}}

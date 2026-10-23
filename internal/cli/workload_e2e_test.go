@@ -110,7 +110,7 @@ func TestWorkloadRekeyEndToEnd(t *testing.T) {
 	h := servertest.StartWith(t, []server.Option{server.WithRegistrationLimits(100, 1000), server.WithFlyOIDCBase(fly.URL)}, 53101343)
 	h.GitHub.AddUser(53101343, "mscno")
 	const p = "--project=acme/store"
-	owner := newMachine(t, bin, "owner").with("ESEC_VAULT_GITHUB_URL="+h.GitHub.URL, "BAO_TOKEN=root")
+	owner := newMachine(t, bin, "owner").with("ESEC_VAULT_GITHUB_URL="+h.GitHub.URL, "BAO_TOKEN=root", "BAO_ADDR="+bao.URL)
 	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "prod", "--format", "env")

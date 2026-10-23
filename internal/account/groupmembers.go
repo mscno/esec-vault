@@ -43,6 +43,9 @@ func (a *Account) AddGroupMember(ctx context.Context, id, login, accountKey stri
 		if err != nil {
 			return err
 		}
+		if err := t.checkOrgPerson(id, person, verified); err != nil {
+			return err
+		}
 		key, err := t.groupKey(gs)
 		if err != nil {
 			return err
@@ -267,6 +270,7 @@ func (t *teamCtx) acceptVia(st *team.State, group, addedBy string, envs []string
 		return true
 	}
 	inv := Invite{Project: st.Project, AddedBy: addedBy, Envs: envs, Group: group}
+	inv.Org, inv.OrgWarning = t.orgNote(st)
 	if opts.Accept != nil && opts.Accept(inv) {
 		t.pins.Accepted[st.Project] = true
 		return true

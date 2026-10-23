@@ -140,7 +140,7 @@ func (s *Server) handleEvents(ctx context.Context, a *account.Account, events []
 			s.announcePending(ctx, a, e.Detail, seenPending)
 		case e.Type == wire.EventDeviceStatus:
 			s.announceSuspended(ctx, a, e.Detail)
-		case e.Type == wire.EventProject || e.Type == wire.EventGrant || e.Type == wire.EventGroup:
+		case e.Type == wire.EventProject || e.Type == wire.EventGrant || e.Type == wire.EventGroup || e.Type == wire.EventOrg:
 			teamChanged = true
 		}
 	}
@@ -152,7 +152,7 @@ func (s *Server) handleEvents(ctx context.Context, a *account.Account, events []
 // teamSync receives keys sent to this account and, as an admin, sends
 // keys members and machines are missing. It notifies once about keys
 // received, keys left alone, and keys to rotate.
-func (s *Server) teamSync(ctx context.Context, a *account.Account) {
+func (s *Server) teamSync(ctx context.Context, a *account.Account) { //nolint:gocyclo // one notice per kind of result
 	s.lastTeamSync = time.Now()
 	if s.teamNoted == nil {
 		s.teamNoted = map[string]bool{}
@@ -189,6 +189,16 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) {
 		msg := "Your account " + e + " from another device. If that was not you, a revoked device may still hold your old user key: check the project's page."
 		s.Logger.Warn("shared projects: " + msg)
 		Notifier("esec vault: project changed", msg)
+	}
+	for _, r := range res.OrgRemovals {
+		s.Logger.Info("organisations: " + r)
+		Notifier("esec vault: organisation", r)
+	}
+	for _, o := range res.OrgUntrusted {
+		org, words, _ := strings.Cut(o, " ")
+		if s.stillWaiting("org " + org) {
+			Notifier("esec vault: confirm an organisation", org+" has an organisation chain this device has not confirmed (fingerprint "+words+"). Compare it with an admin's, then run: esec vault org trust "+org)
+		}
 	}
 	for _, p := range res.Problems {
 		s.Logger.Warn("shared projects: " + p)

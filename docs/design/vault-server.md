@@ -1157,6 +1157,67 @@ device checks them. Like an old user key (§14), a removed delegate's key can si
 position before its removal until the person signs again in that project
 or group.
 
+## 19. Organisations
+
+An organisation (the `acme` of `acme/store`) may have a chain of its own,
+built like a group's (`org-link` envelopes: `init`, `admin_add`,
+`admin_remove`, `member_add`, `member_remove`, `kms_add`, `kms_remove`,
+`settings`), signed by its admins' user keys or their delegates, verified
+from its first link and pinned by every device that sees it. Admins and
+members are its people; an admin is not also a member. It is the signed
+source of what project and group chains cannot say.
+
+**Namespace.** The server stores a project's or group's first link named
+`acme/...` only from one of acme's people once acme has a chain. The first
+link of acme's chain itself may come from anyone while nothing is named
+after acme, then only from an admin of something that is (or a server
+admin). A member's device, accepting a project, says whether its creator
+belongs to acme; a forged look-alike shows a creator who does not.
+
+**People.** Removing someone from acme makes every admin's device take them
+out of the projects and groups of acme it administers, at its next sync
+(the background service does it unasked): only memberships from before
+they left, so someone added again on purpose stays. Groups get a new key at
+once; environments are listed to rotate, as after any removal.
+
+**KMS keys.** `kms_add` approves a key (provider, name, audience, principal,
+public half; optionally only for some groups). A device wraps a group key of
+acme for a workload, or moves a workload to a key, only if acme's chain
+approves that exact key (fingerprint over provider, name and public half,
+and the same audience and principal) for that group. The approving device
+reads the public half from the KMS itself, as its person, so a web change
+naming a key cannot carry a public half the server chose; the person still
+reads the key's name (its project) before signing. Workloads on a withdrawn
+key keep working until moved; the pages flag them.
+
+**Rules.** `settings` holds: members only, GitHub proofs only, the longest
+token, no server-signed removals, review days, and the defaults for new
+apps (Fly.io organisation, KMS key). Devices check the first three when
+they sign; the server applies all of them, joined with its admins' policy
+(the stricter of each).
+
+**Delegates.** A passkey with scope `remove` may sign removing a member and
+withdrawing a key; with `manage`, adding a member (recorded `web`). Admins,
+approving keys and the settings are a device's to sign.
+
+**Anchoring.** A server can make up a chain for any organisation, signed by
+accounts of its own, and anyone may set one up for a name nothing is named
+after yet (the first link of a used name needs an admin of the first
+project or group of it). So what a chain lets a device do by itself waits
+until the device anchored that chain's root: this account signed a link of
+it, or its person confirmed its fingerprint words (`org trust`). Before
+that, the chain only adds refusals (rules, KMS keys not approved), and the
+note on a project's creator says it cannot vouch. Removals signed by a
+delegate, and those a device signs unasked (`changes --yes`), take away
+only roles that are not an admin's.
+
+**Threats.** A server can hide an organisation from a device that never
+saw it; one that did refuses the rollback. Hiding acme from its admins'
+devices only stops its rules and removals from applying, which the people
+running it see on its pages and in `esec vault org acme`. A server that
+proposes a key of its own gets it approved only if an admin reads past its
+name.
+
 ## Later phases (sketch)
 
 - Passkey-PRF approval in the browser (requires trusting the JavaScript the

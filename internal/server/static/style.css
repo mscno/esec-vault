@@ -44,7 +44,9 @@ td button { font-size: 0.875rem; padding: 0.2rem 0.6rem; }
 .buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
 .buttons form { margin: 0; }
 label { display: block; margin-bottom: 0.25rem; }
-input { font: inherit; padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+input, select { font: inherit; padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+td select { font-size: 0.875rem; padding: 0.15rem 0.4rem; }
+.grid-form label:not(.check) > input, .grid-form label:not(.check) > select { display: block; width: 100%; margin-top: 0.2rem; }
 input.code { width: 12rem; text-transform: uppercase; letter-spacing: 0.1em; }
 input[type=search] { width: min(24rem, 100%); }
 input.filter { display: block; margin: 0.5rem 0; }
@@ -99,3 +101,16 @@ form[aria-busy="true"] { opacity: 0.6; }
 ul.plain { list-style: none; padding-left: 0; }
 ul.plain li { margin: 0.25rem 0; }
 form.inline { display: inline; }
+nav.tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; margin: 1rem 0 0.5rem; border-bottom: 1px solid var(--line); }
+nav.tabs a { padding: 0.4rem 0.8rem; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+nav.tabs a:hover { color: var(--fg); }
+nav.tabs a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+nav.tabs .count { font-size: 0.75rem; color: var(--muted); font-weight: 400; margin-left: 0.15rem; }
+.stack-form { display: grid; gap: 0.75rem; margin: 0.5rem 0 1rem; }
+fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem 1rem; margin: 0; }
+legend { padding: 0 0.25rem; color: var(--muted); font-size: 0.875rem; }
+.read-row { display: flex; gap: 0.25rem 0.75rem; align-items: baseline; flex-wrap: wrap; padding: 0.2rem 0; }
+.read-row strong { min-width: 12rem; }
+.grid-form label.wide { grid-column: 1 / -1; }
+form.rekey { display: flex; gap: 0.3rem; align-items: center; margin-top: 0.3rem; }
+fieldset > label.check { display: flex; margin: 0.3rem 0; white-space: normal; }

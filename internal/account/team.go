@@ -60,6 +60,12 @@ type TeamPins struct {
 	Signed map[string]bool `toml:"signed"`
 	// Groups pins machine group chains.
 	Groups map[string]Pin `toml:"groups"`
+	// Orgs pins organisation chains.
+	Orgs map[string]Pin `toml:"orgs"`
+	// OrgTrust holds the roots of the organisation chains this device
+	// anchored: it signed in them, or its person confirmed their
+	// fingerprint.
+	OrgTrust map[string]string `toml:"org_trust"`
 }
 
 // hold records that this device holds pub as env of project.
@@ -104,6 +110,12 @@ func loadTeamPins() (*TeamPins, error) {
 	if p.Groups == nil {
 		p.Groups = map[string]Pin{}
 	}
+	if p.Orgs == nil {
+		p.Orgs = map[string]Pin{}
+	}
+	if p.OrgTrust == nil {
+		p.OrgTrust = map[string]string{}
+	}
 	return p, nil
 }
 
@@ -128,6 +140,8 @@ type teamCtx struct {
 	given  map[string][]*envelope.Envelope
 	states map[string]*team.State
 	groups map[string]*team.GroupState
+	// orgs caches verified organisation chains; nil for one with none.
+	orgs map[string]*team.OrgState
 	// groupKeys caches group private keys this operation opened.
 	groupKeys map[string][32]byte
 	// webChecked caches the checks of members added on the web.
@@ -154,7 +168,7 @@ func (a *Account) team(ctx context.Context) (*teamCtx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &teamCtx{a: a, ctx: ctx, own: own, id: id, pins: pins, peers: map[string]*chain.State{a.State.User: own}, given: map[string][]*envelope.Envelope{}, states: map[string]*team.State{}, groups: map[string]*team.GroupState{}, groupKeys: map[string][32]byte{}, webChecked: map[string]error{}}, nil
+	return &teamCtx{a: a, ctx: ctx, own: own, id: id, pins: pins, peers: map[string]*chain.State{a.State.User: own}, given: map[string][]*envelope.Envelope{}, states: map[string]*team.State{}, groups: map[string]*team.GroupState{}, orgs: map[string]*team.OrgState{}, groupKeys: map[string][32]byte{}, webChecked: map[string]error{}}, nil
 }
 
 func (t *teamCtx) save() error { return errors.Join(t.pins.save(), t.a.State.Save()) }
@@ -551,6 +565,9 @@ func (a *Account) CreateTeam(ctx context.Context, project string, envs []string)
 		if existing != nil || err != nil {
 			return fmt.Errorf("%s is already a shared project; ask one of its admins to add you", project)
 		}
+		if err := t.checkNamespace(project); err != nil {
+			return err
+		}
 		local, err := a.localEnvs(project)
 		if err != nil {
 			return err
@@ -636,6 +653,9 @@ func (a *Account) AddMember(ctx context.Context, project, login string, admin bo
 		}
 		verified, err := checkPerson(person, p.Proof, cs, accountKey)
 		if err != nil {
+			return err
+		}
+		if err := t.checkOrgPerson(project, person, verified); err != nil {
 			return err
 		}
 		envs = team.SortEnvs(envs)
@@ -935,6 +955,11 @@ type Invite struct {
 	Envs    []string
 	// Group, when set, is the group the keys come through.
 	Group string
+	// Org says whether the project's creator belongs to the organisation
+	// it is named after, when that has a chain; OrgWarning that they do
+	// not.
+	Org        string
+	OrgWarning bool
 }
 
 // TeamSyncResult summarizes a team sync.
@@ -972,6 +997,12 @@ type TeamSyncResult struct {
 	// Changes counts changes made on the web pages that wait for this
 	// account's devices to sign them.
 	Changes int
+	// OrgRemovals describes people who left an organisation that this
+	// device took out of a project or group, or could not.
+	OrgRemovals []string
+	// OrgUntrusted lists organisations ("org fingerprint") with a chain
+	// this device has not anchored: it applies none of their removals.
+	OrgUntrusted []string
 }
 
 // TeamSync imports keys waiting for this account and, as an admin, sends
@@ -983,6 +1014,7 @@ func (a *Account) TeamSync(ctx context.Context, opts TeamSyncOptions) (*TeamSync
 			return err
 		}
 		t.importGroupKeys(res, opts)
+		t.syncOrgs(res)
 		t.fulfilGroups(res)
 		if cs, err := t.a.Client.Changes(t.ctx); err == nil {
 			res.Changes = len(cs)
@@ -1114,6 +1146,7 @@ func (t *teamCtx) accept(st *team.State, res *TeamSyncResult, opts TeamSyncOptio
 		return true
 	}
 	inv := Invite{Project: st.Project, AddedBy: loginOf(st, m.AddedBy), Admin: m.Admin, Envs: st.Access(m.User)}
+	inv.Org, inv.OrgWarning = t.orgNote(st)
 	if opts.Accept == nil || !opts.Accept(inv) {
 		for _, seen := range res.Invites {
 			if seen.Project == inv.Project {

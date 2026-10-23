@@ -84,6 +84,9 @@ const (
 	ScopeProject = "project"
 	// ScopeAccount changes are to the person's own user chain: delegates.
 	ScopeAccount = "account"
+	// ScopeOrg changes are to an organisation's chain (Target is its
+	// name), or made through it, like a Fly.io app to set up.
+	ScopeOrg = "org"
 )
 
 // Change kinds. In a group: what it reads of a project (ChangeAccess), or a
@@ -118,7 +121,53 @@ const (
 	ChangeDelegateAdd    = "delegate_add"
 	ChangeDelegateServer = "delegate_server"
 	ChangeDelegateRemove = "delegate_remove"
+	// ChangeWorkloadRekey, in a group, moves a workload (Subject) to another
+	// approved KMS key of its organisation (Data is {"kms": name}).
+	ChangeWorkloadRekey = "workload_rekey"
+	// ChangeOrgCreate starts an organisation's chain (in an account; Subject
+	// is the organisation). In an organisation:
+	// ChangeOrgAdd adds a person (Subject is the login; Admin);
+	// ChangeOrgRemove removes one, from everything of the organisation;
+	// ChangeOrgKMSAdd approves a KMS key (Data is a KMSKeyRequest);
+	// ChangeOrgKMSRemove withdraws one (Subject is its name);
+	// ChangeOrgSettings sets the settings (Data); ChangeFlyApp sets up a
+	// Fly.io app to read keys with no secret (Data is a FlyApp).
+	ChangeOrgCreate    = "org_create"
+	ChangeOrgAdd       = "org_add"
+	ChangeOrgRemove    = "org_remove"
+	ChangeOrgKMSAdd    = "org_kms_add"
+	ChangeOrgKMSRemove = "org_kms_remove"
+	ChangeOrgSettings  = "org_settings"
+	ChangeFlyApp       = "fly_app"
 )
+
+// KMSKeyRequest is a KMS key to approve, as typed on a web page. The device
+// that signs the approval reads the key's public half from the KMS itself,
+// so a server cannot swap in a key of its own.
+type KMSKeyRequest struct {
+	Name      string   `json:"name"`
+	Provider  string   `json:"provider"`
+	Key       string   `json:"key"`
+	Audience  string   `json:"audience"`
+	Principal string   `json:"principal,omitempty"`
+	Groups    []string `json:"groups,omitempty"`
+}
+
+// FlyApp is a Fly.io app to set up as a workload: a group for it (made if
+// missing), what it reads, and the approved KMS key that wraps its key.
+type FlyApp struct {
+	App    string        `json:"app"`
+	FlyOrg string        `json:"fly_org"`
+	Group  string        `json:"group"`
+	KMS    string        `json:"kms"`
+	Reads  []ProjectEnvs `json:"reads,omitempty"`
+}
+
+// ProjectEnvs is what is read of one project.
+type ProjectEnvs struct {
+	Project string   `json:"project"`
+	Envs    []string `json:"envs"`
+}
 
 // Change is a change made on the web pages, waiting for an admin's device
 // to sign it.

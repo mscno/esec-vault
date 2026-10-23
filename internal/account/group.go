@@ -380,6 +380,9 @@ func (a *Account) CreateGroup(ctx context.Context, id string) (*team.GroupState,
 		if existing != nil || err != nil {
 			return fmt.Errorf("the group %s exists already; pick another name, or ask one of its admins to add you", id)
 		}
+		if err := t.checkNamespace(id); err != nil {
+			return err
+		}
 		key, priv, err := team.NewGroupKey(1)
 		if err != nil {
 			return err
@@ -422,6 +425,9 @@ func (a *Account) AddGroupAdmin(ctx context.Context, id, login, accountKey strin
 		}
 		verified, err := checkPerson(person, proof, cs, accountKey)
 		if err != nil {
+			return err
+		}
+		if err := t.checkOrgPerson(id, person, verified); err != nil {
 			return err
 		}
 		key, err := t.groupKey(gs)
@@ -507,6 +513,15 @@ func (a *Account) NewCred(ctx context.Context, id, kind, name string, expires ti
 		key, err := t.groupKey(gs)
 		if err != nil {
 			return err
+		}
+		if kind == team.KindToken {
+			if os, err := t.orgOf(id); err != nil {
+				return err
+			} else if os != nil {
+				if err := os.CheckToken(expires, a.Now()); err != nil {
+					return err
+				}
+			}
 		}
 		ck, c, err := team.NewCredKey(a.State.Server, id, gs.Root(), kind, name, a.Now())
 		if err != nil {

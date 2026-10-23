@@ -1,0 +1,30 @@
+{{template "head" .}}
+<h1>Organisations</h1>
+<p class="muted">An organisation is the acme of acme/store. Set one up to decide, signed on your devices, who belongs to it, which KMS keys its workloads may use, and its rules; only its people then create projects and groups named after it.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Organisation</th><th>You</th><th>People</th><th>Projects</th><th>Groups</th><th>Waiting</th></tr></thead>
+  <tbody>
+  {{range .Orgs}}
+  <tr>
+    <td><a href="/orgs/{{.Org}}"><strong>{{.Org}}</strong></a> {{if .Signed}}<span class="badge">signed</span>{{else}}<span class="badge status-pending">not set up</span>{{end}}</td>
+    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .People}}member{{else}}<span class="muted">works in it</span>{{end}}</td>
+    <td>{{if .Signed}}{{.People}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{.Projects}}</td>
+    <td>{{.Groups}}</td>
+    <td>{{if .Changes}}<span class="badge status-pending">{{plural .Changes "change"}}</span>{{else}}<span class="muted">nothing</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">None yet: share a project, or set one up below.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<h2>Set up or open one</h2>
+<form method="post" action="/orgs" class="grid-form">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Organisation <input name="org" required pattern="[a-z0-9][a-z0-9_.\-]{0,38}" placeholder="acme" autocomplete="off" spellcheck="false"></label>
+  <div><button type="submit">Open</button></div>
+</form>
+<p class="muted">On a device: <code>esec vault org create acme</code>.</p>
+{{template "foot" .}}

@@ -120,18 +120,34 @@ It records the review on the server. An organisation's policy can ask for
 one every so many days; the overview and the project's page then remind its
 admins. On the web: the project's page › **Review who reads it**.
 
-### Set an organisation's rules
+### Set up an organisation
+
+An organisation (the acme of acme/store) can have its own signed chain: its
+people, the KMS keys its workloads may use, and its rules, all signed on its
+admins' devices.
 
 ```sh
-esec vault org                 # your organisations
-esec vault org acme            # its projects, groups and policy
+esec vault org create acme                      # you are its first admin
+esec vault org add acme alice                   # --admin for an admin
+esec vault org set acme --members-only --require-github-proof --max-token-days 30
+esec vault org remove acme alice --yes          # out of every project and group of acme
+esec vault org acme                             # people, keys, rules, projects, groups
 ```
 
-The server's admins set the policy on the organisation's web page
-(`/orgs/acme`): the longest enrollment token (and none that never expire),
-GitHub SSH proofs required to add people, no removals signed by the server,
-and how often access is reviewed. The server refuses changes that break it;
-it is a check on top of the signed chains and can never grant anything.
+Once it has a chain, only its people create projects and groups named
+`acme/...`; with `--members-only`, only they can be added to them. Removing
+someone takes them out of everything of acme: your device does it at once
+for what you administer, the devices of the other admins at their next
+sync. Devices wrap the group keys of acme's workloads only with KMS keys it
+approved (`esec vault org kms add`), so a server cannot slip in a key of its
+own, and a member's device tells them whether the creator of a project they
+are added to belongs to acme.
+
+All of it is on the organisation's web page too (`/orgs/acme`: Overview,
+People, Workloads, Settings): each form proposes a change that a device
+signs (a dialog of the background service, or `esec vault changes`), or a
+passkey where its scope allows. The server's admins can add a policy of
+their own there; the stricter of both applies.
 
 ### Ask for access, and answer
 
@@ -174,8 +190,19 @@ repository, so each works only from its own.
 
 ### Run a Fly.io app with its secrets
 
-Give the app's machines a token of a group, bound to the Fly.io app, and
-start the app through `esec-vault`, which hands it the keys of its project:
+With no secret stored anywhere: approve a cloud KMS key (or a self-hosted
+OpenBao one) for the organisation once, then set up each app in one step,
+here or on the organisation's **Workloads** page:
+
+```sh
+esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app store --apply
+esec vault org kms add acme gcp-prod --gcp-key ... --gcp-provider ... --default
+esec vault org fly-app acme store --read acme/store:prod   # prints ESEC_VAULT_WORKLOAD for fly.toml
+```
+
+The [runbook](docs/runbook.md) has the details. Or give the app's machines a
+token of a group, bound to the Fly.io app, and start the app through
+`esec-vault`, which hands it the keys of its project:
 
 ```sh
 esec vault group create acme/production
@@ -483,9 +510,11 @@ Sign in at your server with GitHub. The pages never decrypt anything.
   or through a group, and what needs doing (keys to rotate, requests to
   answer). Each person has a page listing what they read, with an
   **Offboard** button. Ask for access to any project here too.
-- **Organisations** (`/orgs/acme`, linked from projects and groups): what you
-  can see of one organisation's projects, groups and people, and its policy,
-  which the server's admins set there.
+- **Orgs** (`/orgs`, and `/orgs/acme`): an organisation's people (add and
+  remove them; who left and is still in a project), its workloads (set up a
+  Fly.io app with one form, copy its descriptor, move it to another KMS
+  key), and its settings (approved KMS keys, rules and defaults). Set an
+  organisation up from its page.
 - **Groups**: your groups of people and machines. Each group's page shows
   its people (add and remove them there), its machines
   (when and from where each last fetched its keys), its tokens, which

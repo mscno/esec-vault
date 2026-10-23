@@ -1,6 +1,14 @@
 package wire
 
-import "time"
+import (
+	"time"
+
+	"github.com/mscno/esec-vault/internal/envelope"
+)
+
+// EventOrg is the event of an organisation chain that changed. Detail is
+// the organisation.
+const EventOrg = "org"
 
 // OrgPolicy is what the server enforces for the shared projects and groups
 // of one organisation (the "acme" of acme/store). The server can only
@@ -20,6 +28,12 @@ type OrgPolicy struct {
 	// ReviewDays asks each project's admins to review who reads it every
 	// so many days; 0 never.
 	ReviewDays int `json:"review_days,omitempty"`
+	// MembersOnly lets only the organisation's people into its projects
+	// and groups; only an organisation's own settings set it.
+	MembersOnly bool `json:"members_only,omitempty"`
+	// Signed says the organisation has a chain whose settings are part of
+	// this policy; the server's admins' policy adds to them.
+	Signed bool `json:"signed,omitempty"`
 	// Updated and UpdatedBy say who set it, and when.
 	Updated   time.Time `json:"updated,omitzero"`
 	UpdatedBy string    `json:"updated_by,omitempty"`
@@ -41,4 +55,30 @@ type ReviewStatus struct {
 	Days    int           `json:"days"`
 	Due     bool          `json:"due"`
 	Last    *AccessReview `json:"last,omitempty"`
+}
+
+// OrgChain is an organisation's chain with the user chains of everyone in
+// it, to verify signatures with.
+type OrgChain struct {
+	Links  []*envelope.Envelope            `json:"links"`
+	Chains map[string][]*envelope.Envelope `json:"chains,omitempty"`
+}
+
+// OrgCommit appends links to an organisation chain, signed by the caller.
+type OrgCommit struct {
+	Links []*envelope.Envelope `json:"links"`
+}
+
+// OrgCommitResult reports the chain length after a commit.
+type OrgCommitResult struct {
+	Seq uint64 `json:"seq"`
+}
+
+// OrgSummary is an organisation with a chain that the caller belongs to.
+type OrgSummary struct {
+	Org     string `json:"org"`
+	Admin   bool   `json:"admin"`
+	People  int    `json:"people"`
+	Keys    int    `json:"keys"`
+	Changes int    `json:"changes"`
 }

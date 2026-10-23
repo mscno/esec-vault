@@ -395,7 +395,7 @@ func (d *DB) accountSummaries(ctx context.Context, now time.Time) (map[string]*a
 	return out, nil
 }
 
-func scanAll(ctx context.Context, db *sql.DB, q string, args []any, scan func(*sql.Rows) error) error {
+func scanAll(ctx context.Context, db queryer, q string, args []any, scan func(*sql.Rows) error) error {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return err

@@ -7,14 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/team"
 	"github.com/mscno/esec-vault/internal/wire"
 )
 
-// OrgCmd shows an organisation: its shared projects and groups you can see,
-// and the policy the server enforces for it.
-type OrgCmd struct {
+// OrgShowCmd shows an organisation: its people, keys and rules from its
+// signed chain, the shared projects and groups you can see, and the policy
+// the server enforces for it.
+type OrgShowCmd struct {
 	Org  string `arg:"" optional:"" help:"Organisation, such as acme (default: list yours)"`
 	JSON bool   `help:"Print JSON, for scripts and agents"`
 }
@@ -22,18 +24,26 @@ type OrgCmd struct {
 // orgJSON is what org prints with --json.
 type orgJSON struct {
 	Org      string                `json:"org"`
+	Signed   bool                  `json:"signed"`
+	Trusted  bool                  `json:"trusted"`
+	Words    string                `json:"fingerprint,omitempty"`
+	Admins   []string              `json:"admins,omitempty"`
+	Members  []string              `json:"members,omitempty"`
+	Left     map[string][]string   `json:"left,omitempty"`
+	KMS      []*team.OrgKMSState   `json:"kms,omitempty"`
+	Settings *team.OrgSettings     `json:"settings,omitempty"`
 	Projects []wire.ProjectSummary `json:"projects"`
 	Groups   []wire.GroupSummary   `json:"groups"`
 	Policy   *wire.OrgPolicy       `json:"policy"`
 }
 
 // Run implements org.
-func (c *OrgCmd) Run(ctx *cliCtx) error {
+func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // a listing, then one organisation's sections
 	a, err := openAccount(ctx)
 	if err != nil {
 		return err
 	}
-	bg, cancel := timeout(time.Minute)
+	bg, cancel := timeout(2 * time.Minute)
 	defer cancel()
 	projects, err := a.TeamSummaries(bg)
 	if err != nil {
@@ -55,17 +65,30 @@ func (c *OrgCmd) Run(ctx *cliCtx) error {
 			n[1]++
 			count[orgName(g.ID)] = n
 		}
+		signed := map[string]bool{}
+		if list, err := a.Orgs(bg); err == nil {
+			for _, o := range list {
+				signed[o.Org] = true
+				if _, ok := count[o.Org]; !ok {
+					count[o.Org] = [2]int{}
+				}
+			}
+		}
 		orgs := mapKeys(count)
 		slices.Sort(orgs)
 		if c.JSON {
 			return printJSON(nonNil(orgs))
 		}
 		if len(orgs) == 0 {
-			fmt.Println("No organisations yet: share a project (esec vault access create) or create a group.")
+			fmt.Println("No organisations yet: share a project (esec vault access create), or set one up (esec vault org create ORG).")
 			return nil
 		}
 		for _, o := range orgs {
-			fmt.Printf("%-24s %d project(s), %d group(s)\n", safetext.Clean(o), count[o][0], count[o][1])
+			tag := ""
+			if signed[strings.ToLower(o)] {
+				tag = "  (signed chain)"
+			}
+			fmt.Printf("%-24s %d project(s), %d group(s)%s\n", safetext.Clean(o), count[o][0], count[o][1], tag)
 		}
 		fmt.Println("Show one with: esec vault org ORG")
 		return nil
@@ -73,17 +96,60 @@ func (c *OrgCmd) Run(ctx *cliCtx) error {
 	in := func(id string) bool { return strings.EqualFold(orgName(id), c.Org) }
 	projects = slices.DeleteFunc(projects, func(p wire.ProjectSummary) bool { return !in(p.ID) })
 	groups = slices.DeleteFunc(groups, func(g wire.GroupSummary) bool { return !in(g.ID) })
-	policy, err := a.OrgPolicy(bg, c.Org)
+	v, err := a.Org(bg, strings.ToLower(c.Org))
 	if err != nil {
 		return err
 	}
+	os := v.State
 	if c.JSON {
-		return printJSON(orgJSON{Org: c.Org, Projects: nonNil(projects), Groups: nonNil(groups), Policy: policy})
+		out := orgJSON{Org: strings.ToLower(c.Org), Projects: nonNil(projects), Groups: nonNil(groups), Policy: v.Policy}
+		if os != nil {
+			out.Signed, out.Trusted, out.Words, out.KMS, out.Settings, out.Left = true, v.Trusted, os.Words(), os.ActiveKMS(), &os.Settings, v.Left
+			for _, p := range os.ActiveAdmins() {
+				out.Admins = append(out.Admins, p.Login)
+			}
+			for _, p := range os.People() {
+				if !os.Admin(p.User) {
+					out.Members = append(out.Members, p.Login)
+				}
+			}
+		}
+		return printJSON(out)
 	}
-	if len(projects)+len(groups) == 0 {
-		return fmt.Errorf("you have no shared project or group in %s", c.Org)
+	if os == nil && len(projects)+len(groups) == 0 {
+		return fmt.Errorf("you have no shared project or group in %s, and it has no organisation chain (esec vault org create %s)", c.Org, strings.ToLower(c.Org))
 	}
-	fmt.Printf("%s  (%s/orgs/%s)\n", safetext.Clean(c.Org), a.State.Server, safetext.Clean(c.Org))
+	fmt.Printf("%s  (%s/orgs/%s)\n", safetext.Clean(c.Org), a.State.Server, safetext.Clean(strings.ToLower(c.Org)))
+	if os == nil {
+		fmt.Printf("No signed chain yet: anyone can create projects named %s/... Set one up with: esec vault org create %s\n", c.Org, strings.ToLower(c.Org))
+	} else {
+		fmt.Printf("Fingerprint: %s\n", os.Words())
+		if !v.Trusted {
+			fmt.Printf("  ! not confirmed on this device: compare the words with an admin's, then: esec vault org trust %s\n", os.Org)
+		}
+		fmt.Println("People:")
+		for _, p := range os.People() {
+			role := "member"
+			if os.Admin(p.User) {
+				role = "admin"
+			}
+			fmt.Printf("  %-24s %s\n", safetext.Clean(p.Login), role)
+		}
+		for login, ids := range v.Left {
+			fmt.Printf("  ! %s left, but still reads %s; their admins' devices take them out on their next sync\n", safetext.Clean(login), safetext.Clean(strings.Join(ids, ", ")))
+		}
+		fmt.Println("Approved KMS keys:")
+		if len(os.ActiveKMS()) == 0 {
+			fmt.Printf("  none: esec vault org kms add %s NAME --gcp-key ... --gcp-provider ...\n", os.Org)
+		}
+		for _, k := range os.ActiveKMS() {
+			printKMSKey(k, os.Settings.DefaultKMS)
+		}
+		fmt.Println("Rules (signed, checked by devices and the server):")
+		for _, l := range account.SettingsLines(os.Settings) {
+			fmt.Println("  " + l)
+		}
+	}
 	if len(projects) > 0 {
 		fmt.Println("Projects:")
 		for _, p := range projects {
@@ -107,8 +173,8 @@ func (c *OrgCmd) Run(ctx *cliCtx) error {
 			fmt.Printf("  %-32s %-22s %d people, %d machine(s), reads %s\n", safetext.Clean(g.ID), role, g.People, g.Machines, safetext.Clean(joinOr(g.Projects, "nothing")))
 		}
 	}
-	fmt.Println("Policy (set by the server's admins, checked by the server):")
-	fmt.Println("  " + policyText(policy))
+	fmt.Println("Policy the server enforces (the stricter of the server admins' and the organisation's):")
+	fmt.Println("  " + policyText(v.Policy))
 	return nil
 }
 
@@ -130,6 +196,9 @@ func policyText(p *wire.OrgPolicy) string {
 	}
 	if p.ReviewDays > 0 {
 		parts = append(parts, fmt.Sprintf("access is reviewed every %d days", p.ReviewDays))
+	}
+	if p.MembersOnly {
+		parts = append(parts, "only the organisation's people join its projects and groups")
 	}
 	if len(parts) == 0 {
 		return "none"

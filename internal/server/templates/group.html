@@ -276,4 +276,13 @@
 {{- else if eq .Kind "delegate_add"}}add a passkey (see Signing)
 {{- else if eq .Kind "delegate_server"}}let the server sign removals
 {{- else if eq .Kind "delegate_remove"}}remove a passkey or the server's signing
+{{- else if eq .Kind "workload_rekey"}}move the workload {{.Subject}} to another approved KMS key
+{{- else if eq .Kind "org_create"}}set up the organisation {{.Subject}}
+{{- else if and (eq .Kind "org_add") .Admin}}make {{.Subject}} an admin of the organisation
+{{- else if eq .Kind "org_add"}}add {{.Subject}} to the organisation
+{{- else if eq .Kind "org_remove"}}remove {{.Subject}} from the organisation and everything of it
+{{- else if eq .Kind "org_kms_add"}}approve the KMS key {{.Subject}}
+{{- else if eq .Kind "org_kms_remove"}}withdraw the KMS key {{.Subject}}
+{{- else if eq .Kind "org_settings"}}change the organisation's rules
+{{- else if eq .Kind "fly_app"}}set up the Fly.io app {{.Subject}}
 {{- else}}{{.Kind}}{{end}}{{end}}

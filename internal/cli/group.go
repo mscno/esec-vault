@@ -175,6 +175,24 @@ func (c *GroupShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one report, 
 			fmt.Printf("  %-20s %-34s %s%s\n", safetext.Clean(cr.Name), cr.ID, line, extra)
 		}
 	}
+	if ws := gs.ActiveCreds(team.KindWorkload); len(ws) > 0 {
+		fmt.Printf("Workloads (%d), no secret; put the descriptor in the app's plain configuration (ESEC_VAULT_WORKLOAD):\n", len(ws))
+		for _, cr := range ws {
+			line := "never started"
+			if u := used[cr.ID]; !u.LastUsed.IsZero() {
+				line = fmt.Sprintf("last started %s (%d times)", u.LastUsed.Local().Format("2006-01-02 15:04"), u.Uses) //nolint:gosmopolitan // shown to the local user
+			}
+			runs := ""
+			if cr.OIDC != nil {
+				runs = cr.OIDC.Describe()
+			}
+			fmt.Printf("  %-20s %s; %s\n", safetext.Clean(cr.Name), safetext.Clean(runs), line)
+			if cr.KMS != nil {
+				fmt.Printf("      key %s %s\n", cr.KMS.Provider, safetext.Clean(cr.KMS.Name))
+			}
+			fmt.Printf("      %s\n", (&team.WorkloadRef{Server: a.State.Server, Group: id, Root: gs.Root(), ID: cr.ID}).String())
+		}
+	}
 	fmt.Println("Reads:")
 	if len(v.Projects) == 0 {
 		fmt.Println("  nothing yet; let it read a project with: esec vault group grant " + id + " --project ORG/REPO --env prod")
