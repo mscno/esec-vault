@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -135,7 +136,8 @@ func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // a listing, the
 			}
 			fmt.Printf("  %-24s %s\n", safetext.Clean(p.Login), role)
 		}
-		for login, ids := range v.Left {
+		for _, login := range slices.Sorted(maps.Keys(v.Left)) {
+			ids := v.Left[login]
 			fmt.Printf("  ! %s left, but still reads %s; their admins' devices take them out on their next sync\n", safetext.Clean(login), safetext.Clean(strings.Join(ids, ", ")))
 		}
 		fmt.Println("Approved KMS keys:")

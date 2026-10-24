@@ -227,7 +227,7 @@ func TestOrgDelegateLinks(t *testing.T) {
 	o := newOrgWorld(t, w, bob)
 	o.add(bob, team.OrgAdminAdd, team.OrgAdminAddBody{Admin: alice.person(), Verified: team.VerifiedGitHubSSH})
 	o.add(bob, team.OrgMemberAdd, team.OrgMemberAddBody{Member: carol.person(), Verified: team.VerifiedGitHubSSH})
-	if o.st.SignedWithUserKey(alice.user) {
+	if o.st.SignedWithUserKey(alice.user, alice.st.UKeyVersion) {
 		t.Fatal("alice signed nothing")
 	}
 	srvPub, srvKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -243,7 +243,7 @@ func TestOrgDelegateLinks(t *testing.T) {
 		t.Fatalf("the server removes a member for alice: %v", err)
 	}
 	o.st = next
-	if o.st.SignedWithUserKey(alice.user) {
+	if o.st.SignedWithUserKey(alice.user, alice.st.UKeyVersion) {
 		t.Fatal("a link the server signed counts as alice's own")
 	}
 	if !o.st.KeepsAdminRoles(carol.user) {
@@ -252,12 +252,30 @@ func TestOrgDelegateLinks(t *testing.T) {
 	// A removal with the user key takes everything, unless it says not to.
 	o.add(bob, team.OrgMemberAdd, team.OrgMemberAddBody{Member: carol.person(), Verified: team.VerifiedGitHubSSH})
 	o.add(alice, team.OrgMemberRemove, team.OrgMemberRemoveBody{User: carol.user})
-	if o.st.KeepsAdminRoles(carol.user) || !o.st.SignedWithUserKey(alice.user) {
+	if o.st.KeepsAdminRoles(carol.user) || !o.st.SignedWithUserKey(alice.user, alice.st.UKeyVersion) {
 		t.Fatal("a removal alice signed")
 	}
 	o.add(bob, team.OrgMemberAdd, team.OrgMemberAddBody{Member: carol.person(), Verified: team.VerifiedGitHubSSH})
 	o.add(alice, team.OrgMemberRemove, team.OrgMemberRemoveBody{User: carol.user, KeepAdminRoles: true})
 	if !o.st.KeepsAdminRoles(carol.user) {
 		t.Fatal("a removal that keeps admin roles")
+	}
+	// Only the user key current then counts: a revoked device's old key
+	// anchors nothing.
+	if o.st.SignedWithUserKey(alice.user, alice.st.UKeyVersion+1) {
+		t.Fatal("a link of another user key version counts")
+	}
+
+	// Once the organisation forbids it, devices refuse what the server signs.
+	o.add(bob, team.OrgSettingsSet, team.OrgSettingsBody{Settings: team.OrgSettings{NoServerSigning: true}})
+	o.add(bob, team.OrgMemberAdd, team.OrgMemberAddBody{Member: carol.person(), Verified: team.VerifiedGitHubSSH})
+	w.now = w.now.Add(time.Minute)
+	e, err = o.st.DelegateLink(team.OrgMemberRemove, team.OrgMemberRemoveBody{User: carol.user}, w.now, alice.user, "dl_server0001", alice.st.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.AddSignature(srvKey)
+	if _, err := o.st.Next(e, w.chains); err == nil || !strings.Contains(err.Error(), "let the server sign nothing") {
+		t.Fatalf("a server-signed removal where the rules forbid it: %v", err)
 	}
 }

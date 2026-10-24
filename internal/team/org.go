@@ -361,11 +361,12 @@ func (s *OrgState) KeepsAdminRoles(user string) bool {
 }
 
 // SignedWithUserKey reports whether user signed a link of the chain with
-// their own user key, as only their devices can: links of their delegates
-// (a passkey on a page, the server) do not count.
-func (s *OrgState) SignedWithUserKey(user string) bool {
+// their user key version: links of their delegates (a passkey on a page,
+// the server) do not count, nor links signed with an earlier user key,
+// which a revoked device may still hold.
+func (s *OrgState) SignedWithUserKey(user string, version uint64) bool {
 	for _, l := range s.Links {
-		if l.Signer == user && l.SignerDelegate == "" {
+		if l.Signer == user && l.SignerDelegate == "" && l.SignerKey == version {
 			return true
 		}
 	}
@@ -557,7 +558,7 @@ func (s *OrgState) step(e *envelope.Envelope, chains Chains) error {
 // (leaving), or a delegate of an admin's whose scope covers the link.
 func (s *OrgState) checkSigner(e *envelope.Envelope, l *OrgLink, chains Chains) error {
 	if l.SignerDelegate != "" {
-		return s.people().delegate(e, KindOrgLink, l.head(), chains, func() (string, error) { return orgScope(*l) })
+		return s.people().delegateUnless(e, KindOrgLink, l.head(), chains, func() (string, error) { return orgScope(*l) }, s.Settings.NoServerSigning)
 	}
 	var add OrgMemberAddBody
 	if l.Type == OrgMemberAdd && decodeOrgBody(*l, &add) == nil && add.Verified == VerifiedWeb {

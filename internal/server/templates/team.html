@@ -240,7 +240,7 @@
     <td><strong>{{.Name}}</strong><br><span class="muted">{{.ID}}</span></td>
     <td>{{range $env, $state := .Keys}}{{key $env $state}} {{end}}</td>
     <td>{{with .Policy}}{{.}}{{else}}<span class="muted">anywhere with its secret</span>{{end}}</td>
-    <td>{{when .LastUsed}}{{if .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "use"}}</span>{{end}}</td>
+    <td>{{when .LastUsed}}{{if and $.MyAdmin .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "use"}}</span>{{end}}</td>
     <td>{{when .AddedAt}}<br><span class="muted">by {{.AddedBy}}</span></td>
   </tr>
   {{else}}
@@ -285,7 +285,7 @@
   <thead><tr><th>Time</th><th>Event</th><th>By</th><th>Detail</th><th>Address</th></tr></thead>
   <tbody>
   {{range .Activity}}
-  <tr><td class="nowrap">{{when .Time}}</td><td><span class="event{{if eq .Action "machine_refused"}} tone-bad{{end}}">{{.Label}}</span></td><td>{{or .ActorName .Actor}}</td><td>{{.Detail}}</td><td class="muted">{{.IP}}</td></tr>
+  <tr><td class="nowrap">{{when .Time}}</td><td><span class="event{{if eq .Action "machine_refused"}} tone-bad{{end}}">{{.Label}}</span></td><td>{{or .ActorName .Actor}}</td><td>{{.Detail}}</td><td class="muted">{{if $.MyAdmin}}{{.IP}}{{end}}</td></tr>
   {{else}}
   <tr><td colspan="5" class="muted">No entries.</td></tr>
   {{end}}

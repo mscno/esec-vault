@@ -67,7 +67,7 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	alice, carol, dave := person(2002, "alice"), person(2003, "carol"), person(2004, "dave")
 
 	// --- Claiming acme: only an admin of what is named after it may. ---
-	failsWith(t, carol, "only an admin of acme/store", "org", "create", "acme")
+	failsWith(t, carol, "only an admin of the first project or group", "org", "create", "acme")
 	if out := owner.run("", "org", "create", "acme"); !strings.Contains(out, "Created the organisation acme") || !strings.Contains(out, "Fingerprint:") {
 		t.Fatalf("org create:\n%s", out)
 	}
@@ -143,6 +143,31 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	if o, err := app.cmd(repo, "", "esec-vault", "machine", "run", "--", "esec", "decrypt", ".env.prod").CombinedOutput(); err != nil || !strings.Contains(string(o), "postgres://db-prod") {
 		t.Fatalf("the Fly.io app: %v\n%s", err, o)
 	}
+	// Fleet views: the workloads, from the verified chains.
+	var wls []struct {
+		Group, Name, KMS, Descriptor string
+	}
+	owner.runJSON(&wls, "org", "workloads", "acme")
+	if len(wls) != 1 || wls[0].Group != "acme/store" || wls[0].KMS != "gcp-prod" || wls[0].Descriptor != desc {
+		t.Fatalf("org workloads: %+v", wls)
+	}
+	// Setting things up again changes nothing.
+	if out := owner.run("", "group", "create", "acme/backend"); !strings.Contains(out, "exists already") {
+		t.Fatalf("group create again:\n%s", out)
+	}
+	if out := owner.run("", "org", "add", "acme", "alice"); !strings.Contains(out, "nothing changed") {
+		t.Fatalf("org add again:\n%s", out)
+	}
+	// A grant across every acme project this account administers.
+	var grants []struct {
+		Project string   `json:"project"`
+		Reads   []string `json:"reads"`
+		Error   string   `json:"error"`
+	}
+	owner.runJSON(&grants, "access", "grant", "alice", "--env", "staging,dev", "--project", "acme/*", "--skip-missing-env")
+	if len(grants) != 1 || grants[0].Project != "acme/store" || strings.Join(grants[0].Reads, ",") != "dev" || grants[0].Error != "" {
+		t.Fatalf("access grant across projects: %+v", grants)
+	}
 	// Running it again finds the workload there already.
 	if out := owner.run("", "org", "fly-app", "acme", "store", "--read", "acme/store:prod"); strings.Contains(out, "Created the group") || !strings.Contains(out, desc) {
 		t.Fatalf("org fly-app again:\n%s", out)
@@ -163,6 +188,20 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	out = owner.run("", "org", "remove", "acme", "alice", "--yes")
 	if !strings.Contains(out, "Took alice out of acme/store") || !strings.Contains(out, "Took alice out of acme/backend") || !strings.Contains(out, "rotate acme/store dev") {
 		t.Fatalf("org remove:\n%s", out)
+	}
+	// Every key to rotate, across projects, checked against the chains.
+	var rot []struct {
+		Project, Env string
+		Admin        bool
+	}
+	owner.runJSON(&rot, "access", "list", "--needs", "rotate", "--org", "acme")
+	if len(rot) == 0 || rot[0].Project != "acme/store" || rot[0].Env != "dev" || !rot[0].Admin {
+		t.Fatalf("access list --needs rotate: %+v", rot)
+	}
+	var todo []struct{ Kind, Target string }
+	owner.runJSON(&todo, "todo")
+	if len(todo) == 0 || todo[0].Kind != "rotate" {
+		t.Fatalf("todo: %+v", todo)
 	}
 	// What a device can see: dave's shows his project, still to do.
 	dave.runJSON(&shown, "org", "acme")

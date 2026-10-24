@@ -15,8 +15,9 @@
 {{else}}<p class="muted">Nothing: no key needs rotating, and every key has been sent.</p>{{end}}
 
 <h2 id="people">People</h2>
+<div class="filterbar"><input type="search" class="filter" placeholder="Filter people, projects, groups" aria-label="Filter people, projects, groups" data-filter="#access-people" hidden> <span id="access-people-count" class="muted"></span></div>
 <div class="scroll">
-<table>
+<table id="access-people">
   <thead><tr><th>Person</th><th>Reads</th><th>Groups</th></tr></thead>
   <tbody>
   {{range .People}}

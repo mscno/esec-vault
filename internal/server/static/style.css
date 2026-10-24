@@ -114,3 +114,6 @@ legend { padding: 0 0.25rem; color: var(--muted); font-size: 0.875rem; }
 .grid-form label.wide { grid-column: 1 / -1; }
 form.rekey { display: flex; gap: 0.3rem; align-items: center; margin-top: 0.3rem; }
 fieldset > label.check { display: flex; margin: 0.3rem 0; white-space: normal; }
+.filterbar { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin: 0.5rem 0; }
+.filterbar input.filter { margin: 0; }
+button.chip { font-size: 0.8125rem; padding: 0.1rem 0.6rem; border-radius: 999px; background: transparent; color: var(--accent); }

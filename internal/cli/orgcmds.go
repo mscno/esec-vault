@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,14 +18,16 @@ import (
 // OrgCmd manages organisations: the "acme" of acme/store, with a signed
 // chain of its people, approved KMS keys and rules.
 type OrgCmd struct {
-	Show   OrgShowCmd   `cmd:"" default:"withargs" help:"Show an organisation: people, approved KMS keys, rules, projects and groups (default)."`
-	Create OrgCreateCmd `cmd:"" help:"Set up an organisation's signed chain, with you as its admin."`
-	Trust  OrgTrustCmd  `cmd:"" help:"Confirm an organisation's fingerprint on this device, so it applies the organisation's removals and keys."`
-	Add    OrgAddCmd    `cmd:"" help:"Add someone to an organisation."`
-	Remove OrgRemoveCmd `cmd:"" help:"Remove someone from an organisation, and from every project and group of it you administer."`
-	KMS    OrgKMSCmd    `cmd:"" name:"kms" help:"List, approve and withdraw the KMS keys its workloads may use."`
-	Set    OrgSetCmd    `cmd:"" help:"Change an organisation's rules and defaults."`
-	FlyApp OrgFlyAppCmd `cmd:"" name:"fly-app" help:"Set up a Fly.io app to read keys with no secret: its group, what it reads, its workload."`
+	Show      OrgShowCmd      `cmd:"" default:"withargs" help:"Show an organisation: people, approved KMS keys, rules, projects and groups (default)."`
+	Create    OrgCreateCmd    `cmd:"" help:"Set up an organisation's signed chain, with you as its admin."`
+	Trust     OrgTrustCmd     `cmd:"" help:"Confirm an organisation's fingerprint on this device, so it applies the organisation's removals and keys."`
+	Add       OrgAddCmd       `cmd:"" help:"Add someone to an organisation."`
+	Remove    OrgRemoveCmd    `cmd:"" help:"Remove someone from an organisation, and from every project and group of it you administer."`
+	KMS       OrgKMSCmd       `cmd:"" name:"kms" help:"List, approve and withdraw the KMS keys its workloads may use."`
+	Set       OrgSetCmd       `cmd:"" help:"Change an organisation's rules and defaults."`
+	FlyApp    OrgFlyAppCmd    `cmd:"" name:"fly-app" help:"Set up a Fly.io app to read keys with no secret: its group, what it reads, its workload."`
+	Workloads OrgWorkloadsCmd `cmd:"" help:"List the workloads of its groups: what they read, their keys, when they last started."`
+	Rekey     OrgRekeyCmd     `cmd:"" help:"Move workloads to another approved KMS key, across its groups."`
 }
 
 // OrgCreateCmd starts an organisation's chain.
@@ -40,6 +43,10 @@ func (c *OrgCreateCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(time.Minute)
 	defer cancel()
+	if v, err := a.Org(bg, c.Org); err == nil && v.State != nil && v.State.Admin(a.State.User) {
+		fmt.Printf("✓ %s exists already, with you as an admin; nothing changed.\n", v.State.Org)
+		return nil
+	}
 	st, err := a.CreateOrg(bg, c.Org)
 	if err != nil {
 		return err
@@ -109,6 +116,12 @@ func (c *OrgAddCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(time.Minute)
 	defer cancel()
+	if v, err := a.Org(bg, c.Org); err == nil && v.State != nil && v.State.Admin(a.State.User) {
+		if p, ok := v.State.PersonByLogin(c.Login); ok && (!c.Admin || v.State.Admin(p.User)) {
+			fmt.Printf("✓ %s is in %s already; nothing changed.\n", safetext.Clean(p.Login), v.State.Org)
+			return nil
+		}
+	}
 	res, err := a.AddOrgPerson(bg, c.Org, c.Login, c.Admin, c.AccountKey)
 	if err != nil {
 		return err
@@ -349,24 +362,41 @@ func (c *OrgKMSRemoveCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
-// OrgFlyAppCmd sets up a Fly.io app as a workload.
+// OrgFlyAppCmd sets up Fly.io apps as workloads.
 type OrgFlyAppCmd struct {
 	Org    string   `arg:"" help:"Organisation, such as acme"`
-	App    string   `arg:"" help:"The Fly.io app"`
-	Read   []string `help:"What it reads, as PROJECT:ENV[,ENV]; repeat for more projects, such as --read acme/store:prod"`
-	Group  string   `help:"Its group (default: ORG/APP, created when missing)"`
-	KMS    string   `name:"kms" help:"The approved KMS key (default: the organisation's default)"`
+	Apps   []string `arg:"" name:"app" help:"The Fly.io apps; each gets its own group, ORG/APP"`
+	Read   []string `help:"What each reads, as PROJECT:ENV[,ENV]; repeat for more projects, such as --read acme/store:prod"`
+	Group  string   `help:"The group, for one app (default: ORG/APP, created when missing)"`
+	KMS    string   `name:"kms" help:"The approved KMS key (default: the app's own key esec-APP if approved for it, else the organisation's default)"`
 	FlyOrg string   `name:"fly-org" help:"Its Fly.io organisation (default: the organisation's setting)"`
-	Out    string   `help:"Write the workload's descriptor to this file too"`
+	Out    string   `help:"For one app: write its descriptor to this file too"`
+	JSON   bool     `help:"Print JSON, for scripts and agents: each app's group, descriptor and what changed"`
+}
+
+// flyAppJSON is what org fly-app prints for each app with --json.
+type flyAppJSON struct {
+	App          string   `json:"app"`
+	Group        string   `json:"group"`
+	KMS          string   `json:"kms"`
+	Descriptor   string   `json:"descriptor,omitempty"`
+	CreatedGroup bool     `json:"created_group"`
+	Rekeyed      bool     `json:"rekeyed"`
+	Granted      []string `json:"granted"`
+	Pending      []string `json:"pending"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // Run implements org fly-app.
-func (c *OrgFlyAppCmd) Run(ctx *cliCtx) error {
+func (c *OrgFlyAppCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // defaults, then each app in turn
+	if len(c.Apps) > 1 && (c.Group != "" || c.Out != "") {
+		return errors.New("--group and --out are for one app at a time")
+	}
 	a, err := openAccount(ctx)
 	if err != nil {
 		return err
 	}
-	bg, cancel := timeout(5 * time.Minute)
+	bg, cancel := timeout(time.Duration(5*len(c.Apps)) * time.Minute)
 	defer cancel()
 	v, err := a.Org(bg, c.Org)
 	if err != nil {
@@ -375,48 +405,90 @@ func (c *OrgFlyAppCmd) Run(ctx *cliCtx) error {
 	if v.State == nil {
 		return fmt.Errorf("%s has no organisation chain yet; set it up with 'esec vault org create %s'", c.Org, c.Org)
 	}
-	app := wire.FlyApp{App: c.App, FlyOrg: c.FlyOrg, Group: c.Group, KMS: c.KMS}
-	if app.FlyOrg == "" {
-		app.FlyOrg = v.State.Settings.FlyOrg
-	}
-	if app.FlyOrg == "" {
-		return fmt.Errorf("name the Fly.io organisation: --fly-org (or set a default: esec vault org set %s --fly-org SLUG)", v.State.Org)
-	}
-	if app.Group == "" {
-		app.Group = v.State.Org + "/" + c.App
-	}
-	if app.KMS == "" {
-		app.KMS = v.State.Settings.DefaultKMS
-	}
-	if app.KMS == "" {
-		return fmt.Errorf("name the KMS key: --kms NAME (esec vault org kms %s lists them)", v.State.Org)
-	}
+	var reads []wire.ProjectEnvs
 	for _, r := range c.Read {
 		project, envs, ok := strings.Cut(r, ":")
 		if !ok || envs == "" {
 			return fmt.Errorf("--read is PROJECT:ENV[,ENV], such as %s/store:prod", v.State.Org)
 		}
-		app.Reads = append(app.Reads, wire.ProjectEnvs{Project: project, Envs: team.SortEnvs(strings.Split(envs, ","))})
+		reads = append(reads, wire.ProjectEnvs{Project: project, Envs: team.SortEnvs(strings.Split(envs, ","))})
 	}
-	res, err := a.AddFlyApp(bg, v.State.Org, app)
-	if res != nil {
-		for _, l := range res.Lines(app) {
-			fmt.Println(safetext.Clean(l))
+	var out []flyAppJSON
+	failed := 0
+	for _, name := range c.Apps {
+		app := wire.FlyApp{App: name, FlyOrg: c.FlyOrg, Group: c.Group, KMS: c.KMS, Reads: reads}
+		if app.FlyOrg == "" {
+			app.FlyOrg = v.State.Settings.FlyOrg
+		}
+		if app.FlyOrg == "" {
+			return fmt.Errorf("name the Fly.io organisation: --fly-org (or set a default: esec vault org set %s --fly-org SLUG)", v.State.Org)
+		}
+		if app.Group == "" {
+			app.Group = v.State.Org + "/" + name
+		}
+		if app.KMS == "" {
+			// A key made for this app (kms setup gcp makes esec-APP) comes
+			// before the organisation's default.
+			if k, ok := v.State.KMSByName("esec-" + name); ok && slices.Contains(k.Groups, app.Group) {
+				app.KMS = k.Name
+			} else {
+				app.KMS = v.State.Settings.DefaultKMS
+			}
+		}
+		if app.KMS == "" {
+			return fmt.Errorf("name the KMS key: --kms NAME (esec vault org kms %s lists them)", v.State.Org)
+		}
+		if k, ok := v.State.KMSByName(app.KMS); ok && len(k.Groups) == 0 {
+			fmt.Fprintf(os.Stderr, "Note: %s is not limited to one app's group; every app allowed to decrypt with it could open what is wrapped for the others. A key per app is safer: esec vault kms setup gcp --fly-app %s --apply --approve\n", k.Name, name)
+		}
+		res, err := a.AddFlyApp(bg, v.State.Org, app)
+		r := flyAppJSON{App: name, Group: app.Group, KMS: app.KMS, Granted: []string{}, Pending: []string{}}
+		if res != nil {
+			r.CreatedGroup, r.Rekeyed, r.Granted, r.Pending = res.CreatedGroup, res.Rekeyed, nonNil(res.Granted), nonNil(res.Pending)
+			if res.Ref != nil {
+				r.Descriptor = res.Ref.String()
+			}
+		}
+		if err != nil {
+			failed++
+			r.Error = err.Error()
+		}
+		out = append(out, r)
+		if c.JSON {
+			continue
+		}
+		if len(c.Apps) > 1 {
+			fmt.Printf("%s:\n", name)
+		}
+		if res != nil {
+			for _, l := range res.Lines(app) {
+				fmt.Println(safetext.Clean(l))
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "! %s: %v\n", name, err)
+			continue
+		}
+		if r.Descriptor != "" {
+			fmt.Println("\nIts descriptor is not a secret: put it in the app's plain configuration, such as fly.toml:")
+			fmt.Printf("\n  [env]\n    ESEC_VAULT_WORKLOAD = %q\n\n", r.Descriptor)
+		}
+		if c.Out != "" && r.Descriptor != "" {
+			if err := os.WriteFile(c.Out, []byte(r.Descriptor+"\n"), 0o600); err != nil {
+				return err
+			}
+			fmt.Printf("Wrote the descriptor to %s.\n", c.Out)
 		}
 	}
-	if err != nil {
-		return err
-	}
-	if res.Ref != nil {
-		fmt.Println("\nIts descriptor is not a secret: put it in the app's plain configuration, such as fly.toml:")
-		fmt.Printf("\n  [env]\n    ESEC_VAULT_WORKLOAD = %q\n\n", res.Ref.String())
-	}
-	if c.Out != "" && res.Ref != nil {
-		if err := os.WriteFile(c.Out, []byte(res.Ref.String()+"\n"), 0o600); err != nil {
+	if c.JSON {
+		if err := printJSON(out); err != nil {
 			return err
 		}
-		fmt.Printf("Wrote the descriptor to %s.\n", c.Out)
+	} else {
+		fmt.Println("Start each app with: esec-vault machine run -- ./your-command")
 	}
-	fmt.Println("Start the app with: esec-vault machine run -- ./your-command")
+	if failed > 0 {
+		return fmt.Errorf("%d of %d app(s) failed", failed, len(c.Apps))
+	}
 	return nil
 }

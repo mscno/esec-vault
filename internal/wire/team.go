@@ -42,6 +42,10 @@ type ProjectSummary struct {
 	Machines  int      `json:"machines"`
 	Groups    int      `json:"groups"`
 	Rotations int      `json:"rotations"`
+	// Rotate names the environments whose current key someone who lost
+	// access may still hold, directly or through a group (as the server
+	// sees it; devices check the chains before rotating).
+	Rotate []string `json:"rotate,omitempty"`
 	// Archived says the project is stopped; Successor names where it
 	// moved, when it did.
 	Archived  bool   `json:"archived,omitempty"`

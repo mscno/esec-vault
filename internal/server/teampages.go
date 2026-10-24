@@ -56,7 +56,7 @@ func (s *Server) teamSummaries(ctx context.Context, user string) ([]teamSummary,
 		if err != nil {
 			return nil, err
 		}
-		sum := teamSummary{ID: id, Admin: st.Admin(user), Access: st.Access(user), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Rotations: len(st.Rotations()), Updated: st.LastTime, Archived: st.Archived}
+		sum := teamSummary{ID: id, Admin: st.Admin(user), Access: st.Access(user), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Rotations: len(s.exposedEnvs(ctx, st)), Updated: st.LastTime, Archived: st.Archived}
 		if st.Successor != nil {
 			sum.Successor = st.Successor.Project
 		}
@@ -161,6 +161,26 @@ func (s *Server) groupRotationNotices(ctx context.Context, st *team.State, user 
 		}
 	}
 	return out
+}
+
+// exposedEnvs lists the environments of st whose current key someone may
+// still hold: people and machines that lost access, and those removed from
+// a group that reads them.
+func (s *Server) exposedEnvs(ctx context.Context, st *team.State) []string {
+	set := map[string]bool{}
+	for _, e := range st.Rotations() {
+		set[e.Name] = true
+	}
+	for _, pg := range st.ActiveGroups() {
+		gs, err := s.listedGroup(ctx, pg.Group)
+		if err != nil || gs == nil {
+			continue
+		}
+		for env := range team.GroupExposures(st, gs) {
+			set[env] = true
+		}
+	}
+	return team.SortEnvs(mapKeys(set))
 }
 
 func mapKeys[V any](m map[string]V) []string {

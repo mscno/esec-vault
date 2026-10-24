@@ -233,6 +233,10 @@ type credView struct {
 	// Stale: a machine unused for staleMachine (or never, since a week).
 	// Expiring: a token that stops working within tokenWarning, or did.
 	Stale, Expiring, Expired bool
+	// Descriptor is a workload's (not a secret); KMSName the name its
+	// organisation approved its key under, if it did.
+	Descriptor string
+	KMSName    string
 }
 
 const (
@@ -351,12 +355,16 @@ func (s *Server) groupPageData(ctx context.Context, ws *webSession, id string) (
 	// Addresses, join requests and the log are the group's admins' (and
 	// the server admins') to see.
 	data["ShowOps"] = gs.Admin(ws.user.ID) || s.cfg.Admin(ws.user.GitHubID)
+	if data["ShowOps"] != true {
+		// Addresses, refusals and OIDC claims are the admins' to see.
+		data["Activity"] = nil
+	}
 	s.addPasskeys(ctx, ws, data)
 	return data, nil
 }
 
 // groupPage adds what the group page shows of gs, for viewer, to data.
-func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer string, data map[string]any) error {
+func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer string, data map[string]any) error { //nolint:gocyclo // gathers each part of the page
 	now := s.now()
 	status, err := s.db.groupStatus(ctx, gs, now)
 	if err != nil {
@@ -384,6 +392,19 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 			out = append(out, v)
 		}
 		return out
+	}
+	if os, _, err := s.db.orgState(ctx, s.db.sql, orgOf(gs.Group)); err == nil {
+		workloads := view(team.KindWorkload)
+		for i := range workloads {
+			w := &workloads[i]
+			w.Descriptor = (&team.WorkloadRef{Server: s.cfg.BaseURL, Group: gs.Group, Root: gs.Root(), ID: w.ID}).String()
+			if os != nil && w.KMS != nil {
+				if k := os.KMSFor(*w.KMS); k != nil {
+					w.KMSName = k.Name
+				}
+			}
+		}
+		data["Workloads"] = workloads
 	}
 	admin := gs.Admin(viewer)
 	matrix, err := s.accessMatrix(ctx, gs, viewer, status.Changes)
@@ -425,7 +446,9 @@ func (s *Server) groupPage(ctx context.Context, gs *team.GroupState, viewer stri
 	}
 	data["Machines"] = view(team.KindMachine)
 	data["Tokens"] = view(team.KindToken)
-	data["Workloads"] = view(team.KindWorkload)
+	if data["Workloads"] == nil {
+		data["Workloads"] = view(team.KindWorkload)
+	}
 	data["Matrix"] = matrix
 	data["Joins"] = status.Joins
 	data["Changes"] = status.Changes
@@ -709,13 +732,14 @@ func (s *Server) webGroupAccess(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return "", err
 		}
+		// A project admin may propose only for a project the group already
+		// takes keys from: anyone can create a project. Who may not learns
+		// nothing of the project.
+		if root, trusted := gs.Access[project]; !gs.Admin(ws.user.ID) && (st == nil || !st.Admin(ws.user.ID) || !trusted || root != st.Root()) {
+			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group, or of a project it takes keys from, can change this")
+		}
 		if st == nil {
 			return "", clientErr(http.StatusNotFound, wire.ErrNotFound, "there is no shared project %s", project)
-		}
-		// A project admin may propose only for a project the group already
-		// takes keys from: anyone can create a project.
-		if root, trusted := gs.Access[project]; !gs.Admin(ws.user.ID) && (!st.Admin(ws.user.ID) || !trusted || root != st.Root()) {
-			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "only an admin of the group, or of a project it takes keys from, can change this")
 		}
 		envs := team.SortEnvs(r.PostForm["env"])
 		for _, n := range envs {

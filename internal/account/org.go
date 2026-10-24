@@ -72,9 +72,11 @@ func (t *teamCtx) org(org string) (*team.OrgState, error) {
 func (t *teamCtx) opin(os *team.OrgState) {
 	t.pins.Orgs[os.Org] = Pin{Seq: os.Seq, Head: os.Head(), Root: os.Root()}
 	t.orgs[os.Org] = os
-	// A link this account signed with its user key was signed by one of
-	// its devices, which signs in a chain only once it trusts it (below).
-	if os.SignedWithUserKey(t.a.State.User) {
+	// A link this account signed with its current user key was signed by
+	// one of its devices, which signs in a chain only once it trusts it
+	// (below). A link of an earlier user key may come from a revoked
+	// device: a new key leaves the organisations to confirm again.
+	if os.SignedWithUserKey(t.a.State.User, t.own.UKeyVersion) {
 		t.pins.OrgTrust[os.Org] = os.Root()
 	}
 }
@@ -733,8 +735,10 @@ func (a *Account) OrgKMSKey(ctx context.Context, org, name string) (*team.OrgKMS
 // FlyAppResult says what setting up a Fly.io app did.
 type FlyAppResult struct {
 	Ref *team.WorkloadRef
-	// Key is the approved key its group key is wrapped with.
+	// Key is the approved key its group key is wrapped with; Rekeyed says
+	// the app was there already, on another key, and moved to this one.
 	Key          *team.OrgKMSState
+	Rekeyed      bool
 	CreatedGroup bool
 	// Granted lists "project envs" the group reads now; Pending what an
 	// admin of the project still has to agree to.
@@ -809,6 +813,7 @@ func (a *Account) AddFlyApp(ctx context.Context, org string, app wire.FlyApp) (*
 				if _, err := a.RekeyWorkloads(ctx, app.Group, []string{c.Name}, key.Key); err != nil {
 					return out, err
 				}
+				out.Rekeyed = true
 			}
 			out.Ref = &team.WorkloadRef{Server: a.State.Server, Group: app.Group, Root: view.State.Root(), ID: c.ID}
 			return out, nil

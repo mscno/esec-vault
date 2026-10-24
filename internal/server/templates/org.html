@@ -5,7 +5,7 @@
 <p class="muted">Its people, approved KMS keys and rules are a chain its admins sign on their devices; the server keeps it but cannot change it. Set up by {{.Creator}} {{when .Created}}. Fingerprint <code>{{.Words}}</code>.</p>
 <nav class="tabs" aria-label="{{.Org}}">
   <a href="/orgs/{{.Org}}"{{if eq .Tab "overview"}} aria-current="page"{{end}}>Overview</a>
-  <a href="/orgs/{{.Org}}/people"{{if eq .Tab "people"}} aria-current="page"{{end}}>People <span class="count">{{len .Roster}}</span></a>
+  <a href="/orgs/{{.Org}}/people"{{if eq .Tab "people"}} aria-current="page"{{end}}>People <span class="count">{{.PeopleCount}}</span></a>
   <a href="/orgs/{{.Org}}/workloads"{{if eq .Tab "workloads"}} aria-current="page"{{end}}>Workloads <span class="count">{{len .Workloads}}</span></a>
   <a href="/orgs/{{.Org}}/settings"{{if eq .Tab "settings"}} aria-current="page"{{end}}>Settings</a>
 </nav>
@@ -14,6 +14,7 @@
 {{else}}
 <p class="muted">What you can see of {{.Org}}'s shared projects and groups.</p>
 {{end}}
+{{if .Chain}}<div id="live" {{dsLive (printf "/orgs/%s/live/%s" .Org .Tab) 20}}></div>{{end}}
 {{template "org-alerts" .}}
 {{template "org-body" .}}
 {{template "foot" .}}
@@ -86,7 +87,7 @@
 {{define "org-overview"}}
 {{if .Chain}}
 <div class="tiles">
-  <a class="tile" href="/orgs/{{.Org}}/people"><span class="tile-label">People</span><span class="tile-value">{{len .Roster}}</span><span class="tile-note">{{if .Former}}{{plural (len .Former) "person"}} still to take out{{else}}{{plural (len .Admins) "admin"}}{{end}}</span></a>
+  <a class="tile" href="/orgs/{{.Org}}/people"><span class="tile-label">People</span><span class="tile-value">{{.PeopleCount}}</span><span class="tile-note">{{if .Former}}{{plural (len .Former) "person"}} still to take out{{else}}{{plural (len .Admins) "admin"}}{{end}}</span></a>
   <a class="tile" href="/orgs/{{.Org}}/workloads"><span class="tile-label">Workloads</span><span class="tile-value">{{len .Workloads}}</span><span class="tile-note">{{if .KeyProblems}}{{plural .KeyProblems "key problem"}}{{else}}apps with no secret{{end}}</span></a>
   <a class="tile" href="/orgs/{{.Org}}/settings#kms"><span class="tile-label">Approved keys</span><span class="tile-value">{{len .KMS}}</span><span class="tile-note">{{with .Settings.DefaultKMS}}default {{.}}{{else}}no default{{end}}</span></a>
   <a class="tile" href="/orgs/{{.Org}}/settings#rules"><span class="tile-label">Joining</span><span class="tile-value">{{if .Settings.MembersOnly}}members only{{else}}open{{end}}</span><span class="tile-note">{{if .Settings.RequireGitHubProof}}GitHub proofs only{{else}}proofs or key words{{end}}{{if .Settings.MaxTokenDays}}; tokens ≤ {{plural .Settings.MaxTokenDays "day"}}{{end}}</span></a>
@@ -94,8 +95,9 @@
 {{end}}
 {{if or .Teams .Groups}}
 <h2 id="projects">Projects</h2>
+<div class="filterbar"><input type="search" class="filter" placeholder="Filter projects" aria-label="Filter projects" data-filter="#org-projects" hidden> <span id="org-projects-count" class="muted"></span></div>
 <div class="scroll">
-<table>
+<table id="org-projects">
   <thead><tr><th>Project</th><th>You</th><th>Members</th><th>Machines</th><th>Needs</th></tr></thead>
   <tbody>
   {{range .Teams}}
@@ -114,8 +116,9 @@
 </div>
 
 <h2 id="groups">Groups</h2>
+<div class="filterbar"><input type="search" class="filter" placeholder="Filter groups" aria-label="Filter groups" data-filter="#org-groups" hidden> <span id="org-groups-count" class="muted"></span></div>
 <div class="scroll">
-<table>
+<table id="org-groups">
   <thead><tr><th>Group</th><th>You</th><th>People</th><th>Machines</th><th>Reads</th></tr></thead>
   <tbody>
   {{range .Groups}}
@@ -134,8 +137,9 @@
 </div>
 
 <h2 id="readers">Who reads what</h2>
+<div class="filterbar"><input type="search" class="filter" placeholder="Filter people or projects" aria-label="Filter people or projects" data-filter="#org-readers" hidden> <span id="org-readers-count" class="muted"></span></div>
 <div class="scroll">
-<table>
+<table id="org-readers">
   <thead><tr><th>Person</th><th>Reads</th></tr></thead>
   <tbody>
   {{range .People}}
@@ -161,8 +165,9 @@
 {{define "org-people"}}
 <h2 id="people">People</h2>
 <p class="muted">Belonging to {{.Org}} gives no keys by itself: people read what its projects grant them and the groups they are in. {{if .Settings.MembersOnly}}Only its people may be added to its projects and groups.{{end}}</p>
+<div class="filterbar"><input type="search" class="filter" placeholder="Filter people" aria-label="Filter people" data-filter="#org-people" hidden> <span id="org-people-count" class="muted"></span></div>
 <div class="scroll">
-<table>
+<table id="org-people">
   <thead><tr><th>Person</th><th>Role</th><th>In {{.Org}}</th><th>Added</th><th></th></tr></thead>
   <tbody>
   {{range .Roster}}
@@ -216,29 +221,8 @@
 {{define "org-workloads"}}
 <h2 id="workloads">Workloads</h2>
 <p class="muted">Apps that hold no secret: each proves where it runs with an OIDC token, and a KMS key {{.Org}} approved unwraps its keys. <a href="/orgs/{{.Org}}/export" download>Export as JSON</a></p>
-<div class="scroll">
-<table>
-  <thead><tr><th>App</th><th>Reads</th><th>KMS key</th><th>Last start</th><th></th></tr></thead>
-  <tbody>
-  {{range .Workloads}}
-  <tr id="workload-{{.ID}}">
-    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{end}}<br><span class="muted">{{.Runs}}</span><br><span class="muted">in <a href="/groups/{{.Group}}#workloads">{{.Group}}</a></span></td>
-    <td>{{range .Reads}}<div>{{.}}</div>{{else}}<span class="muted">nothing yet</span>{{end}}</td>
-    <td>{{if .KeyProblem}}<span class="badge status-revoked" title="{{.KeyProblem}}">{{with .KMSName}}{{.}}: withdrawn{{else}}not approved{{end}}</span>{{else}}<span class="badge status-active">{{.KMSName}}</span>{{end}}{{with .KMS}}<br><code class="muted" title="{{.Name}}">{{short .Name}}</code>{{end}}{{with .Rekeying}}<br><span class="badge status-pending">moving to {{.}}</span>{{else}}{{if and .CanAdmin (not .Suspended) (or .KeyProblem (gt (len $.KMS) 1))}}<form method="post" action="/orgs/{{$.Org}}/workloads/rekey" class="rekey" {{dsPost (printf "/orgs/%s/workloads/rekey" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="group" value="{{.Group}}"><input type="hidden" name="id" value="{{.ID}}"><select name="kms" aria-label="Move to key">{{$cur := .KMSName}}{{range $.KMS}}{{if ne .Name $cur}}<option value="{{.Name}}">{{.Name}}</option>{{end}}{{end}}</select> <button type="submit" class="secondary">Move</button></form>{{end}}{{end}}</td>
-    <td class="nowrap">{{if .LastUsed.IsZero}}<span class="muted">never</span>{{else}}{{when .LastUsed}}<br><span class="muted">{{plural .Uses "start"}}</span>{{end}}</td>
-    <td class="actions">
-      <button type="button" class="copy secondary" data-copy="{{.Descriptor}}" hidden>Copy descriptor</button>
-      {{if and .CanAdmin (not .Suspended)}}
-      <form method="post" action="/orgs/{{$.Org}}/workloads/remove" class="inline" data-confirm="Remove the workload {{.Name}}? It gets no keys from its next start." {{dsPost (printf "/orgs/%s/workloads/remove" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="group" value="{{.Group}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>
-      {{end}}
-    </td>
-  </tr>
-  {{else}}
-  <tr><td colspan="5" class="muted">No workloads yet.{{if $.MyAdmin}} Add a Fly.io app below.{{end}}</td></tr>
-  {{end}}
-  </tbody>
-</table>
-</div>
+<div class="filterbar"><input type="search" class="filter" id="org-workloads-q" placeholder="Filter: app, group, project, key" aria-label="Filter workloads" data-filter="#org-workloads" hidden> <button type="button" class="chip" hidden data-filter-input="#org-workloads-q" data-filter-word="never">never started</button> <button type="button" class="chip" hidden data-filter-input="#org-workloads-q" data-filter-word="problem">key problems</button> <button type="button" class="chip" hidden data-filter-input="#org-workloads-q" data-filter-word="blocked">blocked</button>{{range .KMS}} <button type="button" class="chip" hidden data-filter-input="#org-workloads-q" data-filter-word="kms:{{.Name}}">{{.Name}}</button>{{end}} <span id="org-workloads-count" class="muted"></span></div>
+{{template "org-workloads-list" .}}
 {{if .MyAdmin}}
 <h2 id="add-app">Add a Fly.io app</h2>
 {{if not .KMS}}
@@ -255,11 +239,14 @@
   <datalist id="org-groups">{{range .MyGroups}}<option value="{{.}}">{{end}}</datalist>
   <fieldset>
     <legend>It reads</legend>
+    {{if gt (len .MyProjects) 8}}<input type="search" class="filter" placeholder="Filter projects" aria-label="Filter projects" data-filter="#app-reads" hidden>{{end}}
+    <div id="app-reads">
     {{range .MyProjects}}
-    <div class="read-row"><strong>{{.ID}}</strong> {{$p := .ID}}{{range .Envs}}<label class="check"><input type="checkbox" name="read" value="{{$p}} {{.}}"> {{.}}</label>{{end}}</div>
+    <div class="read-row" data-row><strong>{{.ID}}</strong> {{$p := .ID}}{{range .Envs}}<label class="check"><input type="checkbox" name="read" value="{{$p}} {{.}}"> {{.}}</label>{{end}}</div>
     {{else}}
     <p class="muted">You administer no project of {{.Org}}; an admin of one lets the group read it later.</p>
     {{end}}
+    </div>
   </fieldset>
   <div><button type="submit">Set up the app</button></div>
 </form>
@@ -271,7 +258,7 @@
   ESEC_VAULT_WORKLOAD = "esecw1_..."</code></pre>
   <p>and start it through esec-vault; the image holds <code>esec</code>, <code>esec-vault</code>, <code>.esec-project</code> and the encrypted files:</p>
   {{template "cmd" "CMD [\"esec-vault\", \"machine\", \"run\", \"--\", \"esec\", \"run\", \".env.prod\", \"--\", \"/app/server\"]"}}
-  <p class="muted">The KMS key's IAM (or OpenBao role) must let that app decrypt: <code>esec vault kms setup gcp --fly-org ORG --fly-app APP --apply</code>.</p>
+  <p class="muted">The KMS key's IAM (or OpenBao role) must let that app decrypt: <code>esec vault kms setup gcp --fly-org ORG --fly-app APP --apply --approve</code>.</p>
 </details>
 {{end}}
 {{end}}
@@ -302,7 +289,7 @@
 {{if .MyAdmin}}
 <details class="help" data-preserve-attr="open"{{if not .KMS}} open{{end}}>
   <summary>Approve a key</summary>
-  <p>Make the key and its identity federation first (it prints the names to paste here): {{template "cmd" (printf "esec vault kms setup gcp --project PROJECT --fly-org %s --fly-app APP --apply" (or .Settings.FlyOrg .Org))}}</p>
+  <p>Easiest, on a device with gcloud signed in: it makes a key per app and its identity federation, and approves each key for its app's group here:</p>{{template "cmd" (printf "esec vault kms setup gcp --project PROJECT --fly-org %s --fly-app APP --org %s --apply --approve" (or .Settings.FlyOrg .Org) .Org)}}<p>Or approve a key you made yourself:</p>
   <form method="post" action="/orgs/{{.Org}}/kms" class="grid-form" {{dsPost (printf "/orgs/%s/kms" .Org)}}>
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,62}" placeholder="gcp-prod" autocomplete="off" spellcheck="false"></label>
@@ -372,4 +359,30 @@
   <p class="muted">The server checks it on every change it stores from now on, on top of the organisation's own rules.</p>
 </details>
 {{end}}
+</div>{{end}}
+
+{{define "org-workloads-list"}}<div id="org-workloads-list">
+<div class="scroll">
+<table id="org-workloads">
+  <thead><tr><th>App</th><th>Reads</th><th>KMS key</th><th>Last start</th><th></th></tr></thead>
+  <tbody>
+  {{range .Workloads}}
+  <tr id="workload-{{.ID}}" data-tags="{{if .LastUsed.IsZero}}never{{end}}{{if .KeyProblem}} problem{{end}}{{if .Suspended}} blocked{{end}} kms:{{.KMSName}}">
+    <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{end}}<br><span class="muted">{{.Runs}}</span><br><span class="muted">in <a href="/groups/{{.Group}}#workloads">{{.Group}}</a></span></td>
+    <td>{{range .Reads}}<div>{{.}}</div>{{else}}<span class="muted">nothing yet</span>{{end}}</td>
+    <td>{{if .KeyProblem}}<span class="badge status-revoked" title="{{.KeyProblem}}">{{with .KMSName}}{{.}}: withdrawn{{else}}not approved{{end}}</span>{{else}}<span class="badge status-active">{{.KMSName}}</span>{{end}}{{with .KMS}}<br><code class="muted" title="{{.Name}}">{{short .Name}}</code>{{end}}{{with .Rekeying}}<br><span class="badge status-pending">moving to {{.}}</span>{{else}}{{if and .CanAdmin (not .Suspended) (or .KeyProblem (gt (len $.KMS) 1))}}<form method="post" action="/orgs/{{$.Org}}/workloads/rekey" class="rekey" {{dsPost (printf "/orgs/%s/workloads/rekey" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="group" value="{{.Group}}"><input type="hidden" name="id" value="{{.ID}}"><select name="kms" aria-label="Move to key">{{$cur := .KMSName}}{{range $.KMS}}{{if ne .Name $cur}}<option value="{{.Name}}">{{.Name}}</option>{{end}}{{end}}</select> <button type="submit" class="secondary">Move</button></form>{{end}}{{end}}</td>
+    <td class="nowrap">{{if .LastUsed.IsZero}}<span class="muted">never</span>{{else}}{{when .LastUsed}}<br><span class="muted">{{plural .Uses "start"}}</span>{{end}}</td>
+    <td class="actions">
+      <button type="button" class="copy secondary" data-copy="{{.Descriptor}}" hidden>Copy descriptor</button>
+      {{if and .CanAdmin (not .Suspended)}}
+      <form method="post" action="/orgs/{{$.Org}}/workloads/remove" class="inline" data-confirm="Remove the workload {{.Name}}? It gets no keys from its next start." {{dsPost (printf "/orgs/%s/workloads/remove" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="group" value="{{.Group}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">No workloads yet.{{if $.MyAdmin}} Add a Fly.io app below.{{end}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
 </div>{{end}}

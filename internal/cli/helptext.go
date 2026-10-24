@@ -53,9 +53,31 @@ var commandDetails = map[string]string{
 		"esec vault run dev -- npm start",
 		"esec vault run prod -- ./deploy.sh",
 	),
-	"access list": examples(
+	"access list": `--needs rotate lists every environment, across your projects, whose key someone who lost access (directly or through a group) may still hold, worked out from the chains your device checks.
+
+` + examples(
 		"esec vault access                 # your shared projects",
 		"esec vault access list --json",
+		"esec vault access list --org acme",
+		"esec vault access list --needs rotate --org acme --json",
+	),
+	"todo": `Everything that waits for you, from the chains your device checks: keys to rotate, changes made on the web to sign, machines asking to join your groups, organisations to confirm, people who left an organisation and are still in its projects, and workloads on keys their organisation does not approve.
+
+` + examples(
+		"esec vault todo",
+		"esec vault todo --json",
+	),
+	"org workloads": examples(
+		"esec vault org workloads acme",
+		"esec vault org workloads acme --never-started",
+		"esec vault org workloads acme --idle 30d --json",
+		"esec vault org workloads acme --kms gcp-prod --problems",
+	),
+	"org rekey": `Moves the workloads of the groups you administer to another approved key in one go; their descriptors stay, and they unwrap with the new key from their next start. If the old key may be compromised, give the groups new keys too (esec vault group rotate).
+
+` + examples(
+		"esec vault org rekey acme --from gcp-prod --to gcp-prod-2 --dry-run",
+		"esec vault org rekey acme --to gcp-prod-2 --yes --json",
 	),
 	"access show": examples(
 		"esec vault access show            # in the repository",
@@ -83,6 +105,8 @@ var commandDetails = map[string]string{
 		"esec vault access grant acme/backend --env dev,staging",
 		"esec vault access grant acme/production --env prod --project acme/api --json",
 		"esec vault access grant alice --env prod --for 8h     # emergency access that ends by itself",
+		"esec vault access grant acme/backend --env dev,staging --project 'acme/*' --skip-missing-env --json   # every acme project you administer",
+		"esec vault access revoke alice --project acme/api,acme/web --yes",
 	),
 	"access request": `Anyone signed in may ask; the project's admins see it on its page, on their overview and with access requests. An admin grants it from a device or a passkey.
 
@@ -159,11 +183,12 @@ var commandDetails = map[string]string{
 		"esec vault org set acme --max-token-days 30 --review-days 90",
 		"esec vault org set acme --fly-org acme --default-kms gcp-prod",
 	),
-	"org fly-app": `Creates the app's group (ORG/APP) when it is missing, lets it read what --read names (you must administer those projects), and adds the app as a workload bound to Fly.io's OIDC tokens for it, wrapped with an approved KMS key. Prints the descriptor for fly.toml. Running it again changes nothing that is in place.
+	"org fly-app": `Creates the app's group (ORG/APP) when it is missing, lets it read what --read names (you must administer those projects), and adds the app as a workload bound to Fly.io's OIDC tokens for it, wrapped with an approved KMS key. Prints the descriptor for fly.toml. Several apps take one command; each gets its own group and, by default, its own approved key (esec-APP, from kms setup gcp --approve). Running it again is safe, and sets what it reads of each project named in --read to exactly those environments (fewer takes some away), and moves it to --kms if that is another key; projects not named stay as they are.
 
 ` + examples(
 		"esec vault org fly-app acme store --read acme/store:prod",
 		"esec vault org fly-app acme api --read acme/api:prod --read acme/shared:prod --kms fly-api",
+		"esec vault org fly-app acme api web worker --read acme/shared:prod --json",
 	),
 	"access handover": `Only a device signs who is an admin. The web page's Hand over admin proposes the same changes for a device to sign.
 

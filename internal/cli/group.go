@@ -242,6 +242,11 @@ func (c *GroupCreateCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(time.Minute)
 	defer cancel()
+	// Running it again is fine: scripts may make sure a group is there.
+	if v, err := a.Group(bg, id); err == nil && v.State.Admin(a.State.User) {
+		fmt.Printf("✓ %s exists already, with you as an admin; nothing changed.\n", id)
+		return nil
+	}
 	gs, err := a.CreateGroup(bg, id)
 	if err != nil {
 		return err
@@ -561,6 +566,12 @@ func (c *GroupAddCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(2 * time.Minute)
 	defer cancel()
+	if v, err := a.Group(bg, id); err == nil && v.State.Admin(a.State.User) {
+		if p, ok := findMember(v.State, c.Login); ok {
+			fmt.Printf("✓ %s is in %s already; nothing changed.\n", safetext.Clean(p.Login), id)
+			return nil
+		}
+	}
 	res, err := a.AddGroupMember(bg, id, c.Login, c.AccountKey)
 	if err != nil {
 		return err
@@ -572,6 +583,16 @@ func (c *GroupAddCmd) Run(ctx *cliCtx) error {
 		fmt.Printf("  The group reads nothing yet: esec vault access grant %s --project ORG/REPO --env dev\n", id)
 	}
 	return nil
+}
+
+// findMember finds an active admin or member of a group by login.
+func findMember(gs *team.GroupState, login string) (*team.GroupAdminState, bool) {
+	for _, p := range gs.KeyHolders() {
+		if strings.EqualFold(p.Login, login) {
+			return p, true
+		}
+	}
+	return nil, false
 }
 
 // GroupLeaveCmd leaves a group.
@@ -679,6 +700,9 @@ func printRemoved(id string, res *account.GroupRemoveResult) {
 		it, they = "them", "They"
 	}
 	fmt.Printf("✓ Removed the %s %s from %s; the server no longer gives %s keys.\n", res.Cred.Kind, safetext.Clean(res.Cred.Name), id, it)
+	if res.Cred.Kind == team.KindWorkload {
+		fmt.Println("  Also take away its right to decrypt: remove its IAM binding on the KMS key (or its OpenBao role), so it cannot open what is wrapped with that key.")
+	}
 	printRotated(id, res)
 	projects := make([]string, 0, len(res.Exposed))
 	for p := range res.Exposed {

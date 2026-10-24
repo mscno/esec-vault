@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -42,7 +43,9 @@ type TeamCmd struct {
 
 // TeamListCmd lists shared projects.
 type TeamListCmd struct {
-	JSON bool `help:"Print JSON, for scripts and agents"`
+	Needs string `enum:",rotate" default:"" help:"Only what needs doing: rotate lists every environment whose key someone who left may hold, checked against the chains"`
+	Org   string `help:"Only projects of this organisation"`
+	JSON  bool   `help:"Print JSON, for scripts and agents"`
 }
 
 // Run implements team list.
@@ -51,11 +54,17 @@ func (c *TeamListCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
+	if c.Needs == "rotate" {
+		return c.rotations(a)
+	}
 	bg, cancel := timeout(time.Minute)
 	defer cancel()
 	list, err := a.TeamSummaries(bg)
 	if err != nil {
 		return err
+	}
+	if c.Org != "" {
+		list = slices.DeleteFunc(list, func(p wire.ProjectSummary) bool { return !strings.EqualFold(orgName(p.ID), c.Org) })
 	}
 	if c.JSON {
 		return printJSON(nonNil(list))
@@ -98,6 +107,31 @@ func projectFlag(p string) (string, error) {
 		return "", fmt.Errorf("name the project with --project org/repo, or run this in its repository: %w", err)
 	}
 	return id, team.ValidProject(id)
+}
+
+// rotations lists every environment to rotate, across projects.
+func (c *TeamListCmd) rotations(a *account.Account) error {
+	bg, cancel := timeout(10 * time.Minute)
+	defer cancel()
+	list, err := a.Rotations(bg, strings.ToLower(c.Org))
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		return printJSON(nonNil(list))
+	}
+	if len(list) == 0 {
+		fmt.Println("✓ No key needs rotating.")
+		return nil
+	}
+	for _, r := range list {
+		fmt.Printf("%-32s %-12s %s\n", safetext.Clean(r.Project), safetext.Clean(r.Env), safetext.Clean(strings.Join(r.Who, "; ")))
+		if r.Admin {
+			fmt.Printf("    esec vault env rotate %s --project %s\n", r.Env, r.Project)
+		}
+	}
+	fmt.Printf("%d environment(s). In each repository, rotate, commit and deploy.\n", len(list))
+	return nil
 }
 
 // TeamShowCmd shows one shared project.
@@ -254,6 +288,11 @@ func (c *TeamCreateCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(2 * time.Minute)
 	defer cancel()
+	// Running it again is fine: scripts may make sure a project is shared.
+	if shared, admin, err := a.SharedRole(bg, project); err == nil && shared && admin {
+		fmt.Printf("✓ %s is shared already, with you as an admin; nothing changed.\n", project)
+		return nil
+	}
 	st, err := a.CreateTeam(bg, project, c.Env)
 	if err != nil {
 		return err

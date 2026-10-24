@@ -96,6 +96,9 @@ func (r *FlyAppResult) Lines(app wire.FlyApp) []string {
 	for _, p := range r.Pending {
 		out = append(out, fmt.Sprintf("%s asked to read %s: an admin of that project agrees with: esec vault changes", app.Group, p))
 	}
+	if r.Rekeyed {
+		out = append(out, fmt.Sprintf("%s was set up already: moved it to the key %s.", app.App, app.KMS))
+	}
 	if r.Key != nil {
 		out = append(out, fmt.Sprintf("Its group key is wrapped with %s: %s %s, fingerprint %s.", r.Key.Name, r.Key.Key.Provider, r.Key.Key.Name, shortFingerprint(r.Key.Key)))
 	}

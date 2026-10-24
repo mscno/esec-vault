@@ -195,8 +195,7 @@ OpenBao one) for the organisation once, then set up each app in one step,
 here or on the organisation's **Workloads** page:
 
 ```sh
-esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app store --apply
-esec vault org kms add acme gcp-prod --gcp-key ... --gcp-provider ... --default
+esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app store --apply --approve   # a key for the app, approved
 esec vault org fly-app acme store --read acme/store:prod   # prints ESEC_VAULT_WORKLOAD for fly.toml
 ```
 
@@ -284,6 +283,19 @@ Under **Overview › Signing**, open the signer page and make a passkey
 comparing the fingerprint. From then on, **Sign with passkey** on the Changes
 page opens the signer, which shows what you sign; one touch signs it. Your computer also shows a dialog for each change
 while the background service runs.
+
+### Run many projects and apps
+
+```sh
+esec vault todo                                            # what waits for you, everywhere
+esec vault access list --needs rotate --org acme           # every key to rotate
+esec vault access grant acme/backend --env dev,staging --project 'acme/*' --skip-missing-env
+esec vault org fly-app acme api web worker --read acme/shared:prod --json
+esec vault org workloads acme --idle 30d                   # apps that stopped starting
+esec vault org rekey acme --from gcp-prod --to gcp-prod-2  # move every app to a new key
+```
+
+Setup commands are safe to run again. The runbook has a table of these.
 
 ### See what needs doing
 

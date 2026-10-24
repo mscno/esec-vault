@@ -2,17 +2,18 @@
 <h1>Projects</h1>
 {{if .Teams}}
 <h2 id="shared">Shared with your team</h2>
+<div class="filterbar"><input type="search" class="filter" placeholder="Filter: name, admin, rotate, unsent, archived" aria-label="Filter: name, admin, rotate, unsent, archived" data-filter="#shared-projects" hidden> <span id="shared-projects-count" class="muted"></span></div>
 <div class="scroll">
-<table>
+<table id="shared-projects">
   <thead><tr><th>Project</th><th>You</th><th>Members</th><th>Machines</th><th>Needs</th><th>Last change</th></tr></thead>
   <tbody>
   {{range .Teams}}
-  <tr>
+  <tr data-tags="{{if .Admin}}admin{{end}}{{if .Rotations}} rotate{{end}}{{if .Missing}} unsent{{end}}{{if .Archived}} archived{{end}}">
     <td><a href="/teams/{{.ID}}"><strong>{{.ID}}</strong></a>{{if .Archived}} <span class="badge status-revoked">{{if .Successor}}moved to {{.Successor}}{{else}}archived{{end}}</span>{{end}}</td>
     <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .Access}}read {{range $i, $e := .Access}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}<span class="muted">no environments</span>{{end}}</td>
     <td>{{.Members}}</td>
     <td>{{.Machines}}</td>
-    <td>{{if .Rotations}}<span class="badge status-pending">{{plural .Rotations "key"}} to rotate</span> {{end}}{{if .Missing}}<span class="badge">{{.Missing}} not sent</span>{{end}}{{if and (not .Rotations) (not .Missing)}}<span class="muted">nothing</span>{{end}}</td>
+    <td>{{if .Rotations}}<span class="badge status-pending" title="{{range $i, $e := .Rotate}}{{if $i}}, {{end}}{{$e}}{{end}}">{{plural .Rotations "key"}} to rotate</span> {{end}}{{if .Missing}}<span class="badge">{{.Missing}} not sent</span>{{end}}{{if and (not .Rotations) (not .Missing)}}<span class="muted">nothing</span>{{end}}</td>
     <td>{{when .Updated}}</td>
   </tr>
   {{end}}

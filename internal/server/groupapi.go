@@ -1218,10 +1218,6 @@ func (s *Server) apiWorkloadKeys(w http.ResponseWriter, r *http.Request) {
 		unknown()
 		return
 	}
-	if !s.limits.allow("workload:"+req.Group+":"+req.ID, 600, time.Hour, now) {
-		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests for this workload; try again later")
-		return
-	}
 	gs, links, err := s.db.groupState(ctx, s.db.sql, req.Group)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -1239,6 +1235,12 @@ func (s *Server) apiWorkloadKeys(w http.ResponseWriter, r *http.Request) {
 	claims, ok := s.checkOIDC(w, r, req.OIDCToken, cred.OIDC, now)
 	if !ok {
 		_ = s.db.groupAudit(ctx, s.db.sql, req.Group, req.ID, ip, "keys_refused", cred.Name, now)
+		return
+	}
+	// Counted once its token checks out: anyone may know a workload's id
+	// (its descriptor is not a secret), and must not lock it out.
+	if !s.limits.allow("workload:"+req.Group+":"+req.ID, 600, time.Hour, now) {
+		writeErr(w, http.StatusTooManyRequests, wire.ErrRateLimited, "too many requests for this workload; try again later")
 		return
 	}
 	out, err := s.fleetKeys(ctx, gs, links, req.ID)

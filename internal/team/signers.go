@@ -72,6 +72,12 @@ func (p chainPeople) userKey(h signedHead, creator *Person, chains Chains) (ed25
 // the position of the admin's user chain it names, with a scope that covers
 // the link (scope says which it needs).
 func (p chainPeople) delegate(e *envelope.Envelope, kind string, h signedHead, chains Chains, scope func() (string, error)) error {
+	return p.delegateUnless(e, kind, h, chains, scope, false)
+}
+
+// delegateUnless is delegate; with noServer, a link the server's own key
+// signed is refused, as an organisation's rules may ask.
+func (p chainPeople) delegateUnless(e *envelope.Envelope, kind string, h signedHead, chains Chains, scope func() (string, error), noServer bool) error {
 	a, ok := p.admins[h.Signer]
 	if !ok || !a.Active || h.SignerKey != 0 || h.Seq == 1 {
 		return fmt.Errorf("only an admin's delegate signs %s links", p.what)
@@ -82,6 +88,9 @@ func (p chainPeople) delegate(e *envelope.Envelope, kind string, h signedHead, c
 	d, err := DelegateSigner(chains, h.Signer, a.Root, h.SignerDelegate, h.SignerSeq, h.CTime)
 	if err != nil {
 		return err
+	}
+	if noServer && d.Kind == chain.DelegateServer {
+		return fmt.Errorf("the %s's rules let the server sign nothing", p.what)
 	}
 	need, err := scope()
 	if err != nil {

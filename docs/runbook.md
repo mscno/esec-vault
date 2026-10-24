@@ -59,33 +59,25 @@ the background service, or `esec vault changes`) or a passkey.
 ### Google Cloud KMS for workloads (once per Fly.io organisation)
 
 ```sh
-esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app api,web           # prints the commands
-esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app api,web --apply   # runs them
-```
-
-It creates one software RSA key (`rsa-decrypt-oaep-3072-sha256`), a workload
-identity pool trusting `https://oidc.fly.io/acme`, and an IAM binding per
-app, which decides which apps may decrypt with the key. It prints the
-`--gcp-key` and `--gcp-provider` values for the next step. To let a new app
-in later, run it again with that app in `--fly-app`: what exists already is
-left as it is.
-
-Then approve the key in the organisation; your device reads its public half
-from Cloud KMS (gcloud signed in), so the approval names the real key:
-
-```sh
-esec vault org kms add acme gcp-prod --gcp-key projects/acme-vault/locations/europe-west1/keyRings/esec/cryptoKeys/workloads/cryptoKeyVersions/1 \
-  --gcp-provider projects/123456789/locations/global/workloadIdentityPools/esec-workloads/providers/fly-acme --default
+esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app api,web                     # prints the commands
+esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app api,web --apply --approve   # runs them, approves the keys
 esec vault org set acme --fly-org acme           # the Fly.io organisation new apps run in
 ```
 
+It creates a workload identity pool trusting `https://oidc.fly.io/acme`, and
+for each app its own software RSA key (`esec-api`, `esec-web`;
+`rsa-decrypt-oaep-3072-sha256`) that only that app may decrypt with. With
+`--approve` your device then reads each key's public half from Cloud KMS
+(gcloud signed in) and approves it in the organisation for that app's group
+alone (`acme/api`), so the approval names the real key. Without it, the
+command prints the `esec vault org kms add` lines to run. To add an app
+later, run it again with that app: what exists already is left as it is.
+
 Cost: about $0.06 a month per key, $0.03 per 10,000 decrypts (one per app
-start); token exchange is free. One key can serve every group and app, but
-then each app's IAM binding lets it unwrap the others' group keys too (it
-still gets only its own sealed keys from the vault). With many apps, give
-each its own key (`--key esec-APP` in `kms setup gcp`) and approve it with
-`--groups acme/APP`, so it serves that app's group alone: a hundred apps
-cost about $6 a month.
+start); token exchange is free: a hundred apps cost about $6 a month. One
+key for every app (`--key workloads`) is cheaper, but then each app may
+decrypt what is wrapped for the others, should the server hand it over:
+keep a key per app.
 
 ### Or a self-hosted OpenBao
 
@@ -244,6 +236,22 @@ esec vault group approve acme/production # on your laptop, comparing the words
 | A device is lost | suspend it on its web page, then `esec vault devices revoke ID` |
 | Remove an app | `esec vault group remove acme/production api` |
 
+## Run many projects at once
+
+| Task | Command |
+|---|---|
+| Everything that waits for you | `esec vault todo` (`--json`) |
+| Every key to rotate, across projects | `esec vault access list --needs rotate --org acme` |
+| Give a team several projects at once | `esec vault access grant acme/backend --env dev,staging --project 'acme/*' --skip-missing-env` |
+| Take someone out of several projects | `esec vault access revoke alice --project acme/api,acme/web --yes` |
+| Set up many Fly.io apps | `esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app api,web,worker --apply --approve`, then `esec vault org fly-app acme api web worker --read acme/shared:prod --json` |
+| See every workload, the idle ones | `esec vault org workloads acme --idle 30d` (or the Workloads page, with its filters) |
+| Move every workload to a new key | `esec vault org rekey acme --from gcp-prod --to gcp-prod-2 --dry-run`, then without `--dry-run` |
+
+Setup commands (`group create`, `group add`, `org create`, `org add`,
+`access create`, `org fly-app`) are safe to run again, so a script can make
+sure things are in place.
+
 ## Rotate keys
 
 **Environment keys** (the keys that encrypt the files). Rotate when someone
@@ -274,6 +282,10 @@ esec vault group rekey-workloads acme/api --gcp-key .../cryptoKeyVersions/2 --gc
 ```
 
 Their descriptors stay; they unwrap with the new key from their next start.
+The group key is the same, so if you move because the old KMS (or its
+host, or its federation) may be compromised, also give the group a new key:
+`esec vault group rotate acme/api`. When you remove a workload, remove its
+IAM binding on the KMS key (or its OpenBao role) as well.
 Then withdraw the old key (`esec vault org kms remove acme gcp-prod`) and
 disable its version. The same moves a workload from Cloud KMS to OpenBao.
 Only the wrapping of group keys changes; no secret moves.

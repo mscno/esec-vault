@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -20,13 +21,14 @@ import (
 
 // AccessGrantCmd lets a person or a group read more environments.
 type AccessGrantCmd struct {
-	Who        string   `arg:"" help:"A GitHub login, or a group such as acme/backend"`
-	Env        []string `name:"env" sep:"," help:"Environments they may read, on top of what they read already"`
-	Admin      bool     `help:"Make the person an admin: they read every environment and manage the project"`
-	AccountKey string   `help:"A new person's account key words, read to you over another channel, instead of their GitHub SSH proof"`
-	For        string   `name:"for" help:"Take the --env environments away again after this long, such as 8h or 3d (the server signs or proposes the removal)"`
-	Project    string   `help:"Project id (default: nearest .esec-project)"`
-	JSON       bool     `help:"Print JSON, for scripts and agents"`
+	Who            string   `arg:"" help:"A GitHub login, or a group such as acme/backend"`
+	Env            []string `name:"env" sep:"," help:"Environments they may read, on top of what they read already"`
+	Admin          bool     `help:"Make the person an admin: they read every environment and manage the project"`
+	AccountKey     string   `help:"A new person's account key words, read to you over another channel, instead of their GitHub SSH proof"`
+	For            string   `name:"for" help:"Take the --env environments away again after this long, such as 8h or 3d (the server signs or proposes the removal)"`
+	Project        string   `help:"Project id (default: nearest .esec-project); several, comma-separated, or a pattern of the projects you administer, such as 'acme/*'"`
+	SkipMissingEnv bool     `name:"skip-missing-env" help:"With several projects: skip the --env environments a project does not have"`
+	JSON           bool     `help:"Print JSON, for scripts and agents (a list, with several projects)"`
 }
 
 // AccessRevokeCmd takes environments, or all access, away.
@@ -34,9 +36,9 @@ type AccessRevokeCmd struct {
 	Who     string   `arg:"" help:"A GitHub login, or a group such as acme/backend"`
 	Env     []string `name:"env" sep:"," help:"Environments to take away (default: all of them: the person or group leaves the project)"`
 	Reason  string   `help:"Reason recorded in the project chain"`
-	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Project string   `help:"Project id (default: nearest .esec-project); several, comma-separated, or a pattern of the projects you administer, such as 'acme/*'"`
 	Yes     bool     `help:"Do not ask for confirmation"`
-	JSON    bool     `help:"Print JSON, for scripts and agents"`
+	JSON    bool     `help:"Print JSON, for scripts and agents (a list, with several projects)"`
 }
 
 // accessResult is what grant and revoke print with --json.
@@ -66,6 +68,9 @@ func isGroupRef(who string) bool { return strings.Contains(who, "/") }
 
 // Run implements access grant.
 func (c *AccessGrantCmd) Run(ctx *cliCtx) error {
+	if manyProjects(c.Project) {
+		return c.runMany(ctx)
+	}
 	project, err := projectFlag(c.Project)
 	if err != nil {
 		return err
@@ -112,6 +117,139 @@ func (c *AccessGrantCmd) Run(ctx *cliCtx) error {
 		res.Until, res.Ending = &e.Expires, e.Envs
 	}
 	return printAccess(res, c.JSON)
+}
+
+// manyProjects reports whether --project names several projects.
+func manyProjects(spec string) bool { return strings.ContainsAny(spec, ",*?[") }
+
+// resolveProjects expands a --project list or pattern into the shared
+// projects this account administers that it names, sorted.
+func resolveProjects(ctx context.Context, a *account.Account, spec string) ([]string, error) {
+	list, err := a.TeamSummaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, pat := range strings.Split(spec, ",") {
+		pat = strings.TrimSpace(pat)
+		if pat == "" {
+			continue
+		}
+		if _, err := path.Match(pat, ""); err != nil {
+			return nil, fmt.Errorf("invalid pattern %q", pat)
+		}
+		found := false
+		for _, p := range list {
+			if ok, _ := path.Match(pat, p.ID); ok && p.Admin && !p.Archived {
+				found = true
+				if !slices.Contains(out, p.ID) {
+					out = append(out, p.ID)
+				}
+			}
+		}
+		if !found && !strings.ContainsAny(pat, "*?[") {
+			return nil, fmt.Errorf("%s is not a shared project you administer", pat)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no shared project you administer matches %s", spec)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// envsIn keeps the environments a project has, when skip is set; without
+// it, the grant itself refuses one it lacks.
+func envsIn(ctx context.Context, a *account.Account, project string, envs []string, skip bool) ([]string, error) {
+	if !skip {
+		return envs, nil
+	}
+	v, err := a.Team(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(slices.Clone(envs), func(n string) bool { _, ok := v.State.Envs[n]; return !ok }), nil
+}
+
+// runMany grants across several projects, one result each; it goes on past
+// a project that fails, and fails at the end.
+func (c *AccessGrantCmd) runMany(ctx *cliCtx) error {
+	if c.For != "" || c.AccountKey != "" {
+		return errors.New("--for and --account-key take one project at a time")
+	}
+	if !c.Admin && len(c.Env) == 0 {
+		return errors.New("say what they may read with --env dev[,prod], or make a person an admin with --admin")
+	}
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(30 * time.Minute)
+	defer cancel()
+	projects, err := resolveProjects(bg, a, c.Project)
+	if err != nil {
+		return err
+	}
+	return eachProject(projects, c.JSON, func(project string) (*accessResult, error) {
+		envs, err := envsIn(bg, a, project, c.Env, c.SkipMissingEnv)
+		if err != nil {
+			return nil, err
+		}
+		if !c.Admin && len(envs) == 0 {
+			return &accessResult{Project: project, Who: c.Who, Kind: "skipped", Reads: []string{}, Sent: []string{}, Missing: []string{}, Rotate: []string{}, Pending: []string{}}, nil
+		}
+		if isGroupRef(c.Who) {
+			return grantGroupMore(bg, a, project, c.Who, envs, false)
+		}
+		return grantPerson(bg, a, project, c.Who, envs, c.Admin, "")
+	})
+}
+
+// manyResult is one project's result of a grant or revoke over several.
+type manyResult struct {
+	*accessResult
+
+	Error string `json:"error,omitempty"`
+}
+
+// eachProject runs fn on each project, prints each result, and fails if
+// any did.
+func eachProject(projects []string, asJSON bool, fn func(project string) (*accessResult, error)) error {
+	var out []manyResult
+	failed := 0
+	for _, p := range projects {
+		res, err := fn(p)
+		if err != nil {
+			failed++
+			if res == nil {
+				res = &accessResult{Project: p}
+			}
+			out = append(out, manyResult{accessResult: res, Error: err.Error()})
+			if !asJSON {
+				fmt.Fprintf(os.Stderr, "! %s: %v\n", p, err)
+			}
+			continue
+		}
+		out = append(out, manyResult{accessResult: res})
+		if !asJSON {
+			if res.Kind == "skipped" {
+				fmt.Printf("- %s: has none of those environments\n", p)
+				continue
+			}
+			if err := printAccess(res, false); err != nil {
+				return err
+			}
+		}
+	}
+	if asJSON {
+		if err := printJSON(out); err != nil {
+			return err
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d project(s) failed", failed, len(projects))
+	}
+	return nil
 }
 
 // grantPerson adds a person, or adds to what a member reads.
@@ -206,6 +344,9 @@ func grantGroupMore(ctx context.Context, a *account.Account, project, group stri
 
 // Run implements access revoke.
 func (c *AccessRevokeCmd) Run(ctx *cliCtx) error {
+	if manyProjects(c.Project) {
+		return c.runMany(ctx)
+	}
 	project, err := projectFlag(c.Project)
 	if err != nil {
 		return err
@@ -233,6 +374,33 @@ func (c *AccessRevokeCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	return printAccess(res, c.JSON)
+}
+
+// runMany revokes across several projects, after asking once.
+func (c *AccessRevokeCmd) runMany(ctx *cliCtx) error {
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(30 * time.Minute)
+	defer cancel()
+	projects, err := resolveProjects(bg, a, c.Project)
+	if err != nil {
+		return err
+	}
+	what := "all access"
+	if len(c.Env) > 0 {
+		what = strings.Join(c.Env, ", ")
+	}
+	if !c.Yes && !confirm(fmt.Sprintf("Take %s away from %s in %d project(s): %s?", what, c.Who, len(projects), strings.Join(projects, ", "))) {
+		return errors.New("cancelled")
+	}
+	return eachProject(projects, c.JSON, func(project string) (*accessResult, error) {
+		if isGroupRef(c.Who) {
+			return grantGroupMore(bg, a, project, c.Who, c.Env, true)
+		}
+		return revokePerson(bg, a, project, c.Who, c.Env, c.Reason)
+	})
 }
 
 func revokePerson(ctx context.Context, a *account.Account, project, login string, envs []string, reason string) (*accessResult, error) {
@@ -350,6 +518,13 @@ func (c *AccessOffboardCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan, c
 			return printJSON(out)
 		}
 		return nil
+	}
+	if c.JSON && !c.Yes {
+		// The plan goes to stderr: stdout stays JSON.
+		fmt.Fprintf(os.Stderr, "%s reads:\n", c.Login)
+		for _, it := range items {
+			fmt.Fprintln(os.Stderr, "  "+offboardLine(it))
+		}
 	}
 	if !c.Yes && !confirm(fmt.Sprintf("Take all of it away from %s?", c.Login)) {
 		return errors.New("cancelled")

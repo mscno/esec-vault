@@ -22,8 +22,10 @@
 </details>
 {{template "foot" .}}
 
-{{define "groups-list"}}<div id="groups-list" class="scroll">
-<table>
+{{define "groups-list"}}<div id="groups-list">
+<div class="filterbar"><input type="search" class="filter" placeholder="Filter groups, people, projects" aria-label="Filter groups, people, projects" data-filter="#groups-table" hidden> <span id="groups-table-count" class="muted"></span></div>
+<div class="scroll">
+<table id="groups-table">
   <thead><tr><th>Group</th><th>You</th><th>People</th><th>Machines</th><th>Tokens</th><th>Reads</th><th>Needs</th><th>Last used</th></tr></thead>
   <tbody>
   {{range .Groups}}

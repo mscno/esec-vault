@@ -163,9 +163,9 @@
   <tr id="cred-{{.ID}}">
     <td><strong>{{.Name}}</strong>{{if .Suspended}} <span class="badge status-revoked">blocked</span>{{else if not .HasKey}} <span class="badge status-pending">key not sent</span>{{end}}<br><span class="muted">{{.ID}}</span></td>
     <td>{{.Policy}}</td>
-    <td>{{with .KMS}}<span class="badge">{{.Provider}}</span> <code title="{{.Name}}">{{short .Name}}</code>{{end}}</td>
+    <td>{{with .KMSName}}<span class="badge status-active">{{.}}</span> {{end}}{{with .KMS}}<span class="badge">{{.Provider}}</span> <code title="{{.Name}}">{{short .Name}}</code>{{end}}</td>
     <td>{{when .LastUsed}}{{if and $.ShowOps .LastIP}}<br><span class="muted">{{.LastIP}}, {{plural .Uses "fetch"}}</span>{{end}}</td>
-    <td>{{if and $.MyAdmin (not .Suspended)}}<form method="post" action="/groups/{{$.Group}}/remove" data-confirm="Remove the workload {{.Name}}? It gets no keys from its next start." {{dsPost (printf "/groups/%s/remove" $.Group)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="cred" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
+    <td class="actions"><button type="button" class="copy secondary" data-copy="{{.Descriptor}}" hidden>Copy descriptor</button> {{if and $.MyAdmin (not .Suspended)}}<form method="post" action="/groups/{{$.Group}}/remove" class="inline" data-confirm="Remove the workload {{.Name}}? It gets no keys from its next start." {{dsPost (printf "/groups/%s/remove" $.Group)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="cred" value="{{.ID}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
   </tr>
   {{end}}
   </tbody>
@@ -251,7 +251,7 @@
 </table>
 </div>{{end}}
 
-{{define "group-activity"}}<div id="group-activity" class="scroll">
+{{define "group-activity"}}<div id="group-activity" class="scroll">{{if .ShowOps}}
 <table>
   <thead><tr><th>Time</th><th>Event</th><th>By</th><th>Detail</th><th>Address</th></tr></thead>
   <tbody>
@@ -262,7 +262,7 @@
   {{end}}
   </tbody>
 </table>
-</div>{{end}}
+{{end}}</div>{{end}}
 
 {{/* A web change in words. */}}
 {{define "change-reads"}}{{if .Admin}}everything, as an admin{{else if .Envs}}{{range $i, $e := .Envs}}{{if $i}}, {{end}}{{$e}}{{end}}{{else}}nothing{{end}}{{end}}

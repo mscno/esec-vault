@@ -144,7 +144,9 @@ func (s *Server) apiProjects(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		if !ok {
 			continue
 		}
-		sum := wire.ProjectSummary{ID: id, Seq: st.Seq, Admin: m.Admin, Envs: st.Access(c.user.ID), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Groups: len(st.ActiveGroups()), Rotations: len(st.Rotations()), Archived: st.Archived}
+		sum := wire.ProjectSummary{ID: id, Seq: st.Seq, Admin: m.Admin, Envs: st.Access(c.user.ID), Members: len(st.ActiveMembers()), Machines: len(st.ActiveMachines()), Groups: len(st.ActiveGroups()), Archived: st.Archived}
+		sum.Rotate = s.exposedEnvs(ctx, st)
+		sum.Rotations = len(sum.Rotate)
 		if st.Successor != nil {
 			sum.Successor = st.Successor.Project
 		}

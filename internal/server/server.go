@@ -263,6 +263,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /orgs/{org}/workloads", s.webOrgTab(orgTabWorkloads))
 	m.HandleFunc("GET /orgs/{org}/settings", s.webOrgTab(orgTabSettings))
 	m.HandleFunc("GET /orgs/{org}/export", s.webOrgExport)
+	m.HandleFunc("GET /orgs/{org}/live/{tab}", s.webOrgLive)
 	m.HandleFunc("POST /orgs/{org}/policy", s.webOrgPolicy)
 	m.HandleFunc("POST /orgs/{org}/claim", s.webOrgClaim)
 	m.HandleFunc("POST /orgs/{org}/people", s.webOrgAddPerson)

@@ -1,3 +1,59 @@
+# v0.20.0
+
+Running many projects, environments and apps; findings of a security
+review.
+
+- **`esec vault todo`**: everything that waits for you across every
+  project, group and organisation, from the chains your device checks:
+  keys to rotate, web changes to sign, machines asking to join,
+  organisations to confirm, people who left and are still in, workloads on
+  keys not approved. `--json` for scripts and agents.
+- **`esec vault access list --needs rotate [--org acme]`**: every
+  environment, across projects, whose key someone who left may hold. The
+  counts on `access list`, the Projects page and organisation pages now
+  include keys exposed through groups, which they left out.
+- **Grants and revokes across projects**: `--project acme/api,acme/web` or
+  `--project 'acme/*'` (the projects you administer), with
+  `--skip-missing-env` where environments differ; one JSON result each.
+- **Workloads at scale**: `esec vault org workloads acme` (`--kms`,
+  `--never-started`, `--idle 30d`, `--problems`, `--json`, with
+  descriptors); `esec vault org rekey acme --to gcp-prod-2 [--from ...]
+  [--dry-run]` moves workloads across groups at once;
+  `group rekey-workloads --kms NAME` takes an approved key by name.
+- **`esec vault org fly-app acme api web worker`**: several apps in one
+  command, each with its own group and, by default, its own key; `--json`
+  prints each app's descriptor. Running it again says when it moved an app
+  to another key.
+- **A key per app by default**: `esec vault kms setup gcp` makes `esec-APP`
+  for each app, which only that app may decrypt with, and with `--apply
+  --approve` approves each in the organisation for that app's group. One
+  shared key (`--key`) let each app decrypt what is wrapped for the others,
+  should the server hand it over.
+- **Safe to run again**: `group create`, `group add`, `org create`, `org add`
+  and `access create` succeed with "nothing changed" when it is in place.
+- **Web pages**: filters on the tables of Projects, Groups, Access and
+  organisations, with chips on Workloads (never started, key problems,
+  blocked, by key); copy buttons and filters keep working after a form; the
+  organisation page refreshes changes waiting and workloads by itself (a
+  new app's descriptor shows once a device signed it); dismissing keeps the
+  tab; group pages show a workload's approved key and a Copy descriptor
+  button; organisation pages build what each person reads only on People.
+- `access offboard --json` shows the plan before it asks.
+- Security review fixes:
+  - an organisation chain is anchored only by a link signed with the
+    person's current user key, so a revoked device's old key cannot make
+    their devices trust a chain it made up;
+  - devices refuse removals the server signed in an organisation whose
+    rules forbid server signing;
+  - a group's machine activity (addresses, refused attempts, OIDC claims)
+    and a project's addresses show to admins only, on live updates too;
+  - a workload's rate limit counts only requests whose OIDC token checks
+    out, so knowing its descriptor is not enough to lock it out;
+  - organisation pages name no project to someone who may not set it up,
+    and a group page names no project to someone who may not change it;
+  - removing a workload reminds you to remove its IAM binding or OpenBao
+    role, and moving workloads off a key says when to rotate the group key.
+
 # v0.19.1
 
 Fixes from a review of the organisations.

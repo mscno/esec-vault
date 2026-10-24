@@ -431,7 +431,7 @@ func (s *Server) checkClaim(ctx context.Context, tx *sql.Tx, org, user string, s
 	if active == 1 {
 		return nil
 	}
-	return clientErr(http.StatusForbidden, wire.ErrForbidden, "%s/... is in use on this server: only an admin of %s, the first of it, or a server admin, can set up %s", org, first.id, org)
+	return clientErr(http.StatusForbidden, wire.ErrForbidden, "%s/... is in use on this server: only an admin of the first project or group named %s/..., or a server admin, can set up %s", org, org, org)
 }
 
 // checkOrgLink checks what the chain cannot: that people added are those

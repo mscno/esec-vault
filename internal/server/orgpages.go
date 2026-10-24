@@ -212,8 +212,13 @@ func (s *Server) orgPageData(ctx context.Context, ws *webSession, org, tab strin
 	data["SettingsTime"] = os.SettingsTime
 	data["Created"] = os.Links[0].CTime
 	data["Creator"] = logins[os.Links[0].Signer]
-	if data["Roster"], err = s.orgRoster(ctx, os, logins); err != nil {
-		return nil, err
+	data["PeopleCount"] = len(os.People())
+	// What each person reads costs a look at every project and group: only
+	// the People tab (and the export) shows it.
+	if tab == orgTabPeople {
+		if data["Roster"], err = s.orgRoster(ctx, os, logins); err != nil {
+			return nil, err
+		}
 	}
 	if data["Former"], err = s.orgFormer(ctx, os, logins); err != nil {
 		return nil, err
@@ -920,6 +925,29 @@ func (s *Server) webOrgWorkloadRemove(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// webOrgLive refreshes what changes on an organisation's page by itself:
+// changes waiting, and on the Workloads tab, when apps last started.
+func (s *Server) webOrgLive(w http.ResponseWriter, r *http.Request) {
+	ws := s.dsSession(w, r)
+	if ws == nil {
+		return
+	}
+	tab := r.PathValue("tab")
+	if tab != orgTabPeople && tab != orgTabWorkloads && tab != orgTabSettings {
+		tab = orgTabOverview
+	}
+	data, err := s.orgPageData(r.Context(), ws, r.PathValue("org"), tab)
+	if err != nil {
+		s.dsFail(w, r, err)
+		return
+	}
+	parts := []string{"org-alerts"}
+	if tab == orgTabWorkloads && data["Chain"] != nil {
+		parts = append(parts, "org-workloads-list")
+	}
+	s.dsPatch(w, r, data, parts...)
+}
+
 func (s *Server) webOrgDismiss(w http.ResponseWriter, r *http.Request) {
 	// The changes show on every tab: come back to the one it was on.
 	tab := r.FormValue("tab")
@@ -938,7 +966,7 @@ func (s *Server) webOrgExport(w http.ResponseWriter, r *http.Request) {
 	if ws == nil {
 		return
 	}
-	data, err := s.orgPageData(r.Context(), ws, r.PathValue("org"), orgTabOverview)
+	data, err := s.orgPageData(r.Context(), ws, r.PathValue("org"), orgTabPeople)
 	if err != nil {
 		s.webFail(w, r, err)
 		return

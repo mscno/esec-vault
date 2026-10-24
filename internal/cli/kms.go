@@ -116,6 +116,7 @@ func (c *GroupWorkloadCmd) publicKey(key kms.Key) ([]byte, error) {
 type GroupRekeyWorkloadsCmd struct {
 	Group    string   `arg:"" help:"Group, such as acme/production"`
 	Workload []string `sep:"," help:"Only these workloads (default: all of the group's)"`
+	KMS      string   `name:"kms" help:"The organisation's approved key to move to, by name (or name the key with the flags below)"`
 
 	GCPKey            string `name:"gcp-key" help:"The new Cloud KMS key version"`
 	GCPProvider       string `name:"gcp-provider" help:"Workload identity provider for it"`
@@ -128,18 +129,6 @@ type GroupRekeyWorkloadsCmd struct {
 
 // Run implements group rekey-workloads.
 func (c *GroupRekeyWorkloadsCmd) Run(ctx *cliCtx) error {
-	w := GroupWorkloadCmd{GCPKey: c.GCPKey, GCPProvider: c.GCPProvider, GCPServiceAccount: c.GCPServiceAccount, OpenBaoKey: c.OpenBaoKey, OpenBaoRole: c.OpenBaoRole, OpenBaoAudience: c.OpenBaoAudience, PublicKey: c.PublicKey}
-	key, err := w.kmsKey()
-	if err != nil {
-		return err
-	}
-	pemText, err := w.publicKey(key)
-	if err != nil {
-		return err
-	}
-	if key.PublicKey, err = kms.PublicKeyFromPEM(pemText); err != nil {
-		return err
-	}
 	a, err := openAccount(ctx)
 	if err != nil {
 		return err
@@ -147,6 +136,27 @@ func (c *GroupRekeyWorkloadsCmd) Run(ctx *cliCtx) error {
 	id, err := groupID(a, c.Group)
 	if err != nil {
 		return err
+	}
+	var key kms.Key
+	if c.KMS != "" {
+		if c.GCPKey != "" || c.OpenBaoKey != "" {
+			return errors.New("use --kms NAME or the key's flags, not both")
+		}
+		if key, err = kmsKeyFromOrg(a, id, c.KMS); err != nil {
+			return err
+		}
+	} else {
+		w := GroupWorkloadCmd{GCPKey: c.GCPKey, GCPProvider: c.GCPProvider, GCPServiceAccount: c.GCPServiceAccount, OpenBaoKey: c.OpenBaoKey, OpenBaoRole: c.OpenBaoRole, OpenBaoAudience: c.OpenBaoAudience, PublicKey: c.PublicKey}
+		if key, err = w.kmsKey(); err != nil {
+			return err
+		}
+		pemText, err := w.publicKey(key)
+		if err != nil {
+			return err
+		}
+		if key.PublicKey, err = kms.PublicKeyFromPEM(pemText); err != nil {
+			return err
+		}
 	}
 	bg, cancel := timeout(2 * time.Minute)
 	defer cancel()
@@ -159,6 +169,7 @@ func (c *GroupRekeyWorkloadsCmd) Run(ctx *cliCtx) error {
 		return nil
 	}
 	fmt.Printf("✓ %s now unwrap with %s; their descriptors stay. Retire the old key once they have restarted.\n", strings.Join(moved, ", "), key.Name)
+	fmt.Printf("  The group key is the same: if the old KMS may be compromised, give the group a new one too: esec vault group rotate %s\n", id)
 	return nil
 }
 
@@ -220,22 +231,36 @@ func (c *KMSSetupOpenBaoCmd) Run(_ *cliCtx) error {
 // for workloads on Fly.io.
 type KMSSetupGCPCmd struct {
 	Project  string   `required:"" help:"GCP project id"`
-	Location string   `default:"europe-west1" help:"Where the key lives (pick one near your apps)"`
+	Location string   `default:"europe-west1" help:"Where the keys live (pick one near your apps)"`
 	KeyRing  string   `name:"keyring" default:"esec" help:"Key ring"`
-	Key      string   `default:"workloads" help:"Key name: one key may serve every app, or name one per app, such as esec-store with --fly-app store"`
+	Key      string   `help:"One key for every app named (default: a key per app, esec-APP, which only that app may decrypt with)"`
 	Pool     string   `default:"esec-workloads" help:"Workload identity pool"`
 	FlyOrg   string   `name:"fly-org" required:"" help:"Fly.io organisation slug (fly orgs list)"`
-	FlyApp   []string `name:"fly-app" sep:"," required:"" help:"Fly.io apps that may unwrap with the key"`
+	FlyApp   []string `name:"fly-app" sep:"," required:"" help:"Fly.io apps"`
+	Org      string   `help:"The vault organisation the apps belong to (default: the Fly.io organisation's name)"`
 	Apply    bool     `help:"Run the commands (gcloud must be signed in with rights on the project); default: print them"`
+	Approve  bool     `help:"With --apply: also approve each key in the organisation, for its app's group (ORG/APP) only"`
 }
 
 // Run implements kms setup gcp.
-func (c *KMSSetupGCPCmd) Run(_ *cliCtx) error {
+func (c *KMSSetupGCPCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // the steps, then running or printing them
 	name := regexp.MustCompile(`^[a-z0-9-]{1,63}$`)
-	for _, v := range append([]string{c.Project, c.Location, c.KeyRing, c.Key, c.Pool, c.FlyOrg}, c.FlyApp...) {
+	if c.Org == "" {
+		c.Org = c.FlyOrg
+	}
+	for _, v := range append([]string{c.Project, c.Location, c.KeyRing, c.Pool, c.FlyOrg, c.Org}, c.FlyApp...) {
 		if !name.MatchString(v) {
 			return fmt.Errorf("%q: use lowercase letters, digits and dashes", v)
 		}
+	}
+	if c.Key != "" && !name.MatchString(c.Key) {
+		return fmt.Errorf("%q: use lowercase letters, digits and dashes", c.Key)
+	}
+	if c.Approve && !c.Apply {
+		return errors.New("--approve needs --apply: the keys must exist before they are approved")
+	}
+	if c.Key != "" && len(c.FlyApp) > 1 {
+		fmt.Fprintln(os.Stderr, "Note: with one --key for several apps, each app's Machines may decrypt what is wrapped for the others; the vault hands each only its own, but a key per app (the default) keeps them apart even if the server does not.")
 	}
 	provider := "fly-" + c.FlyOrg
 	if len(provider) > 32 {
@@ -249,7 +274,6 @@ func (c *KMSSetupGCPCmd) Run(_ *cliCtx) error {
 	steps := [][]string{
 		{"gcloud", "services", "enable", "cloudkms.googleapis.com", "sts.googleapis.com", "iamcredentials.googleapis.com", "--project", c.Project},
 		{"gcloud", "kms", "keyrings", "create", c.KeyRing, "--location", c.Location, "--project", c.Project},
-		append([]string{"gcloud", "kms", "keys", "create", c.Key, "--purpose", "asymmetric-encryption", "--default-algorithm", "rsa-decrypt-oaep-3072-sha256", "--protection-level", "software"}, keyPath...),
 		{"gcloud", "iam", "workload-identity-pools", "create", c.Pool, "--location", "global", "--display-name", "esec vault workloads", "--project", c.Project},
 		{"gcloud", "iam", "workload-identity-pools", "providers", "create-oidc", provider, "--location", "global", "--workload-identity-pool", c.Pool,
 			"--issuer-uri", team.FlyIssuerBase + "/" + c.FlyOrg, "--attribute-mapping", "google.subject=assertion.sub,attribute.org=assertion.org_name,attribute.app=assertion.app_name",
@@ -266,11 +290,19 @@ func (c *KMSSetupGCPCmd) Run(_ *cliCtx) error {
 		}
 		number = strings.TrimSpace(string(out))
 	}
+	made := map[string]bool{}
 	for _, app := range c.FlyApp {
+		key := c.keyFor(app)
+		if !made[key] {
+			steps = append(steps, append([]string{"gcloud", "kms", "keys", "create", key, "--purpose", "asymmetric-encryption", "--default-algorithm", "rsa-decrypt-oaep-3072-sha256", "--protection-level", "software"}, keyPath...))
+			made[key] = true
+		}
 		member := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.app/%s", number, c.Pool, app)
-		steps = append(steps, append([]string{"gcloud", "kms", "keys", "add-iam-policy-binding", c.Key, "--member", member, "--role", "roles/cloudkms.cryptoKeyDecrypter"}, keyPath...))
+		steps = append(steps, append([]string{"gcloud", "kms", "keys", "add-iam-policy-binding", key, "--member", member, "--role", "roles/cloudkms.cryptoKeyDecrypter"}, keyPath...))
 	}
-	gcpKey := fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s/cryptoKeyVersions/1", c.Project, c.Location, c.KeyRing, c.Key)
+	gcpKey := func(key string) string {
+		return fmt.Sprintf("projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s/cryptoKeyVersions/1", c.Project, c.Location, c.KeyRing, key)
+	}
 	gcpProvider := fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s", number, c.Pool, provider)
 	if !c.Apply {
 		fmt.Println("# One-time Google Cloud setup (or run this command again with --apply):")
@@ -295,13 +327,73 @@ func (c *KMSSetupGCPCmd) Run(_ *cliCtx) error {
 			}
 		}
 	}
-	groups := ""
-	if len(c.FlyApp) == 1 && c.Key != "workloads" {
-		groups = " --groups ORG/" + c.FlyApp[0]
+	if c.Approve {
+		return c.approve(ctx, gcpKey, gcpProvider)
 	}
-	fmt.Printf("\nThen approve the key in your organisation (ORG), and set up each app:\n\n  esec vault org kms add ORG %s --gcp-key %s \\\n    --gcp-provider %s%s\n  esec vault org fly-app ORG %s --read ORG/PROJECT:prod --kms %s\n", c.Key, gcpKey, gcpProvider, groups, c.FlyApp[0], c.Key)
-	fmt.Println("\nOr on the organisation's web page: Settings › Approve a key, then Workloads › Add a Fly.io app.")
+	fmt.Printf("\nThen approve the keys in the organisation %s, and set up each app (or run this again with --apply --approve):\n\n", c.Org)
+	for _, app := range c.FlyApp {
+		key := c.keyFor(app)
+		groups := ""
+		if c.Key == "" {
+			groups = " --groups " + c.Org + "/" + app
+		}
+		fmt.Printf("  esec vault org kms add %s %s --gcp-key %s \\\n    --gcp-provider %s%s\n", c.Org, key, gcpKey(key), gcpProvider, groups)
+		fmt.Printf("  esec vault org fly-app %s %s --read %s/PROJECT:prod --kms %s\n\n", c.Org, app, c.Org, key)
+	}
+	fmt.Println("Or on the organisation's web page: Settings › Approve a key, then Workloads › Add a Fly.io app.")
 	fmt.Println("\nCost: a software key version is about $0.06 a month, and each workload start makes one decrypt (about $0.03 per 10,000). Token exchange is free.")
+	return nil
+}
+
+// keyFor returns the key an app's group key is wrapped with.
+func (c *KMSSetupGCPCmd) keyFor(app string) string {
+	if c.Key != "" {
+		return c.Key
+	}
+	return "esec-" + app
+}
+
+// approve approves each new key in the organisation, reading its public
+// half from Cloud KMS.
+func (c *KMSSetupGCPCmd) approve(ctx *cliCtx, gcpKey func(string) string, provider string) error {
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(5 * time.Minute)
+	defer cancel()
+	v, err := a.Org(bg, c.Org)
+	if err != nil {
+		return err
+	}
+	if v.State == nil {
+		return fmt.Errorf("%s has no organisation chain yet: esec vault org create %s", c.Org, c.Org)
+	}
+	done := map[string]bool{}
+	for _, app := range c.FlyApp {
+		key := c.keyFor(app)
+		if done[key] {
+			continue
+		}
+		done[key] = true
+		if _, ok := v.State.KMSByName(key); ok {
+			fmt.Printf("  %s is approved already\n", key)
+			continue
+		}
+		k, err := kms.WithPublicKey(bg, kms.Key{Provider: "gcp", Name: gcpKey(key), Audience: provider})
+		if err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+		var groups []string
+		if c.Key == "" {
+			groups = []string{c.Org + "/" + app}
+		}
+		if err := a.ApproveKMS(bg, c.Org, team.OrgKMSKey{Name: key, Key: k, Groups: groups}); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+		fmt.Printf("✓ %s approved %s%s\n", c.Org, key, map[bool]string{true: " for " + c.Org + "/" + app, false: ""}[c.Key == ""])
+	}
+	fmt.Printf("\nNow set up each app: esec vault org fly-app %s APP --read %s/PROJECT:prod (or on the Workloads page).\n", c.Org, c.Org)
 	return nil
 }
 

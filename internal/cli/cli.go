@@ -47,6 +47,7 @@ type cli struct {
 	Group       GroupCmd       `cmd:"" group:"team" help:"Groups of people or machines that read the same environments (acme/backend, acme/production)."`
 	Org         OrgCmd         `cmd:"" group:"team" help:"An organisation's projects, groups and policy (acme of acme/store)."`
 	Changes     ChangesCmd     `cmd:"" group:"team" help:"Sign the changes made on the web pages (members, access, machines)."`
+	Todo        TodoCmd        `cmd:"" group:"team" help:"What waits for you across every project, group and organisation."`
 	Delegate    DelegateCmd    `cmd:"" group:"team" help:"Passkeys and the server, which may sign some changes for you on the web."`
 	Devices     DevicesCmd     `cmd:"" group:"team" help:"List, approve, revoke and rename your devices."`
 	Index       IndexCmd       `cmd:"" group:"team" help:"Publish project and environment names (no secrets) for the web UI: on or off."`
