@@ -243,7 +243,9 @@ func (c *GroupCreateCmd) Run(ctx *cliCtx) error {
 	bg, cancel := timeout(time.Minute)
 	defer cancel()
 	// Running it again is fine: scripts may make sure a group is there.
-	if v, err := a.Group(bg, id); err == nil && v.State.Admin(a.State.User) {
+	// Only one this account created counts: being made an admin of a group
+	// someone else made needs no consent, and its key is theirs.
+	if v, err := a.Group(bg, id); err == nil && v.State.Admin(a.State.User) && v.State.Links[0].Signer == a.State.User && v.State.Links[0].SignerDelegate == "" {
 		fmt.Printf("✓ %s exists already, with you as an admin; nothing changed.\n", id)
 		return nil
 	}

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	vaultmachine "github.com/mscno/esec-vault/internal/machine"
 	"github.com/mscno/esec-vault/internal/server"
@@ -87,6 +88,12 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	}
 	failsWith(t, owner, "lets only its people", "access", "grant", "carol", "--env", "dev", p)
 	owner.run("", "access", "grant", "alice", "--env", "dev", p)
+	// A group someone else made, with the owner made its admin unasked, is
+	// not "already there" for the owner: its key is theirs.
+	ownerWords := regexpFind(t, owner.run("", "status", "--json"), `"account_key": "([^"]+)"`)
+	alice.run("", "group", "create", "acme/evil")
+	alice.run("", "group", "admin", "acme/evil", "mscno", "--account-key", ownerWords)
+	failsWith(t, owner, "exists already", "group", "create", "acme/evil")
 	owner.run("", "group", "create", "acme/backend")
 	owner.run("", "group", "add", "acme/backend", "alice")
 	owner.run("", "access", "grant", "acme/backend", "--env", "dev", p)
@@ -202,6 +209,18 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	owner.runJSON(&todo, "todo")
 	if len(todo) == 0 || todo[0].Kind != "rotate" {
 		t.Fatalf("todo: %+v", todo)
+	}
+	// Every one of them rotated across the checkouts in one go (a second
+	// after the removals: times count in seconds, and one in the same
+	// second as the new key counts as exposed still).
+	time.Sleep(1100 * time.Millisecond)
+	if out := owner.run("", "env", "rotate-exposed", "--root", repo, "--org", "acme", "--yes"); !strings.Contains(out, "acme/store dev: re-encrypted") {
+		t.Fatalf("env rotate-exposed:\n%s", out)
+	}
+	rot = nil
+	owner.runJSON(&rot, "access", "list", "--needs", "rotate", "--org", "acme")
+	if len(rot) != 0 {
+		t.Fatalf("still to rotate: %+v", rot)
 	}
 	// What a device can see: dave's shows his project, still to do.
 	dave.runJSON(&shown, "org", "acme")

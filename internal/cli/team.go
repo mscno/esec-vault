@@ -289,7 +289,8 @@ func (c *TeamCreateCmd) Run(ctx *cliCtx) error {
 	bg, cancel := timeout(2 * time.Minute)
 	defer cancel()
 	// Running it again is fine: scripts may make sure a project is shared.
-	if shared, admin, err := a.SharedRole(bg, project); err == nil && shared && admin {
+	// From the verified chain: a project this account created.
+	if v, err := a.Team(bg, project); err == nil && v.State.Admin(a.State.User) && v.State.Links[0].Signer == a.State.User && v.State.Links[0].SignerDelegate == "" {
 		fmt.Printf("✓ %s is shared already, with you as an admin; nothing changed.\n", project)
 		return nil
 	}

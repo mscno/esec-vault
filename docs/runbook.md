@@ -125,6 +125,38 @@ page; the invite waits for them.
 
 ### A Fly.io app, with no secret stored anywhere
 
+In the app's repository, beside its `fly.toml`:
+
+```sh
+esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app api --org acme --apply --approve   # once per app: its own key
+esec vault app init --env prod     # checks the repository, sets up the app, writes fly.toml, checks again
+git add fly.toml && git commit -m "esec vault workload" && fly deploy
+esec vault env status prod         # the app started with its keys
+```
+
+`app init` refuses to set anything up while the repository would ship a
+broken app: no secrets file for the environment, a value in the clear, a
+`.dockerignore` that leaves the encrypted file out of the image. It warns
+when the Dockerfile does not start the app through `esec-vault machine run`.
+Then it makes the app's group (`acme/api`), lets it read the environment
+(keeping what it reads already), adds the app as a workload bound to
+Fly.io's OIDC tokens of that app alone, wraps the group key with the app's
+own KMS key, and writes the descriptor into `fly.toml`.
+
+Before every deploy, in CI too, check it still holds:
+
+```sh
+esec vault app check --env prod    # exits 1 with how to fix each finding
+```
+
+It checks the files (nothing in the clear, each encrypted to the current
+key), `fly.toml` (the descriptor names a workload of that very app),
+`.dockerignore` and the Dockerfile, that the group reads the environment
+and has its key, that the workload's group key was sent, and that its KMS
+key is one the organisation approves.
+
+For several apps at once, or apps whose repositories you do not have:
+
 ```sh
 esec vault org fly-app acme api --read acme/api:prod --read acme/shared:prod
 ```
@@ -252,6 +284,42 @@ Setup commands (`group create`, `group add`, `org create`, `org add`,
 `access create`, `org fly-app`) are safe to run again, so a script can make
 sure things are in place.
 
+## Rotate a credential (a database password, an API key)
+
+The value lives in the encrypted files of each repository that uses it.
+Find them, give them the new value, deploy, check, then revoke the old one:
+
+```sh
+esec vault secrets where DATABASE_URL --root ~/src                          # every file that holds it
+esec vault secrets rotate DATABASE_URL --env prod --root ~/src --dry-run     # what would change
+esec vault secrets rotate DATABASE_URL --env prod --root ~/src               # asks for the new value
+```
+
+The value is typed (twice, never shown) or piped in (`op read ... |`), never
+put on the command line. `--generate 32` makes a random one for secrets you
+own (session keys, webhook secrets). Only that line of each file changes,
+and no private key is needed to write it; where your device has the key it
+reads the value back first. Then, in each repository:
+
+```sh
+git commit -am "rotate DATABASE_URL" && fly deploy
+esec vault env status prod --since 15m     # ✗ for each deployment still running with the old value
+```
+
+Revoke the old value at the database or provider only when every
+deployment shows ✓. One value in one repository: `esec vault secrets set
+API_KEY --env prod`.
+
+Keep values from slipping in unencrypted with a pre-commit check:
+
+```yaml
+# lefthook.yml
+pre-commit:
+  commands:
+    secrets:
+      run: esec vault secrets lint
+```
+
 ## Rotate keys
 
 **Environment keys** (the keys that encrypt the files). Rotate when someone
@@ -262,6 +330,14 @@ want one:
 ```sh
 esec vault env rotate prod               # in the repository: new key, files re-encrypted
 git commit -am "rotate prod" && fly deploy
+esec vault env status prod               # every deployment started with the new key
+```
+
+After someone leaves, everything at once, across your checkouts:
+
+```sh
+esec vault access list --needs rotate --org acme
+esec vault env rotate-exposed --root ~/src --org acme     # then commit and deploy each
 ```
 
 People get the new key by sync; groups get it sealed to the group key at
@@ -302,6 +378,10 @@ re-seals everything to your other devices.
 | `cloud KMS refused to decrypt` | the IAM binding for the app is missing: `kms setup gcp ... --apply` |
 | `the group key was not sent to it yet` | an admin's device sends it: `esec vault access sync` |
 | `... is archived` | the project was archived or moved; `esec vault access` shows where |
+| `app check`: `is left out of the image by .dockerignore` | add `!.env.prod` to `.dockerignore`: the file is encrypted |
+| `app check`: `encrypted to an earlier prod key` | the file was not re-encrypted after a rotation: `esec vault env rotate prod` in that repository |
+| `app check`: `bound to ... not to the app fly.toml names` | the descriptor belongs to another app: `esec vault app init` |
+| `secrets lint`: `in the clear` | a value was added after encrypting: `esec encrypt FILE` |
 | `the organisation acme has not approved that KMS key` | approve it first: `esec vault org kms add` (or Settings on the web) |
 | `acme is an organisation, and you are not in it` | an admin adds you: `esec vault org add acme LOGIN` |
 | `acme lets only its people into its projects and groups` | add them to the organisation first, or turn off `--members-only` |

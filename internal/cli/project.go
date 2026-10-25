@@ -223,10 +223,12 @@ func validateEnvName(env string) error {
 
 // EnvCmd manages human-named environments.
 type EnvCmd struct {
-	Add     EnvAddCmd     `cmd:"" help:"Create an environment key."`
-	List    EnvListCmd    `cmd:"" help:"List environment public keys."`
-	ShowKey EnvShowKeyCmd `cmd:"" help:"Print an environment private key after confirmation."`
-	Rotate  EnvRotateCmd  `cmd:"" help:"Replace an environment key and re-encrypt its files."`
+	Add           EnvAddCmd           `cmd:"" help:"Create an environment key."`
+	List          EnvListCmd          `cmd:"" help:"List environment public keys."`
+	ShowKey       EnvShowKeyCmd       `cmd:"" help:"Print an environment private key after confirmation."`
+	Rotate        EnvRotateCmd        `cmd:"" help:"Replace an environment key and re-encrypt its files."`
+	RotateExposed EnvRotateExposedCmd `cmd:"" name:"rotate-exposed" help:"Rotate, across checkouts, every environment whose key someone who left may hold."`
+	Status        EnvStatusCmd        `cmd:"" help:"What of an environment picked up its key or a change: people, machines, workloads."`
 }
 
 // EnvShowKeyCmd reveals one named environment's private key after confirmation.

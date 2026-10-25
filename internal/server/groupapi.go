@@ -1234,7 +1234,10 @@ func (s *Server) apiWorkloadKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	claims, ok := s.checkOIDC(w, r, req.OIDCToken, cred.OIDC, now)
 	if !ok {
-		_ = s.db.groupAudit(ctx, s.db.sql, req.Group, req.ID, ip, "keys_refused", cred.Name, now)
+		// Logged, up to a point: refusals must not push the rest out.
+		if s.limits.allow("workload-refused:"+req.Group+":"+req.ID, 30, time.Hour, now) {
+			_ = s.db.groupAudit(ctx, s.db.sql, req.Group, req.ID, ip, "keys_refused", cred.Name, now)
+		}
 		return
 	}
 	// Counted once its token checks out: anyone may know a workload's id

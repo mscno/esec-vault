@@ -1,3 +1,49 @@
+# v0.21.0
+
+Rotating credentials and keys, and setting up apps, with checks that
+catch mistakes before they ship; findings of another security review.
+
+- **`esec vault secrets`**: secrets files keep key names in the clear, so
+  values can be found and replaced without private keys, one line each.
+  - `secrets where KEY --root ~/src`: every file that holds a key.
+  - `secrets set KEY --env prod`: one value, typed twice unseen or piped,
+    never on the command line; `--generate 32` for random ones; read back
+    with this device's key where it has it.
+  - `secrets rotate KEY --env prod --root ~/src`: one new value in every
+    repository that uses it (a database password several services share).
+  - `secrets lint`: fails on a value in the clear and on a file encrypted to
+    an earlier or another key; for pre-commit hooks and CI.
+- **`esec vault env status prod [--since 15m]`**: which deployments started
+  with a change and which still run with what they had; people whose
+  devices lack the key. It exits 1 while any deployment is behind, so you
+  revoke an old credential only once nothing uses it.
+- **`esec vault env rotate-exposed --root ~/src`**: rotates every
+  environment someone who left may hold, across your checkouts, and sends
+  the new keys.
+- **`esec vault app init`**: sets up the app in a repository from its
+  fly.toml: checks the repository first (secrets file, nothing in the clear,
+  `.dockerignore`, Dockerfile), makes its group and workload, keeps what the
+  group reads, writes the descriptor into fly.toml, then checks it.
+- **`esec vault app check`**: a preflight before each deploy, in CI too:
+  files, fly.toml, `.dockerignore`, Dockerfile, the workload being that
+  app's, the group reading the environment and holding its key, the
+  workload's key sent, its KMS key approved. Each finding says how to fix
+  it; it exits 1 on any failure (`--strict`: on warnings too).
+- Security review fixes:
+  - `group create` and `org create` say "exists already" only for a group or
+    organisation this account created: someone else could make one first and
+    make you its admin unasked, and a script would then grant it prod;
+    `org fly-app` and `app init` likewise use an existing group only when
+    you, or someone in the anchored organisation, made it;
+  - `access create` checks the verified chain, not the server's word;
+  - `kms setup gcp --approve` refuses when another key is approved under the
+    name it would use;
+  - grants and revokes across projects warn about projects this device saw
+    that the server no longer lists;
+  - refused workload requests are logged up to a limit per hour, so they
+    cannot push the rest out of a group's log; refusal details on project
+    pages and exports are for admins.
+
 # v0.20.0
 
 Running many projects, environments and apps; findings of a security

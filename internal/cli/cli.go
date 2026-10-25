@@ -39,7 +39,8 @@ type cli struct {
 	Doctor DoctorCmd `cmd:"" group:"start" help:"Diagnose setup problems (unmigrated keyrings, loose permissions)."`
 
 	Project ProjectCmd `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
-	Env     EnvCmd     `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate."`
+	Env     EnvCmd     `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate, and what picked a change up."`
+	Secrets SecretsCmd `cmd:"" group:"secrets" help:"Find, set and rotate values in secrets files; check them before a commit."`
 	Run     RunCmd     `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
 	Keyring KeyringCmd `cmd:"" group:"secrets" help:"Manage the global keyring store."`
 
@@ -54,6 +55,7 @@ type cli struct {
 	AgentUnlock AgentUnlockCmd `cmd:"" group:"team" name:"agent-unlock" help:"Let an SSH-agent key unlock new devices (optional)."`
 
 	Machine MachineCmd `cmd:"" group:"machines" help:"Give CI jobs and apps their own keys to a shared project."`
+	App     AppCmd     `cmd:"" group:"machines" help:"Set up an app to read its secrets with no secret of its own, and check it before each deploy."`
 	KMS     KMSCmd     `cmd:"" name:"kms" group:"machines" help:"Set up a cloud KMS key for workloads that hold no secret."`
 
 	Backup   BackupCmd   `cmd:"" group:"backup" help:"Seal all keyrings and your identity into the vault blob."`

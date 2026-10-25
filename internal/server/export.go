@@ -151,6 +151,9 @@ func (s *Server) webTeamExport(w http.ResponseWriter, r *http.Request) {
 		row := exportRow{Time: e.Time, Source: "server", Actor: actorName(logins, st.Machines, e.Actor), Action: e.Action, Detail: e.Detail}
 		if showIP {
 			row.IP = e.IP
+		} else if e.Action == "machine_refused" || e.Action == "keys" {
+			// Claims and refusal reasons are the admins' to see.
+			row.Detail = ""
 		}
 		out = append(out, row)
 	}

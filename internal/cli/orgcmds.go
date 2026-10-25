@@ -43,7 +43,8 @@ func (c *OrgCreateCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(time.Minute)
 	defer cancel()
-	if v, err := a.Org(bg, c.Org); err == nil && v.State != nil && v.State.Admin(a.State.User) {
+	// Only one this account created, and this device anchored, counts.
+	if v, err := a.Org(bg, c.Org); err == nil && v.State != nil && v.Trusted && v.State.Admin(a.State.User) && v.State.Links[0].Signer == a.State.User && v.State.Links[0].SignerDelegate == "" {
 		fmt.Printf("✓ %s exists already, with you as an admin; nothing changed.\n", v.State.Org)
 		return nil
 	}

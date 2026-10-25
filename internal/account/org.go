@@ -780,6 +780,21 @@ func (a *Account) AddFlyApp(ctx context.Context, org string, app wire.FlyApp) (*
 			return fmt.Errorf("the group %s exists, and you are not its admin", app.Group)
 		}
 		exists = gs != nil
+		if exists {
+			// Whoever made the group made its key: only a group this
+			// account, or someone in the anchored organisation, made.
+			creator := gs.Links[0].Signer
+			os, err := t.org(org)
+			if err != nil {
+				return err
+			}
+			if creator != a.State.User && (os == nil || !t.trusted(os) || !os.In(creator)) {
+				return fmt.Errorf("the group %s exists, made by %s, who is not in the organisation %s: use another group (--group)", app.Group, groupActorLogin(gs, creator), org)
+			}
+			if !gs.Admin(a.State.User) {
+				return fmt.Errorf("the group %s exists, and you are not its admin", app.Group)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -821,4 +836,12 @@ func (a *Account) AddFlyApp(ctx context.Context, org string, app wire.FlyApp) (*
 	}
 	out.Ref, err = a.AddWorkload(ctx, app.Group, app.App, key.Key, policy)
 	return out, err
+}
+
+// groupActorLogin names a signer of a group chain.
+func groupActorLogin(gs *team.GroupState, user string) string {
+	if p, ok := gs.Admins[user]; ok {
+		return p.Login
+	}
+	return user
 }

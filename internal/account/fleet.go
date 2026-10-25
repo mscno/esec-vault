@@ -336,3 +336,21 @@ func nonNilStrings(v []string) []string {
 	}
 	return v
 }
+
+// SeenProjects lists the shared projects this device verified before, as
+// pinned in teams.toml: a server that leaves one out of a list cannot hide
+// that it did.
+func (a *Account) SeenProjects() ([]string, error) {
+	pins, err := loadTeamPins()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for p, pin := range pins.Projects {
+		if !pin.Archived {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}

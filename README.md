@@ -284,6 +284,27 @@ comparing the fingerprint. From then on, **Sign with passkey** on the Changes
 page opens the signer, which shows what you sign; one touch signs it. Your computer also shows a dialog for each change
 while the background service runs.
 
+### Rotate a database password, or any credential
+
+```sh
+esec vault secrets where DATABASE_URL --root ~/src           # every repository that uses it
+esec vault secrets rotate DATABASE_URL --env prod --root ~/src   # one new value, asked for unseen
+# commit and deploy each, then:
+esec vault env status prod --since 15m                       # which deployments still run the old one
+```
+
+Revoke the old value only when every deployment shows ✓. `esec vault
+secrets lint` in a pre-commit hook stops values committed in the clear.
+
+### Add a new app, safely
+
+In the app's repository, beside fly.toml:
+
+```sh
+esec vault app init --env prod    # checks the repository, sets up the app, writes fly.toml
+esec vault app check              # before each deploy, in CI too
+```
+
 ### Run many projects and apps
 
 ```sh

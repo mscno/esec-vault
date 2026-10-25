@@ -151,6 +151,25 @@ func resolveProjects(ctx context.Context, a *account.Account, spec string) ([]st
 			return nil, fmt.Errorf("%s is not a shared project you administer", pat)
 		}
 	}
+	// The list is the server's: say so if it leaves out a project this
+	// device saw that the patterns name.
+	listed := map[string]bool{}
+	for _, p := range list {
+		listed[p.ID] = true
+	}
+	if seen, err := a.SeenProjects(); err == nil {
+		for _, p := range seen {
+			if listed[p] {
+				continue
+			}
+			for _, pat := range strings.Split(spec, ",") {
+				if ok, _ := path.Match(strings.TrimSpace(pat), p); ok {
+					fmt.Fprintf(os.Stderr, "! the server no longer lists %s, which this device saw: it is not included; check it with esec vault access show --project %s\n", p, p)
+					break
+				}
+			}
+		}
+	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no shared project you administer matches %s", spec)
 	}

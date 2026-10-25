@@ -61,6 +61,67 @@ var commandDetails = map[string]string{
 		"esec vault access list --org acme",
 		"esec vault access list --needs rotate --org acme --json",
 	),
+	"secrets": `Secrets files keep key names in the clear and encrypt each value on its own, so a value can be found, and replaced, without the private key, and every other value keeps its ciphertext: the diff is one line.
+
+` + examples(
+		"esec vault secrets                          # this repository's secrets files",
+		"esec vault secrets list --root ~/src --json # every checkout",
+	),
+	"secrets where": examples(
+		"esec vault secrets where DATABASE_URL --root ~/src",
+		"esec vault secrets where db.password --env prod --json",
+	),
+	"secrets set": `Reads the value from the terminal (asked twice, never shown) or from one line of stdin, never from the command line, so it stays out of shell history. Where this device has the environment's key, it reads the value back before writing.
+
+` + examples(
+		"esec vault secrets set DATABASE_URL --env prod",
+		"esec vault secrets set SESSION_SECRET --env prod --generate 32",
+		"op read op://prod/db/url | esec vault secrets set DATABASE_URL --env prod",
+		"esec vault secrets set API_KEY --env staging --create",
+	),
+	"secrets rotate": `Gives a credential one new value in every repository under --root that holds it for --env: for a database password several services share. Then commit and deploy each, check with env status that every deployment restarted, and only then revoke the old value at its provider.
+
+` + examples(
+		"esec vault secrets rotate DATABASE_URL --env prod --root ~/src --dry-run",
+		"esec vault secrets rotate DATABASE_URL --env prod --root ~/src",
+		"esec vault secrets rotate SESSION_SECRET --env prod --generate 32 --yes",
+	),
+	"secrets lint": `Fails on a value in the clear (pasted in after encrypting), and on a file encrypted to a key that is not its environment's current one. Run it before each commit, with lefthook:
+
+    pre-commit:
+      commands:
+        secrets:
+          run: esec vault secrets lint
+
+` + examples(
+		"esec vault secrets lint",
+		"esec vault secrets lint --root ~/src --json",
+	),
+	"env status": `Deployments fetch their keys when they start, so one that has not started since a change still runs with what it had. --since counts from when you changed a value (a commit, a deploy); by default from when the environment's key last changed.
+
+` + examples(
+		"esec vault env status prod",
+		"esec vault env status prod --since 30m --json",
+		"esec vault env status prod --project acme/api --since 2026-10-25T10:00:00Z",
+	),
+	"env rotate-exposed": `Finds the checkouts under --root by their .esec-project, and rotates each environment someone who lost access may still hold, re-encrypting its files and sending the new key to everyone who reads it. Then commit and deploy each.
+
+` + examples(
+		"esec vault env rotate-exposed --root ~/src --dry-run",
+		"esec vault env rotate-exposed --root ~/src --org acme --yes --json",
+	),
+	"app init": `Run it in the app's repository, beside fly.toml. It checks the repository first (secrets file of the environment, nothing in the clear, .dockerignore, Dockerfile), sets up the app's group, what it reads and its workload, writes the descriptor into fly.toml, and then runs app check.
+
+` + examples(
+		"esec vault app init --env prod",
+		"esec vault app init --env staging --app store-staging --yes",
+	),
+	"app check": `A preflight for each deploy, in CI too: it exits non-zero when the app would not get its keys, saying how to fix each finding.
+
+` + examples(
+		"esec vault app check",
+		"esec vault app check --env prod --strict --json",
+	),
 	"todo": `Everything that waits for you, from the chains your device checks: keys to rotate, changes made on the web to sign, machines asking to join your groups, organisations to confirm, people who left an organisation and are still in its projects, and workloads on keys their organisation does not approve.
 
 ` + examples(

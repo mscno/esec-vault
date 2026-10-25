@@ -285,7 +285,7 @@
   <thead><tr><th>Time</th><th>Event</th><th>By</th><th>Detail</th><th>Address</th></tr></thead>
   <tbody>
   {{range .Activity}}
-  <tr><td class="nowrap">{{when .Time}}</td><td><span class="event{{if eq .Action "machine_refused"}} tone-bad{{end}}">{{.Label}}</span></td><td>{{or .ActorName .Actor}}</td><td>{{.Detail}}</td><td class="muted">{{if $.MyAdmin}}{{.IP}}{{end}}</td></tr>
+  <tr><td class="nowrap">{{when .Time}}</td><td><span class="event{{if eq .Action "machine_refused"}} tone-bad{{end}}">{{.Label}}</span></td><td>{{or .ActorName .Actor}}</td><td>{{if or $.MyAdmin (and (ne .Action "machine_refused") (ne .Action "keys"))}}{{.Detail}}{{end}}</td><td class="muted">{{if $.MyAdmin}}{{.IP}}{{end}}</td></tr>
   {{else}}
   <tr><td colspan="5" class="muted">No entries.</td></tr>
   {{end}}

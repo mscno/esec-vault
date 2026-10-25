@@ -376,13 +376,18 @@ func (c *KMSSetupGCPCmd) approve(ctx *cliCtx, gcpKey func(string) string, provid
 			continue
 		}
 		done[key] = true
-		if _, ok := v.State.KMSByName(key); ok {
-			fmt.Printf("  %s is approved already\n", key)
-			continue
-		}
 		k, err := kms.WithPublicKey(bg, kms.Key{Provider: "gcp", Name: gcpKey(key), Audience: provider})
 		if err != nil {
 			return fmt.Errorf("%s: %w", key, err)
+		}
+		if have, ok := v.State.KMSByName(key); ok {
+			// The same name must be this very key, or apps would be wrapped
+			// with another one.
+			if have.Key.Fingerprint() != k.Fingerprint() || have.Key.Audience != k.Audience || have.Key.Principal != k.Principal {
+				return fmt.Errorf("%s approved another key named %s (%s %s): withdraw it first (esec vault org kms remove %s %s), or name the keys apart (--key)", c.Org, key, have.Key.Provider, have.Key.Name, c.Org, key)
+			}
+			fmt.Printf("  %s is approved already\n", key)
+			continue
 		}
 		var groups []string
 		if c.Key == "" {
