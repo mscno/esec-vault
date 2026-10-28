@@ -16,18 +16,26 @@ public struct EnvView: Codable, Hashable, Sendable, Identifiable {
     public let key: String?
     /// none, session or touch.
     public let guardLevel: String
-    /// guarded, clear or missing: the key on this device.
+    /// clear (cached here), sealed (opens on first use), guarded (opens
+    /// with a touch) or missing (not shared with this person).
     public let here: String
     public let mismatch: Bool?
     /// The command that fixes what is wrong, if anything.
     public let action: String?
+    /// Who the key is sealed to, as esec.toml names them.
+    public let readers: [String]?
+    /// Readers not sealed in yet (no account, or no security key).
+    public let pending: [String]?
 
     public var id: String { name }
 
     enum CodingKeys: String, CodingKey {
-        case name, key, here, mismatch, action
+        case name, key, here, mismatch, action, readers, pending
         case guardLevel = "guard"
     }
+
+    /// The readers, parsed.
+    public var readerRefs: [ReaderRef] { (readers ?? []).map(ReaderRef.init) }
 
     public var isGuarded: Bool { guardLevel != "none" }
 }
@@ -301,4 +309,173 @@ public struct SetupItem: Codable, Hashable, Sendable, Identifiable {
         guard let first = args?.first else { return true }
         return !["daemon", "projects", "verify", "sync"].contains(first)
     }
+}
+
+// MARK: - Sealed keys
+
+/// A reader of an environment, parsed from esec.toml's readers: a person by
+/// GitHub id ("mads (gh:583231)"), a group ("group acme/backend"), a key
+/// ("deploy (age1…)"), or "me" before signing in. The login is for display;
+/// the numeric id is what counts.
+public struct ReaderRef: Hashable, Sendable, Identifiable {
+    public enum Kind: Hashable, Sendable {
+        case person(id: Int64, login: String)
+        case group(String)
+        case key(name: String, recipient: String)
+        case me
+        case other
+    }
+
+    public let raw: String
+    public let kind: Kind
+
+    public var id: String { raw }
+
+    public init(_ raw: String) {
+        self.raw = raw
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        if s == "me" {
+            kind = .me
+        } else if s.hasPrefix("group ") {
+            kind = .group(String(s.dropFirst(6)))
+        } else if s.hasSuffix(")"), let open = s.range(of: " (", options: .backwards) {
+            let label = String(s[..<open.lowerBound])
+            let inner = String(s[open.upperBound...].dropLast())
+            if inner.hasPrefix("gh:"), let id = Int64(inner.dropFirst(3)), id > 0 {
+                kind = .person(id: id, login: label)
+            } else {
+                kind = .key(name: label, recipient: inner)
+            }
+        } else if s.hasPrefix("age1") || s.hasPrefix("ssh-") {
+            kind = .key(name: "", recipient: s)
+        } else {
+            kind = .other
+        }
+    }
+
+    /// What people see.
+    public var display: String {
+        switch kind {
+        case let .person(_, login): login.isEmpty ? raw : login
+        case let .group(g): g
+        case let .key(name, recipient): name.isEmpty ? String(recipient.prefix(16)) + "…" : name
+        case .me: "you"
+        case .other: raw
+        }
+    }
+
+    /// The name to unshare with: a login, a key's name, or the group entry.
+    public var unshareName: String {
+        switch kind {
+        case let .person(_, login): login
+        case let .key(name, recipient): name.isEmpty ? recipient : name
+        case .group: raw
+        default: raw
+        }
+    }
+
+    /// A person's GitHub avatar, by numeric id, never by login.
+    public var avatarURL: URL? {
+        guard case let .person(id, _) = kind else { return nil }
+        return URL(string: "https://avatars.githubusercontent.com/u/\(id)?s=64")
+    }
+
+    public var isPerson: Bool {
+        switch kind {
+        case .person, .me: true
+        default: false
+        }
+    }
+}
+
+/// One environment's seal, from `esec-vault seal --all --json`.
+public struct SealView: Codable, Hashable, Sendable, Identifiable {
+    public struct Reader: Codable, Hashable, Sendable {
+        public let reader: String
+        public let display: String
+        public let keys: Int
+        public let pending: String?
+
+        public var ref: ReaderRef { ReaderRef(reader) }
+    }
+
+    public struct Problem: Codable, Hashable, Sendable {
+        public let env: String
+        /// fail or warn.
+        public let level: String
+        public let detail: String
+        public let fix: String?
+    }
+
+    public let project: String
+    public let root: String
+    public let env: String
+    public let guardLevel: String
+    public let sealed: Bool
+    public let readers: [Reader]
+    /// Why it should be sealed again.
+    public let stale: [String]?
+    public let problems: [Problem]?
+
+    public var id: String { project + " " + env }
+
+    enum CodingKeys: String, CodingKey {
+        case project, root, env, sealed, readers, stale, problems
+        case guardLevel = "guard"
+    }
+
+    public var isGuarded: Bool { guardLevel != "none" }
+    public var failures: [Problem] { (problems ?? []).filter { $0.level == "fail" } }
+    /// Reasons it should be sealed again that this machine could check.
+    public var resealReasons: [String] { (stale ?? []).filter { !$0.hasPrefix("could not check") } }
+    public var needsAttention: Bool { !sealed || !resealReasons.isEmpty || !failures.isEmpty }
+}
+
+/// `esec-vault security-keys list --json`.
+public struct SecurityKeyList: Codable, Hashable, Sendable {
+    public let source: String
+    public let keys: [SecurityKey]
+    public let unregistered: [DetectedKey]
+    public let unprovisioned: [String]
+    /// Why plugged-in keys could not be listed.
+    public let detect: String?
+}
+
+/// A registered security key.
+public struct SecurityKey: Codable, Hashable, Sendable, Identifiable {
+    public let id: String
+    /// yubikey or se.
+    public let kind: String
+    public let name: String
+    public let serial: String?
+    public let recipient: String
+    public let pluggedIn: Bool
+    public let tested: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, name, serial, recipient, tested
+        case pluggedIn = "plugged_in"
+    }
+}
+
+/// A plugged-in YubiKey with an age identity that is not registered.
+public struct DetectedKey: Codable, Hashable, Sendable, Identifiable {
+    public let serial: String
+    public let slot: String
+    public let name: String
+    public let recipient: String
+    public let pinPolicy: String?
+    public let touchPolicy: String?
+    public let command: String
+
+    public var id: String { recipient }
+
+    enum CodingKeys: String, CodingKey {
+        case serial, slot, name, recipient, command
+        case pinPolicy = "pin_policy"
+        case touchPolicy = "touch_policy"
+    }
+
+    /// Whether every decryption needs a touch.
+    public var touchAlways: Bool { (touchPolicy ?? "always").lowercased().hasPrefix("always") }
 }

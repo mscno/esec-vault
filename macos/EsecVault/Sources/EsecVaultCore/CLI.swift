@@ -103,6 +103,8 @@ public struct CLI: Sendable {
     public func guardStatus() async throws -> GuardStatus { try await json(GuardStatus.self, ["guard", "--json"]) }
     public func lastVerify() async throws -> VerifySaved { try await json(VerifySaved.self, ["verify", "--last", "--json"]) }
     public func verifyNow() async throws -> VerifyReport { try await json(VerifyReport.self, ["verify", "--json"]) }
+    public func seals() async throws -> [SealView] { try await json([SealView].self, ["seal", "--all", "--json"]) }
+    public func securityKeys() async throws -> SecurityKeyList { try await json(SecurityKeyList.self, ["security-keys", "list", "--json"]) }
     public func setup() async throws -> [SetupItem] { try await json([SetupItem].self, ["setup", "--check", "--json"]) }
     public func status() async throws -> Status { try await json(Status.self, ["status", "--json"]) }
     public func activity(project: String? = nil, limit: Int = 200) async throws -> [ActivityEntry] {

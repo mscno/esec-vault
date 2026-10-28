@@ -17,6 +17,9 @@ final class Store {
     var verify: VerifySaved?
     var status: Status?
     var activity: [ActivityEntry] = []
+    /// Every environment's seal across the checkouts here.
+    var seals: [SealView] = []
+    var securityKeys: SecurityKeyList?
     /// What is running now, shown in the toolbar.
     var busy: String?
     var message: String?
@@ -33,6 +36,12 @@ final class Store {
 
     /// What esec-vault setup --check reports.
     var setup: [SetupItem] = []
+
+    /// Seals that should be made again, or are broken, across checkouts.
+    var sealsToFix: [SealView] { seals.filter(\.needsAttention) }
+
+    /// Plugged-in YubiKeys not registered yet, for the sidebar badge.
+    var unregisteredKeys: Int { (securityKeys?.unregistered.count ?? 0) + (securityKeys?.unprovisioned.count ?? 0) }
 
     /// Setup steps still to do, for the sidebar badge.
     var setupTodo: Int { setup.filter { $0.state == .todo || $0.state == .warning }.count }
@@ -77,10 +86,12 @@ final class Store {
             async let g = cli.guardStatus()
             async let v = cli.lastVerify()
             async let a = cli.activity()
+            async let k = cli.securityKeys()
             projects = try await p
             guardStatus = try? await g
             verify = try? await v
             activity = (try? await a) ?? activity
+            securityKeys = (try? await k) ?? securityKeys
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -89,6 +100,9 @@ final class Store {
             lastStatus = Date()
             status = try? await cli.status()
             setup = (try? await cli.setup()) ?? setup
+            // seal resolves readers through the vault server: not on every
+            // file change.
+            seals = (try? await cli.seals()) ?? seals
         }
     }
 
@@ -248,6 +262,78 @@ final class Store {
     func guardEnv(_ project: String, _ env: String, level: String, in checkout: String?) async {
         await perform("Guarding \(env) — touch your security key…", ["guard", "enable", "--project", project, "--env", env, "--level", level], in: checkout, then: project)
     }
+
+    /// Stops guarding an environment: sealed to the readers' user keys again.
+    func unguardEnv(_ project: String, _ env: String, in checkout: String?) async {
+        await perform("Unguarding \(env) — touch your security key…", ["guard", "disable", "--project", project, "--env", env], in: checkout, then: project)
+    }
+
+    // MARK: Sharing
+
+    /// Shares environments with GitHub users, groups or keys.
+    func share(_ project: String, envs: [String], with who: [String], in checkout: String?) async -> Bool {
+        let touch = (details[project] ?? projects.first { $0.project == project })?.envs.contains { envs.contains($0.name) && $0.isGuarded } == true
+            ? " — touch your security key" : ""
+        return await perform("Sharing\(touch)…", ["share", envs.joined(separator: ","), "--with", who.joined(separator: ","), "--project", project], in: checkout, then: project)
+    }
+
+    /// Stops sharing an environment with someone, optionally rotating it.
+    func unshare(_ project: String, env: String, who: String, rotate: Bool, in checkout: String?) async {
+        var args = ["unshare", env, "--with", who, "--project", project]
+        if rotate { args += ["--rotate", "--yes"] }
+        await perform("Unsharing \(env)…", args, in: checkout, then: project)
+    }
+
+    /// Gives a CI job its own key. Without a destination the key is
+    /// returned, to show once; it is never kept.
+    func addCIKey(_ project: String, name: String, envs: [String], github: String?, fly: String?, in checkout: String?) async -> String? {
+        guard let cli, busy == nil else { return nil }
+        var args = ["ci", "add", name, "--env", envs.joined(separator: ","), "--project", project]
+        if let github, !github.isEmpty { args += ["--github", github] }
+        if let fly, !fly.isEmpty { args += ["--fly", fly] }
+        busy = "Adding the CI key \(name)…"
+        defer { busy = nil }
+        var key: String?
+        do {
+            let out = String(decoding: try await cli.run(args, in: checkout), as: UTF8.self)
+            key = out.split(separator: "\n").first { $0.hasPrefix("AGE-SECRET-KEY-1") }.map(String.init)
+            message = out.split(separator: "\n").last.map(String.init)
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+        await refresh(full: true)
+        await loadDetail(project)
+        return key
+    }
+
+    // MARK: Seals
+
+    /// Seals again what changed, across checkouts. Guarded ones need a touch each.
+    func sealAgain() async {
+        await perform("Sealing again — guarded ones need a touch each…", ["seal", "sync", "--all"])
+    }
+
+    /// Reseals every guarded environment with the recovery phrase, in Terminal.
+    func recoverSeals() { runInTerminal(["seal", "recover", "--all"]) }
+
+    // MARK: Security keys
+
+    func addSecurityKey(name: String?) async {
+        var args = ["security-keys", "add"]
+        if let name, !name.isEmpty { args += ["--name", name] }
+        await perform("Registering the security key…", args)
+    }
+
+    func removeSecurityKey(_ id: String) async {
+        await perform("Removing the security key…", ["security-keys", "remove", id])
+    }
+
+    func testSecurityKey(_ id: String) async {
+        await perform("Testing — touch your security key…", ["security-keys", "test", id])
+    }
+
+    func setUpYubiKey() { runInTerminal(["security-keys", "setup"]) }
 
     func revealInFinder(_ path: String) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])

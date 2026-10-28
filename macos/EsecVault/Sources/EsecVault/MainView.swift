@@ -5,6 +5,7 @@ import SwiftUI
 enum Selection: Hashable {
     case health
     case activity
+    case securityKeys
     case project(String)
 }
 
@@ -27,6 +28,9 @@ struct MainView: View {
                 Label("Activity", systemImage: "list.bullet.rectangle")
                     .badge(store.activity.filter { $0.decision == "deny" && $0.ts > Date().addingTimeInterval(-86_400) }.count)
                     .tag(Selection.activity)
+                Label("Security Keys", systemImage: "key.horizontal")
+                    .badge(store.unregisteredKeys)
+                    .tag(Selection.securityKeys)
                 ForEach(store.namespaces, id: \.name) { group in
                     Section(group.name) {
                         ForEach(group.projects) { p in
@@ -55,6 +59,8 @@ struct MainView: View {
                 ProjectDetail(id: id)
             case .activity:
                 ActivityView()
+            case .securityKeys:
+                SecurityKeysView()
             default:
                 HealthView()
             }
@@ -90,9 +96,10 @@ struct MainView: View {
                 switch name {
                 case "overview": selection = .health
                 case "activity": selection = .activity
+                case "security-keys": selection = .securityKeys
                 default: selection = .project(name)
                 }
-            }, screens: ["overview", "activity"] + (ProcessInfo.processInfo.environment["ESEC_VAULT_SNAPSHOT_PROJECTS"] ?? "").split(separator: ",").map(String.init))
+            }, screens: ["overview", "activity", "security-keys"] + (ProcessInfo.processInfo.environment["ESEC_VAULT_SNAPSHOT_PROJECTS"] ?? "").split(separator: ",").map(String.init))
         }
         #endif
     }
