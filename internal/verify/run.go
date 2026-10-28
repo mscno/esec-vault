@@ -8,18 +8,23 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
+
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/remote"
+	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/workspace"
 )
 
 // Source names.
 const (
+	SourceSealed = "sealed in the repository"
 	SourceDevice = "this device"
 	SourceServer = "vault server"
 	SourceBackup = "backup"
@@ -70,7 +75,7 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	sources := []Source{{Name: SourceDevice, Projects: local}}
+	sources := []Source{{Name: SourceDevice, Projects: local}, sealedSource(checkouts)}
 	if opts.Server {
 		sources = append(sources, serverSource(ctx, opts))
 	}
@@ -190,4 +195,34 @@ func save(s *Saved) error {
 		return err
 	}
 	return os.Rename(tmp, LastFile())
+}
+
+// sealedSource lists the keys sealed in the checkouts' repositories with a
+// recovery key: each opens with the recovery phrase and the repository
+// alone, so it counts as a place the key is kept.
+func sealedSource(checkouts []string) Source {
+	s := Source{Name: SourceSealed, Projects: map[string]map[string]string{}}
+	for _, dir := range checkouts {
+		pf, err := projectfile.Load(dir)
+		if err != nil {
+			continue
+		}
+		recs, err := seal.LoadRecords(dir)
+		if err != nil {
+			continue
+		}
+		for env, rec := range recs {
+			if rec.Key == "" || len(rec.Recovery) == 0 || rec.Verify(pf.Project, env) != nil {
+				continue
+			}
+			if _, err := coreseal.Read(dir, env); err != nil {
+				continue
+			}
+			if s.Projects[pf.Project] == nil {
+				s.Projects[pf.Project] = map[string]string{}
+			}
+			s.Projects[pf.Project][keystore.GuardEntry(rec.Key)] = "sealed"
+		}
+	}
+	return s
 }

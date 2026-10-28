@@ -21,7 +21,7 @@ Both forms run the same program.
 - [Run a fleet of machines in groups](#run-a-fleet-of-machines-in-groups).
 - [Share keys with a teammate without a server](#share-project-keys-with-a-teammate).
 - [Run an application through the broker](#run-applications-through-the-broker).
-- [Guard prod keys with a YubiKey: every read needs your touch](#guard-prod-keys-with-a-yubikey).
+- [Keys live with the code: sealed in the repository, shared by GitHub username, prod behind your YubiKey](#keys-live-with-the-code-sealed-in-the-repository).
 - [Work with agents and many machines safely](#work-with-agents-and-many-machines).
 - [Keep track of every project, and make sure no key is lost](#every-project-on-this-machine).
 - [The Mac app](#the-mac-app).
@@ -350,8 +350,8 @@ esec vault access revoke alice --yes   # commands that ask take --yes (or --forc
 `access revoke`, `access offboard`, `group list`,
 `group show`, `machine list`, `machine whoami`, `devices list`, `env list`,
 `keyring list`, `delegate list`, `changes`, `projects`, `projects show`,
-`projects scan`, `guard`, `guard check`, `verify`, `verify --last` and
-`activity`. It shows names, public keys
+`projects scan`, `guard`, `seal`, `seal check`, `security-keys list`, `verify`,
+`verify --last` and `activity`. It shows names, public keys
 and fingerprints, never a private key.
 
 A command that would ask a question with no terminal attached, and no
@@ -367,15 +367,16 @@ messages to stderr.
 ### Start a project whose prod key is guarded from day one
 
 ```sh
-esec vault guard init                     # once: your YubiKeys and recovery phrase hold the guard
+esec vault security-keys add              # once: plug in your YubiKeys
 esec vault project init acme/api --env dev,staging,prod --guard prod
 esec vault secrets set STRIPE_KEY --env prod --create   # writing needs no touch
 esec vault run prod -- ./deploy           # a dialog, then a touch of the YubiKey
 ```
 
-The prod key exists in the clear on no disk: an agent running as you can
+The prod key exists in the clear on no disk, only sealed to your YubiKeys
+(and your recovery key) in `.esec/prod.age`: an agent running as you can
 read every file and still not get it. Details in
-[Guard prod keys with a YubiKey](#guard-prod-keys-with-a-yubikey).
+[Keys live with the code](#keys-live-with-the-code-sealed-in-the-repository).
 
 ### Let an agent work in a repository
 
@@ -710,14 +711,17 @@ format = "env"
 
 [env.dev]
 key = "1f0c…"        # the environment's current public key
+readers = ["mads (gh:583231)", "alice (gh:91022)"]
 
 [env.prod]
 key = "9a2e…"
+guard = "touch"
+readers = ["mads (gh:583231)", "deploy (age1…)"]
 ```
 
-Commit it to Git. It contains no private key. It names the project, how its
-secrets files are named, and each environment with its current public key
-and guard (see [Guard prod keys with a YubiKey](#guard-prod-keys-with-a-yubikey)).
+Commit it to Git with `.esec/`. It contains no private key. It names the
+project, how its secrets files are named, and each environment with its
+current public key, guard and readers (see [Keys live with the code](#keys-live-with-the-code-sealed-in-the-repository)).
 `env add`, `env rotate` and `guard enable` keep it up to date, changing only
 the lines they must, so your comments stay. `secrets lint` fails a file
 encrypted to another key than the one it names. Keys it does not know (from
@@ -1607,87 +1611,83 @@ esec vault lock
 Locking ends broker access. It does not stop backups or revoke direct access
 to plaintext working keyring files on your computer.
 
-## Guard prod keys with a YubiKey
+## Keys live with the code: sealed in the repository
 
-A guarded environment key opens only after you allow it in a dialog and
-touch your security key. No program can make that touch, so an agent (or
-anything else) running as you can read every file on the machine and still
-not read prod. The guard is built on [age](https://age-encryption.org) and
-`age-plugin-yubikey`, so the same YubiKeys you use with rage hold it.
+Every environment's private key is committed next to its secrets files, in
+`.esec/<env>.age`: a standard [age](https://age-encryption.org) file
+encrypted to the environment's **readers** and always to a **recovery
+key** your 24 words derive. Whoever can open it has the key; nothing needs
+to be synced, copied or remembered.
 
-### Set the guard up once
+```
+esec.toml            readers of each environment, by GitHub id
+.esec/dev.age        dev's key, sealed to its readers + recovery keys
+.esec/prod.age       prod's key, sealed to readers' YubiKeys + recovery keys
+.esec/seals.toml     signed record: who each seal was made for
+```
 
-Make a YubiKey slot with touch policy **always** (a **cached** touch lets
-other programs in for 15 seconds after yours), and the same on a spare key:
+- **No key is ever lost.** The repository and your phrase open every key,
+  in every commit, offline, with no server (`esec vault drill` proves it).
+  The pre-commit hook refuses a commit whose seal lacks a recovery key.
+- **Nobody handles a key string.** Readers are people by GitHub username,
+  pinned to their numeric id (`alice (gh:91022)`): a renamed or re-registered
+  login never inherits access. Their keys come from their signed chains on
+  the vault server, which the server cannot forge.
+- **Changes are reviewed like code.** Sharing is a diff in `esec.toml` and
+  `.esec/`; `.esec/seals.toml` is signed, so `secrets lint`, the hook and CI
+  catch a swapped key or a reader nobody sealed in.
+- **No lock-in.** `age -d -i IDENTITY .esec/dev.age` opens a key with no
+  esec at all.
+
+```sh
+esec vault project init acme/store --env dev,prod --guard prod
+esec vault share dev,staging --with alice          # GitHub login: pinned by id
+esec vault share prod --with alice                 # guarded: sealed to her YubiKeys
+esec vault unshare prod --with alice --rotate
+esec vault seal                                    # who reads what, what to seal again
+esec vault seal sync --all                         # reseal what changed; open what you can
+```
+
+Someone without an account yet is pinned by GitHub id and sealed in once
+they sign up (the Mac app, `setup` and `seal sync` do it). A new machine of
+yours needs only your identity (`esec vault setup`): every checkout opens
+at once, with no key sync.
+
+### Guard prod with your YubiKeys
+
+A guarded environment is sealed to its readers' **security keys** only, so
+no software key on any machine opens it: every read needs a dialog and a
+touch no agent can make. One touch opens one environment.
 
 ```sh
 brew install age-plugin-yubikey
-age-plugin-yubikey --generate --touch-policy always --pin-policy once   # on each YubiKey
-esec vault guard init        # every YubiKey age-plugin-yubikey lists, plus your recovery phrase
-esec vault guard             # who holds it, and what it guards
+esec vault security-keys setup        # a YubiKey with no age key yet: touch policy always
+esec vault security-keys add          # every plugged-in YubiKey: you name it, it goes in your chain
+esec vault guard enable --env prod    # or project init --guard prod
+esec vault run prod -- ./deploy       # dialog: what, which file, which programs asked; then the touch
 ```
 
-The guard is one age identity, wrapped to its holders: each YubiKey and the
-recovery key your 24-word phrase derives (its private half is stored
-nowhere). Environment keys are wrapped to the guard. Adding or removing a
-YubiKey rewraps only the guard:
+You never copy a recipient: plug a YubiKey in and the background service
+asks to add it. Your keys are in your signed chain, so everyone who seals for
+you uses them. After adding or removing one, guarded seals are made again:
+one touch each, or your phrase once (`esec vault seal recover --all`), which
+is also the way back when every security key is lost.
+
+**A blinking key with no esec dialog on screen is one not to touch.** A
+`session` key stays open in the service until `esec vault lock`; a `touch`
+key is opened for one read. Every read is in `esec vault activity`. Writing
+values needs only the public key: no touch.
+
+### CI and deploys: esec alone
 
 ```sh
-esec vault guard holders add                    # every plugged-in YubiKey; one touch of a current one
-esec vault guard holders remove age1yubikey1…   # a lost key
-esec vault guard recover --remove age1yubikey1… # every YubiKey lost: the phrase opens it, new ones hold it
+esec vault ci add deploy --env prod --fly acme-store          # secret stored with fly, never shown
+esec vault ci add actions --env staging --github acme/store   # with gh
 ```
 
-The wrapped guard and keys are ciphertext, so they sync to your other
-devices through the vault server and go into every backup like any key. Plug
-the YubiKey into any of your Macs and prod works there.
-
-### Guard environments
-
-```sh
-esec vault project init acme/api --env dev,prod --guard prod   # born guarded
-esec vault guard enable --env prod                             # an existing one
-esec vault guard enable --env staging --level session          # one touch per broker session
-esec vault env add preview --guard touch
-```
-
-`esec.toml` records each environment's guard (`guard = "touch"`). The level
-is also inside the encryption, so editing a keyring cannot lower it.
-
-Guarding an existing key removes its clear copy from this device's keyring.
-Older backups still hold it in software form: for full protection, rotate
-the key and its values once (`esec vault env rotate prod`). On your other
-devices, `esec vault guard` lists keys still in the clear there; run `guard
-enable` on each (it checks the guarded copy opens to the same key first).
-
-### Use a guarded key
-
-```sh
-esec vault run prod -- ./deploy          # dialog: what, which file, which programs asked
-esec vault env rotate prod               # one touch: opens the old key, guards the new one
-esec vault secrets set API_KEY --env prod   # writing needs only the public key: no touch
-```
-
-Reads go through the background service. Its dialog names the project,
-environment and file, and the programs that asked (`zsh ▸ claude ▸
-esec-vault`); only then does the YubiKey blink. **A blinking key with no
-esec dialog on screen is one not to touch.** Plain `esec run prod` reports
-that the key is guarded. `env show-key` never prints a guarded key.
-
-A `session` key stays open in the service's memory until `esec vault lock`
-or the broker session ends; a `touch` key is opened, used and dropped for
-each read. Every read is in `~/.config/esec/audit.log` with its caller.
-
-### Check and recover
-
-```sh
-esec vault guard check                   # one touch: every guarded key opens
-esec vault drill                         # the recovery phrase opens the guard and every guarded key
-esec vault guard export --out ~/esec-age # plain age files, for rage if esec is ever gone
-```
-
-With the export, `rage -d -j yubikey guard.age` opens the guard identity and
-`rage -d -i guard.key acme_api.prod.….age` a key, without this program.
+The CI gets its own age key, sealed into those environments, as the secret
+`ESEC_AGE_IDENTITY`; `esec run prod -- …` then needs nothing else. `esec vault
+ci remove deploy` takes it out.
 
 ## Work with agents and many machines
 
@@ -1712,7 +1712,7 @@ esec vault group token acme/agents-dev devbox --expires 90d --out -   # ESEC_VAU
 ```
 
 For the odd staging or prod need on a remote box, forward your Mac's
-guard over SSH, like `ssh -A` forwards an SSH agent:
+security key over SSH, like `ssh -A` forwards an SSH agent:
 
 ```sh
 esec vault forward devbox.example.com
@@ -1720,9 +1720,10 @@ esec vault forward devbox.example.com
 esec vault run prod -- ./migrate
 ```
 
-Each read shows a dialog on your Mac, naming the machine, and waits for your
-touch there. Only the values of that run cross; the keys never leave the
-Mac. A forwarded connection reads guarded keys only.
+Each read sends the environment's seal to your Mac, shows a dialog there
+naming the machine, and waits for your touch. Only the values of that run
+cross; the key never leaves the Mac. A forwarded connection reads guarded
+keys only.
 
 In an agent's shell:
 
@@ -1761,17 +1762,16 @@ holds no secret.
 
 ### Make sure no key is ever lost
 
-Keys are only ever added: a key is filed under its public key, and no
-command, sync or merge removes or changes it (guarding replaces the clear
-copy by the guarded one). A key is stored on the vault server (or your
-backup destination) before any file is encrypted to it: `project init`,
-`env add` and `env rotate` wait for that, and stop before writing files when
-it fails (`--offline` skips it on purpose).
+Every key is sealed in its repository, with your recovery key, before any
+file is encrypted to it: `project init`, `env add` and `env rotate` seal
+first, and stop before writing files when sealing fails. The keyring on each
+device is a cache of what you open; sync and backups keep working as a
+second copy.
 
 ```sh
 esec vault verify            # checkouts, git history, this device, the server, the newest backup
 esec vault verify --last     # what the background service found (it checks daily)
-esec vault drill             # the phrase alone opens the newest backup, and it holds every key
+esec vault drill             # the phrase alone opens every seal (and the newest backup)
 esec vault keyring repair    # file keys from older keyrings under their public key
 ```
 
@@ -2111,6 +2111,12 @@ Migration is explicit; installing the binary does not alter live keys.
 | Check setup and repository coverage | `esec vault doctor --dir ~/projects` |
 | Every project on this machine | `esec vault projects` |
 | Check no key can be lost | `esec vault verify` |
+| Share an environment with someone | `esec vault share dev --with LOGIN` |
+| See who reads what, and what to seal again | `esec vault seal` |
+| Register your YubiKeys | `esec vault security-keys add` |
+| Guard an environment | `esec vault guard enable --env prod` |
+| Give CI its own key | `esec vault ci add NAME --env prod --github OWNER/REPO` |
+| Every security key lost | `esec vault seal recover --all` |
 | See which programs and agents asked for keys | `esec vault activity` |
 | Prove the backup restores with the phrase | `esec vault drill` |
 | Guard an environment with your YubiKey | `esec vault guard enable --env prod` |

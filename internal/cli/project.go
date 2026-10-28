@@ -16,11 +16,13 @@ import (
 	"github.com/mscno/esec"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/safetext"
+	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/storage"
 	"github.com/mscno/esec/pkg/config"
 	"github.com/mscno/esec/pkg/crypto"
 	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
 )
 
 // ProjectCmd scaffolds projects.
@@ -38,7 +40,6 @@ type ProjectInitCmd struct {
 	Template bool     `default:"true" negatable:"" help:"Create secrets templates"`
 	Force    bool     `help:"Replace a different existing project id in esec.toml"`
 	Guard    []string `name:"guard" sep:"," help:"Environments whose keys are born guarded (every read needs a touch), such as prod"`
-	Offline  bool     `help:"Do not wait for the new keys to reach the vault server or backup before writing files"`
 	JSON     bool     `help:"Print what was set up as JSON (the project, its environments and keys, files created, next steps), for scripts and agents"`
 
 	ctx     *cliCtx
@@ -162,7 +163,10 @@ func (c *ProjectInitCmd) projectID() (string, error) {
 	return project, projectfile.ValidateOrgRepo(project)
 }
 
-func (c *ProjectInitCmd) create(project string) error {
+// freshKey is a key project init made, to seal.
+type freshKey struct{ env, priv, level string }
+
+func (c *ProjectInitCmd) create(project string) error { //nolint:gocyclo // keys, files, seals, in order
 	format, err := creationFormat(c.Dir, c.Format)
 	if err != nil {
 		return err
@@ -170,182 +174,131 @@ func (c *ProjectInitCmd) create(project string) error {
 	if _, err := templateContent(format, "", ""); err != nil {
 		return err
 	}
-	ks := keystore.New()
-	entries, err := readOrNew(ks, project)
+	for _, env := range c.Guard {
+		if !slices.Contains(c.Env, env) {
+			return fmt.Errorf("--guard %s: not one of --env", env)
+		}
+	}
+	s, err := newSealing(c.ctx)
 	if err != nil {
 		return err
 	}
-	files, err := prepareEnvironments(c, format, entries)
+	pf, err := projectfile.Load(c.Dir)
+	if errors.Is(err, projectfile.ErrNotFound) {
+		pf, err = &projectfile.File{}, nil
+	}
 	if err != nil {
 		return err
 	}
-	if err := c.guardNew(project, entries); err != nil {
+	if pf.Project != project {
+		// Another project's keys do not belong to this one.
+		pf.Env = nil
+	}
+	pf.Project = project
+	if pf.FilesFormat() == "" {
+		pf.Files.Format = strings.TrimPrefix(format, ".")
+	}
+	fresh, files, err := prepareEnvironments(c, s, pf, format)
+	if err != nil {
 		return err
 	}
-	if err := ks.WriteGuarded(project, entries); err != nil {
+	for _, k := range fresh {
+		if seal.Guarded(k.level) {
+			if keys, err := mySecurityKeys(s.bg(), s.acct); err != nil || len(keys) == 0 {
+				return fmt.Errorf("--guard %s: you have no security key yet to seal it to: plug in your YubiKey and run esec vault security-keys add (nothing was written)", k.env)
+			}
+		}
+	}
+	if err := os.MkdirAll(c.Dir, 0o750); err != nil {
+		return err
+	}
+	for _, k := range fresh {
+		if err := s.seal(c.Dir, pf, k.env, k.priv, k.level, nil); err != nil {
+			return err
+		}
+		if !seal.Guarded(k.level) {
+			if err := s.cache(project, k.env, k.priv); err != nil {
+				return err
+			}
+		}
+	}
+	if err := pf.Save(c.Dir); err != nil {
 		return err
 	}
 	markDirty("project init")
-	if err := requireStored(c.ctx, c.Offline, "project init"); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(c.Dir, 0750); err != nil {
-		return err
-	}
-	if err := c.writeProjectFile(project, format, entries); err != nil {
-		return err
-	}
 	for file, content := range files {
 		if err := writeNewTemplate(file, []byte(content)); err != nil {
 			return err
 		}
 		c.created = append(c.created, file)
 	}
-	if err := ensureGitignoreEntry(c.Dir, esec.DefaultKeyringFilename); err != nil {
-		return err
-	}
-	return nil
+	return ensureGitignoreEntry(c.Dir, esec.DefaultKeyringFilename)
 }
 
-// writeProjectFile records the project, its file format and each
-// environment's public key in esec.toml, keeping what else it says.
-func (c *ProjectInitCmd) writeProjectFile(project, format string, entries map[string]string) error {
-	f, err := projectfile.Load(c.Dir)
-	if errors.Is(err, projectfile.ErrNotFound) {
-		f, err = &projectfile.File{}, nil
-	}
-	if err != nil {
-		return err
-	}
-	if f.Project != project {
-		// Another project's keys do not belong to this one.
-		f.Env = nil
-	}
-	f.Project = project
-	if f.FilesFormat() == "" {
-		f.Files.Format = strings.TrimPrefix(format, ".")
-	}
-	for _, env := range c.Env {
-		pub, level := envPublic(entries, env)
-		if pub == "" {
-			continue
-		}
-		f.SetEnv(env, pub)
-		if e := f.Env[env]; level != projectfile.GuardNone && e.Guard == "" {
-			e.Guard = level
-			f.Env[env] = e
-		}
-	}
-	return f.Save(c.Dir)
-}
-
-// guardNew guards the keys of the --guard environments: they are wrapped
-// before the keyring is written, so they never exist in the clear on disk.
-func (c *ProjectInitCmd) guardNew(project string, entries map[string]string) error {
-	if len(c.Guard) == 0 {
-		return nil
-	}
-	var todo []string
-	for _, env := range c.Guard {
-		if !slices.Contains(c.Env, env) {
-			return fmt.Errorf("--guard %s: not one of --env", env)
-		}
-		if entries[keystore.GuardEnvEntry(env)] == "" {
-			todo = append(todo, env)
-		}
-	}
-	if len(todo) == 0 {
-		return nil
-	}
-	id, err := openGuard(fmt.Sprintf("Create guarded keys for %s: %s", project, strings.Join(todo, ", ")))
-	if err != nil {
-		return err
-	}
-	for _, env := range todo {
-		if _, err := guardEnv(entries, id, project, env, projectfile.GuardTouch); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// envPublic returns an environment's public key and guard level from
-// keyring entries, "" when it has no key.
-func envPublic(entries map[string]string, env string) (pub, level string) {
-	if p := entries[keystore.GuardEnvEntry(env)]; p != "" {
-		// The level is inside the encryption; esec.toml records it.
-		return strings.ToLower(p), projectfile.GuardTouch
-	}
-	if priv, ok := entries[environmentKey(env)]; ok {
-		if pub, err := publicHex(priv); err == nil {
-			return pub, projectfile.GuardNone
-		}
-	}
-	return "", ""
-}
-
-func prepareEnvironments(c *ProjectInitCmd, format string, entries map[string]string) (map[string]string, error) {
+// prepareEnvironments works out each environment's key: the one sealed
+// already (running init again changes nothing), one this device holds from
+// before, or a new one. It returns the keys to seal and the secrets files to
+// create.
+func prepareEnvironments(c *ProjectInitCmd, s *sealing, pf *projectfile.File, format string) ([]freshKey, map[string]string, error) {
 	files := map[string]string{}
+	var fresh []freshKey
 	cfg, err := config.LoadDir(c.Dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, env := range c.Env {
 		if err := validateEnvName(env); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		name := environmentKey(env)
-		// A guarded environment keeps its key: never make a clear one
-		// beside it.
-		guardedPub := strings.ToLower(entries[keystore.GuardEnvEntry(env)])
-		priv, exists := entries[name]
-		var pub string
-		var err error
-		switch {
-		case guardedPub != "":
-			pub = guardedPub
-		case exists:
-			pub, err = publicHex(priv)
-		default:
-			pub, priv, err = esec.GenerateKeypair()
-		}
-		if err != nil {
-			return nil, err
+		pub := pf.Env[env].Key
+		if _, serr := coreseal.Read(c.Dir, env); pub == "" || serr != nil {
+			level := projectfile.GuardNone
+			if slices.Contains(c.Guard, env) {
+				level = projectfile.GuardTouch
+			}
+			priv, ok := s.cached(pf.Project, env, pub)
+			if !ok {
+				var err error
+				if _, priv, err = esec.GenerateKeypair(); err != nil {
+					return nil, nil, err
+				}
+			}
+			if pub, err = publicHex(priv); err != nil {
+				return nil, nil, err
+			}
+			fresh = append(fresh, freshKey{env: env, priv: priv, level: level})
 		}
 		filename, err := config.Expand(cfg.Files.Create, env, format)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		file := filepath.Join(c.Dir, filename)
-		if c.Template {
-			if existing, _, err := fileutils.Resolve(c.Dir, env, format); err == nil {
-				file = existing
-			} else if !errors.Is(err, fileutils.ErrNotFound) {
-				return nil, err
-			}
-			data, readErr := os.ReadFile(file) //nolint:gosec // user-selected project directory and validated environment
-			switch {
-			case readErr == nil:
-				p, err := esec.ExtractPublicKey(data, esec.FileFormat(format))
-				if err != nil || hex.EncodeToString(p[:]) != pub {
-					return nil, fmt.Errorf("existing %s does not match stored key; import its key first", file)
-				}
-			case !errors.Is(readErr, os.ErrNotExist):
-				return nil, readErr
-			default:
-				_, content, err := secretsTemplate(c.Dir, format, env, pub)
-				if err != nil {
-					return nil, err
-				}
-				files[file] = string(content)
-			}
+		if !c.Template {
+			continue
 		}
-		if guardedPub == "" {
-			entries[name] = priv
-			entries[esec.EsecPrivateKey+"_"+strings.ToUpper(pub)] = priv
+		if existing, _, err := fileutils.Resolve(c.Dir, env, format); err == nil {
+			file = existing
+		} else if !errors.Is(err, fileutils.ErrNotFound) {
+			return nil, nil, err
+		}
+		data, readErr := os.ReadFile(file) //nolint:gosec // user-selected project directory and validated environment
+		switch {
+		case readErr == nil:
+			p, err := esec.ExtractPublicKey(data, esec.FileFormat(format))
+			if err != nil || hex.EncodeToString(p[:]) != pub {
+				return nil, nil, fmt.Errorf("existing %s is not encrypted to %s's key: rotate it (esec vault env rotate %s), or move it aside", file, env, env)
+			}
+		case !errors.Is(readErr, os.ErrNotExist):
+			return nil, nil, readErr
+		default:
+			_, content, err := secretsTemplate(c.Dir, format, env, pub)
+			if err != nil {
+				return nil, nil, err
+			}
+			files[file] = string(content)
 		}
 	}
-	return files, nil
+	return fresh, files, nil
 }
 
 func templateContent(format, env, pub string) (string, error) {
@@ -456,68 +409,63 @@ func (c *EnvShowKeyCmd) Run(ctx *cliCtx) error {
 // EnvAddCmd stores a new key and prints only its public half.
 type EnvAddCmd struct {
 	Env      string `arg:"" help:"Environment name"`
-	Project  string `help:"Project id"`
+	Project  string `help:"Project id (default: the checkout here)"`
 	Format   string `short:"f" help:"Template format (default: esec config)"`
 	Dir      string `type:"path" help:"Secrets directory (default: project marker directory)"`
 	Template bool   `default:"true" negatable:"" help:"Create an encrypted secrets file from an example or empty template"`
 	Guard    string `enum:"none,touch,session" default:"none" help:"Guard the new key: touch (every read needs a touch) or session"`
-	Offline  bool   `help:"Do not wait for the new key to reach the vault server or backup before writing its file"`
 }
 
-// Run stores a new key pair atomically.
+// Run makes a key, seals it for the project's readers, and creates the
+// environment's secrets file.
 func (c *EnvAddCmd) Run(ctx *cliCtx) error {
 	if err := validateEnvName(c.Env); err != nil {
 		return err
 	}
-	project, err := resolveProject(c.Project)
+	root, pf, err := checkoutFor(c.Project)
+	if c.Dir != "" {
+		// The secrets directory is in the project's checkout.
+		if dpf, droot, derr := projectRoot(c.Dir); derr == nil && (c.Project == "" || dpf.Project == c.Project) {
+			root, pf, err = droot, dpf, nil
+		}
+	}
 	if err != nil {
 		return err
 	}
-	ks := keystore.New()
-	entries, err := readOrNew(ks, project)
-	if err != nil {
-		return err
-	}
-	name := environmentKey(c.Env)
-	if _, ok := entries[name]; ok {
+	project := pf.Project
+	if pf.Env[c.Env].Key != "" {
 		return fmt.Errorf("environment %s already exists", c.Env)
+	}
+	s, err := newSealing(ctx)
+	if err != nil {
+		return err
 	}
 	pub, priv, err := esec.GenerateKeypair()
 	if err != nil {
 		return err
 	}
+	if c.Dir == "" {
+		c.Dir = root
+	}
 	file, content, err := c.prepareTemplate(project, pub)
 	if err != nil {
 		return err
 	}
-	if entries[keystore.GuardEnvEntry(c.Env)] != "" {
-		return fmt.Errorf("environment %s already exists (guarded)", c.Env)
-	}
-	entries[name] = priv
-	entries[keystore.PubEntry(pub)] = priv
-	if c.Guard != "" && c.Guard != projectfile.GuardNone {
-		id, err := openGuard(fmt.Sprintf("Create a guarded %s key for %s", c.Env, project))
-		if err != nil {
-			return err
-		}
-		if _, err := guardEnv(entries, id, project, c.Env, c.Guard); err != nil {
-			return err
-		}
-	}
-	if err := ks.WriteGuarded(project, entries); err != nil {
+	if err := s.seal(root, pf, c.Env, priv, c.Guard, projectReaders(pf)); err != nil {
 		return err
+	}
+	if !seal.Guarded(c.Guard) {
+		if err := s.cache(project, c.Env, priv); err != nil {
+			return err
+		}
 	}
 	markDirty("env add")
-	if err := requireStored(ctx, c.Offline, "env add"); err != nil {
-		return err
-	}
 	if file != "" {
 		if err := writeNewTemplate(file, content); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "Created encrypted secrets file %s\n", file)
 	}
-	c.recordEnv(project, pub)
 	fmt.Printf("ESEC_PUBLIC_KEY=%s\n", pub)
 	if shared, err := sharedProject(ctx, project); err != nil {
 		fmt.Fprintln(os.Stderr, "! "+err.Error())
@@ -527,26 +475,18 @@ func (c *EnvAddCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
-// recordEnv adds the environment to the project's esec.toml, when the
-// command runs in the project.
-func (c *EnvAddCmd) recordEnv(project, pub string) {
-	cwd, err := os.Getwd()
+// projectReaders are everyone who reads one of the project's environments:
+// a new environment is shared with them too.
+func projectReaders(pf *projectfile.File) []seal.Reader {
+	var all []string
+	for _, env := range pf.Envs() {
+		all = append(all, pf.Env[env].Readers...)
+	}
+	readers, err := seal.ParseReaders(all)
 	if err != nil {
-		return
+		return nil
 	}
-	f, path, err := projectfile.Find(cwd)
-	if err != nil || f.Project != project {
-		return
-	}
-	f.SetEnv(c.Env, pub)
-	if c.Guard != "" && c.Guard != projectfile.GuardNone {
-		e := f.Env[c.Env]
-		e.Guard = c.Guard
-		f.Env[c.Env] = e
-	}
-	if err := f.Save(filepath.Dir(path)); err != nil {
-		fmt.Fprintln(os.Stderr, "! esec.toml: "+err.Error())
-	}
+	return readers
 }
 
 // EnvListCmd lists public metadata.

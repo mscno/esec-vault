@@ -31,7 +31,7 @@ func TestProjectInitJSON(t *testing.T) {
 	r := newGuardRig(t)
 	repo := initTestRepo(t)
 	var first initResult
-	if err := json.Unmarshal([]byte(r.stdout(repo, "project", "init", "acme/store", "--env", "dev,prod", "--guard", "prod", "--format", "env", "--offline", "--json")), &first); err != nil {
+	if err := json.Unmarshal([]byte(r.stdout(repo, "project", "init", "acme/store", "--env", "dev,prod", "--guard", "prod", "--format", "env", "--json")), &first); err != nil {
 		t.Fatal(err)
 	}
 	if first.Project != "acme/store" || first.IDFrom != "argument" || first.Format != "env" || len(first.Envs) != 2 ||
@@ -39,7 +39,7 @@ func TestProjectInitJSON(t *testing.T) {
 		t.Fatalf("first: %+v", first)
 	}
 	var again initResult
-	if err := json.Unmarshal([]byte(r.stdout(repo, "project", "init", "acme/store", "--env", "dev,prod", "--guard", "prod", "--format", "env", "--offline", "--json")), &again); err != nil {
+	if err := json.Unmarshal([]byte(r.stdout(repo, "project", "init", "acme/store", "--env", "dev,prod", "--guard", "prod", "--format", "env", "--json")), &again); err != nil {
 		t.Fatal(err)
 	}
 	if len(again.Created) != 0 || again.Envs[0].Key != first.Envs[0].Key || again.Envs[1].Key != first.Envs[1].Key {
@@ -52,7 +52,7 @@ func TestProjectInitJSON(t *testing.T) {
 func TestPreCommitHook(t *testing.T) {
 	r := newGuardRig(t)
 	repo := initTestRepo(t)
-	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--format", "env", "--offline")
+	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--format", "env")
 	r.must(repo, "", "hook", "install")
 	if out := r.must(repo, "", "hook", "install"); !strings.Contains(out, "already") {
 		t.Fatalf("second install: %s", out)
@@ -126,6 +126,13 @@ func TestPreCommitHook(t *testing.T) {
 // it can: it finds the checkouts and guards here the keys guarded elsewhere.
 func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, step by step
 	r := newGuardRig(t)
+	// A machine with no identity yet.
+	r.home = filepath.Join(t.TempDir(), "fresh")
+	for i, kv := range r.env {
+		if strings.HasPrefix(kv, "ESEC_VAULT_HOME=") {
+			r.env[i] = "ESEC_VAULT_HOME=" + r.home
+		}
+	}
 	src := t.TempDir()
 	repo := filepath.Join(src, "store")
 	if err := os.MkdirAll(repo, 0o750); err != nil {
@@ -135,8 +142,6 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 		t.Fatal(err)
 	}
 	r.env = append(r.env, "ESEC_VAULT_NO_REGISTER=1")
-	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--format", "env", "--offline")
-	pf, _ := projectfile.Load(repo)
 
 	steps := func(out string) map[string]setupStep {
 		var list []setupStep
@@ -159,17 +164,17 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 	if m["identity"].Status != "todo" || !strings.Contains(m["identity"].Command, "esec vault init") {
 		t.Fatalf("identity: %+v", m["identity"])
 	}
-	if m["checkouts"].Status != "todo" && m["checkouts"].Status != "ok" {
-		t.Fatalf("checkouts: %+v", m["checkouts"])
-	}
 	out, _ = r.run("", "", "setup", "--no-daemon", "--root", src)
 	if strings.Contains(out, "identity: created") {
 		t.Fatalf("setup made an identity unasked: %s", out)
 	}
 
-	// With an identity: prod is guarded elsewhere, but its clear copy is
-	// still here (synced from before).
+	// With an identity and a project whose prod is guarded, but whose key
+	// is still cached here from before it was guarded.
 	r.must("", "", "identity", "init", "--no-passphrase", "--skip-confirm")
+	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--format", "env")
+	r.must("", "", "projects", "scan", src)
+	pf, _ := projectfile.Load(repo)
 	t.Setenv("ESEC_VAULT_HOME", r.home)
 	t.Setenv("ESEC_KEYRING_DIR", "")
 	before, err := keystore.New().Read("acme/store")
@@ -184,7 +189,7 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 	}
 
 	m = steps(r.must("", "", "setup", "--check", "--json", "--no-daemon", "--root", src))
-	if m["guard"].Status != "todo" || m["identity"].Status != "ok" {
+	if m["guard"].Status != "todo" || m["identity"].Status != "ok" || m["seals"].Status != "ok" {
 		t.Fatalf("check with a clear copy: %+v", m)
 	}
 	out, _ = r.run("", "", "setup", "--yes", "--json", "--no-daemon", "--root", src)
@@ -196,8 +201,21 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 	if _, isClear := entries[keystore.PubEntry(pf.Env["prod"].Key)]; isClear {
 		t.Fatal("the clear copy is still here")
 	}
-	if m["spare YubiKey"].Status != "todo" || m["recovery drill"].Status != "todo" {
+	if m["recovery drill"].Status != "todo" {
 		t.Fatalf("advice: %+v", m)
+	}
+
+	// A new machine with the same identity: setup opens dev from the
+	// repository into its keyring, with no sync.
+	if err := os.RemoveAll(filepath.Join(r.home, "keyrings")); err != nil {
+		t.Fatal(err)
+	}
+	r.run("", "", "setup", "--yes", "--json", "--no-daemon", "--root", src)
+	entries, _ = keystore.New().Read("acme/store")
+	if entries[keystore.PubEntry(pf.Env["dev"].Key)] == "" || entries[keystore.PubEntry(pf.Env["prod"].Key)] != "" {
+		toml, _ := os.ReadFile(filepath.Join(repo, "esec.toml"))           //nolint:gosec // a test checkout
+		recs, _ := os.ReadFile(filepath.Join(repo, ".esec", "seals.toml")) //nolint:gosec // a test checkout
+		t.Fatalf("after setup on a machine without keys: %v\n%s\n%s", keys(entries), toml, recs)
 	}
 }
 

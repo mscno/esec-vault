@@ -182,6 +182,7 @@ func (s *Server) webAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data["Notices"] = append(append(s.notices(devices, slots, len(links) > 0, enabledSlots, now), teamNotices...), alertNotice...)
+	data["SecurityKeys"] = s.securityKeyViews(ctx, ws.user.ID)
 	s.render(w, http.StatusOK, "account.html", data)
 }
 
@@ -697,4 +698,26 @@ func (s *Server) webAdminUser(w http.ResponseWriter, r *http.Request) {
 	data["Devices"] = devices
 	data["Activity"] = auditViews(rows, names, nil)
 	s.render(w, http.StatusOK, "adminuser.html", data)
+}
+
+// securityKeyViews lists a person's security keys from their verified chain,
+// newest last; none when the chain cannot be read.
+func (s *Server) securityKeyViews(ctx context.Context, user string) []map[string]any {
+	cs, err := s.db.userChains(ctx, s.db.sql)(user)
+	if err != nil || cs == nil {
+		return nil
+	}
+	var out []map[string]any
+	for _, k := range cs.SecurityKeys {
+		if !k.Active {
+			continue
+		}
+		out = append(out, map[string]any{"Name": k.Name, "Kind": k.Kind, "Serial": k.Serial, "Added": k.Added, "Seq": k.AddedSeq})
+	}
+	slices.SortFunc(out, func(a, b map[string]any) int {
+		x, _ := a["Seq"].(uint64)
+		y, _ := b["Seq"].(uint64)
+		return cmp.Compare(x, y)
+	})
+	return out
 }

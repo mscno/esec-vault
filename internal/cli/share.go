@@ -10,33 +10,6 @@ import (
 	"github.com/mscno/esec-vault/internal/share"
 )
 
-// ShareCmd seals project keys to team members.
-type ShareCmd struct {
-	To   []string `help:"GitHub logins to share with" name:"to" required:"" sep:","`
-	Envs []string `help:"Environments to share (default: all)" name:"env" sep:","`
-}
-
-// Run implements share.
-func (c *ShareCmd) Run(ctx *cliCtx) error {
-	id, err := identity.Load(ctx.Keyring)
-	if err != nil {
-		return err
-	}
-	cwd, err := getwd()
-	if err != nil {
-		return err
-	}
-	written, err := share.Share(cwd, keystore.New(), id, c.To, c.Envs, nil, "")
-	if err != nil {
-		return err
-	}
-	for _, w := range written {
-		fmt.Println("Wrote", w)
-	}
-	fmt.Println("Commit and push these files; recipients run 'esec vault sync'.")
-	return nil
-}
-
 // SyncCmd opens committed share blobs into the global keyring store, or with
 // --server syncs the vault with the vault server.
 type SyncCmd struct {

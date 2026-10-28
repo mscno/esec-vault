@@ -114,6 +114,17 @@ func newFakeGitHub(t *testing.T) *FakeGitHub {
 			fmt.Fprintln(w, k)
 		}
 	})
+	// The REST API's user lookup, as GitHub Enterprise serves it.
+	mux.HandleFunc("GET /api/v3/users/{login}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		u, ok := g.users[r.PathValue("login")]
+		g.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": u.ID, "login": u.Login})
+	})
 	mux.HandleFunc("GET /login/oauth/authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		g.mu.Lock()

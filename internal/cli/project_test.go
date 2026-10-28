@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mscno/esec-vault/internal/identity"
+	"github.com/mscno/esec-vault/internal/keyring"
+
 	"github.com/mscno/esec"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec/pkg/projectfile"
@@ -27,6 +30,7 @@ func TestProjectInitReportsDirectoryAndSource(t *testing.T) {
 	t.Setenv("ESEC_KEYRING_DIR", "")
 	for _, source := range []string{"--project flag", "project ID argument", "Git origin"} {
 		t.Run(source, func(t *testing.T) {
+			t.Setenv("ESEC_VAULT_HOME", t.TempDir())
 			repo := initTestRepo(t)
 			c := ProjectInitCmd{Dir: filepath.Join(repo, "app"), Env: []string{"dev"}, Format: "env", Template: true}
 			switch source {
@@ -50,7 +54,7 @@ func TestProjectInitReportsDirectoryAndSource(t *testing.T) {
 			stderr := os.Stderr
 			os.Stderr = output
 			defer func() { os.Stderr = stderr }()
-			if err := c.Run(&cliCtx{}); err != nil {
+			if err := c.Run(testCtx(t)); err != nil {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(output.Name())
@@ -157,4 +161,16 @@ func TestEnvShowKeyRequiresConfirmation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testCtx is a command context with an identity in a memory keyring, so
+// commands can seal keys. It makes the identity in the current
+// ESEC_VAULT_HOME, which must have none yet.
+func testCtx(t *testing.T) *cliCtx {
+	t.Helper()
+	kr := keyring.NewMemory()
+	if _, err := identity.Init(kr, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	return &cliCtx{Keyring: kr}
 }

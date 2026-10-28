@@ -16,6 +16,7 @@ import (
 
 	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
 
 	"github.com/mscno/esec-vault/internal/broker"
 )
@@ -62,7 +63,7 @@ func Run(client *broker.Client, env, format string, command []string, opts Optio
 	if err != nil {
 		return err
 	}
-	project, _, err := projectfile.FindProjectFile(cwd)
+	project, marker, err := projectfile.FindProjectFile(cwd)
 	if err != nil {
 		return fmt.Errorf("no esec.toml found (needed to identify the project): %w", err)
 	}
@@ -76,6 +77,11 @@ func Run(client *broker.Client, env, format string, command []string, opts Optio
 			return err
 		}
 		req.Host = opts.Host
+		// The key sealed in the repository: the other machine opens it
+		// with a touch there, and the key never comes here.
+		if req.Seal, err = coreseal.Read(filepath.Dir(marker), env); err != nil {
+			return err
+		}
 	}
 
 	// Approval may take a while; allow the server's approval window plus slack.

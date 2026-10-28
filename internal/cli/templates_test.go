@@ -36,7 +36,8 @@ func TestExampleTemplatesAreEncryptedBeforeWriting(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
 				t.Fatal(err)
 			}
-			c := ProjectInitCmd{Dir: dir, Env: []string{"dev"}, Template: true}
+			ctx := testCtx(t)
+			c := ProjectInitCmd{Dir: dir, Env: []string{"dev"}, Template: true, ctx: ctx}
 			if err := c.create("org/template"); err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +62,7 @@ func TestExampleTemplatesAreEncryptedBeforeWriting(t *testing.T) {
 			}
 			// A second environment uses the same example but a distinct key.
 			add := EnvAddCmd{Env: "prod", Project: "org/template", Dir: dir, Template: true}
-			if err := add.Run(&cliCtx{}); err != nil {
+			if err := add.Run(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(filepath.Join(dir, "prod."+format)); err != nil {
@@ -81,7 +82,7 @@ func TestAmbiguousTemplatesDoNotCreateKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := ProjectInitCmd{Dir: dir, Env: []string{"dev"}, Format: "etoml", Template: true}
+	c := ProjectInitCmd{Dir: dir, Env: []string{"dev"}, Format: "etoml", Template: true, ctx: testCtx(t)}
 	if err := c.create("org/ambiguous"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguity: %v", err)
 	}

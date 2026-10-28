@@ -620,3 +620,27 @@ func (ch ChangeView) describeSettings() ([]string, bool) {
 	}
 	return nil, false
 }
+
+// SecurityKeys returns the security keys in this person's chain.
+func (a *Account) SecurityKeys(ctx context.Context) ([]chain.SecurityKey, error) {
+	st, err := a.VerifiedChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return st.ActiveSecurityKeys(), nil
+}
+
+// AddSecurityKey registers a security key in this person's chain, so seals
+// made for them (by anyone) include it.
+func (a *Account) AddSecurityKey(ctx context.Context, k chain.SecurityKey) error {
+	if err := chain.ValidateSecurityKey(k); err != nil {
+		return err
+	}
+	return a.appendUserLink(ctx, chain.TypeSecurityKeyAdd, chain.SecurityKeyAddBody{Key: k})
+}
+
+// RemoveSecurityKey stops a security key opening new seals. Seals made
+// before stay openable with it until they are made again.
+func (a *Account) RemoveSecurityKey(ctx context.Context, id, reason string) error {
+	return a.appendUserLink(ctx, chain.TypeSecurityKeyRemove, chain.SecurityKeyRemoveBody{ID: id, Reason: reason})
+}

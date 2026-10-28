@@ -1,11 +1,11 @@
 // Package envrotate replaces an environment's key pair and re-encrypts every
 // secrets file that uses it.
 //
-// Rotation is staged so a failure never leaves a file that no stored key can
-// open: every file is re-encrypted into a temporary file and verified first,
-// then the keyring is updated (keeping the old key), and only then are the
-// temporary files moved into place. The old key stays in the keyring under
-// its public-key entry, so files in git history still decrypt.
+// Rotation is staged so a failure never leaves a file that no key opens:
+// every file is re-encrypted into a temporary file and verified first, then
+// the new key is sealed in the repository, and only then are the temporary
+// files moved into place. The old key stays sealed in git history (and in
+// this device's keyring cache), so files in git history still decrypt.
 package envrotate
 
 import (
@@ -21,13 +21,10 @@ import (
 	"sort"
 	"strings"
 
-	"filippo.io/age"
-
 	"github.com/mscno/esec"
 	"github.com/mscno/esec/pkg/crypto"
 	"github.com/mscno/esec/pkg/fileutils"
 
-	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/keystore"
 )
 
@@ -100,56 +97,26 @@ type staged struct {
 	tmp  string
 }
 
-// ErrGuarded is returned when the environment is guarded and Options has
-// no opened guard.
-var ErrGuarded = errors.New("the environment is guarded: its key opens only with a touch")
-
-// Guard wraps and unwraps guarded keys with an opened guard identity.
-type Guard struct {
-	ID *age.X25519Identity
-}
-
-// Options are the optional parts of a rotation.
+// Options say how to get the old key and keep the new one.
 type Options struct {
-	// Guard opens a guarded environment's key and guards the new one.
-	Guard *Guard
-	// Store puts the new key in a second place (the vault server, a
-	// backup) before any file is encrypted to it. When it fails the
-	// rotation is undone: the environment points at its old key again and
-	// no file changes; the new key stays filed.
-	Store func() error
+	// Old is the environment's current private key (hex), opened by the
+	// caller: from this device's cache, or from its seal.
+	Old string
+	// Seal keeps the new key: it seals it in the repository for the
+	// environment's readers. It runs before any file is encrypted to the
+	// new key; when it fails, nothing changes.
+	Seal func(newPriv string) error
+	// Cache also files both keys in this device's keyring, for an
+	// environment that is not guarded.
+	Cache bool
 }
 
 // Rotate rotates env of project, re-encrypting matching files under root.
-func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result, error) { //nolint:gocyclo // staged: old key, files, keyring, store, rename
-	entries, err := ks.Read(project)
-	if err != nil {
-		return nil, err
+func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result, error) {
+	if opt.Old == "" || opt.Seal == nil {
+		return nil, errors.New("rotation needs the old key and a way to seal the new one")
 	}
-	name := EnvKey(env)
-	oldPriv, ok := entries[name]
-	guarded := false
-	level := ""
-	// A guarded environment rotates guarded, even on a device that still
-	// holds a clear copy of its key: the new key must not be born clear.
-	if pub := entries[keystore.GuardEnvEntry(env)]; pub != "" {
-		if opt.Guard == nil {
-			return nil, ErrGuarded
-		}
-		k, err := guard.Unwrap(opt.Guard.ID, entries[keystore.GuardEntry(pub)], pub, keystore.PublicHex)
-		if err != nil {
-			return nil, err
-		}
-		oldPriv, guarded, level = k.Private, true, k.Level
-		// The clear copies go; the guarded entry keeps the old key.
-		delete(entries, name)
-		if v := entries[pubKeyEntry(pub)]; strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(k.Private)) {
-			delete(entries, pubKeyEntry(pub))
-		}
-	} else if !ok {
-		return nil, fmt.Errorf("environment %s has no stored key in project %s", env, project)
-	}
-	oldKey, err := parsePriv(oldPriv)
+	oldKey, err := parsePriv(opt.Old)
 	if err != nil {
 		return nil, err
 	}
@@ -173,59 +140,40 @@ func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result
 		}
 	}
 	for _, f := range files {
-		tmp, err := reencrypt(f, oldPriv, oldPubHex, newPubHex, newPrivHex)
+		tmp, err := reencrypt(f, opt.Old, oldPubHex, newPubHex, newPrivHex)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("%s: %w (nothing was changed)", f, err)
 		}
 		stagedFiles = append(stagedFiles, staged{path: f, tmp: tmp})
 	}
-	point := func(pub, priv string) {
-		if guarded {
-			entries[keystore.GuardEnvEntry(env)] = pub
-		} else {
-			entries[name] = priv
-		}
-	}
-	if guarded {
-		wrapped, err := guard.Wrap(opt.Guard.ID.Recipient(), guard.Key{Project: project, Env: env, Level: level, Private: newPrivHex})
-		if err != nil {
-			cleanup()
-			return nil, err
-		}
-		entries[keystore.GuardEntry(newPubHex)] = wrapped
-	} else {
-		entries[pubKeyEntry(newPubHex)] = newPrivHex
-		entries[pubKeyEntry(oldPubHex)] = oldPriv
-	}
-	write := func() error {
-		if guarded {
-			return ks.WriteGuarded(project, entries)
-		}
-		return ks.Write(project, entries, true)
-	}
-	point(newPubHex, newPrivHex)
-	if err := write(); err != nil {
+	if err := opt.Seal(newPrivHex); err != nil {
 		cleanup()
-		return nil, fmt.Errorf("update keyring: %w (nothing was changed)", err)
+		return nil, fmt.Errorf("seal the new key: %w (nothing was changed)", err)
 	}
-	if opt.Store != nil {
-		if err := opt.Store(); err != nil {
-			cleanup()
-			point(oldPubHex, oldPriv)
-			if werr := write(); werr != nil {
-				return nil, fmt.Errorf("the new key could not be stored elsewhere (%w), and pointing %s back at its old key failed: %w", err, env, werr)
-			}
-			return nil, fmt.Errorf("the new key could not be stored elsewhere, so no file was re-encrypted and %s still uses its old key: %w", env, err)
+	if opt.Cache {
+		entries, err := ks.Read(project)
+		if errors.Is(err, fs.ErrNotExist) {
+			entries, err = map[string]string{}, nil
+		}
+		if err == nil {
+			entries[EnvKey(env)] = newPrivHex
+			entries[pubKeyEntry(newPubHex)] = newPrivHex
+			entries[pubKeyEntry(oldPubHex)] = opt.Old
+			err = ks.Write(project, entries, true)
+		}
+		if err != nil {
+			// The seal holds the key; the cache is a convenience.
+			fmt.Fprintln(os.Stderr, "! the new key is sealed, but this device's keyring was not updated:", err)
 		}
 	}
 	var errs []error
 	for _, s := range stagedFiles {
 		if err := os.Rename(s.tmp, s.path); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w (the keyring keeps both keys, so the file still decrypts)", s.path, err))
+			errs = append(errs, fmt.Errorf("%s: %w (it still uses the old key, whose seal is in git history)", s.path, err))
 		}
 	}
-	return &Result{OldPublic: oldPubHex, NewPublic: newPubHex, Files: files, Guarded: guarded}, errors.Join(errs...)
+	return &Result{OldPublic: oldPubHex, NewPublic: newPubHex, Files: files, Guarded: !opt.Cache}, errors.Join(errs...)
 }
 
 var hexKey = regexp.MustCompile(`(?i)[0-9a-f]{64}`)

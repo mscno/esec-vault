@@ -3,15 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/remote"
@@ -81,68 +78,4 @@ func runGit(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
 	}
 	return string(out), nil
-}
-
-// errNoKeyStore is returned by storeKeysNow when keys have no second place
-// to go: neither a vault server nor a backup destination.
-var errNoKeyStore = errors.New("no vault server and no backup destination (esec vault login, or esec vault remote add)")
-
-// storeKeysNow puts this device's keys in a second place before anything is
-// encrypted to a new one: the vault server when signed in, else the default
-// backup destination. It waits for the upload.
-func storeKeysNow(ctx *cliCtx) error {
-	if err := syncServerNow(ctx); !errors.Is(err, account.ErrNotLoggedIn) {
-		return err
-	}
-	cfg, err := remote.Load()
-	if err != nil {
-		return err
-	}
-	if cfg.Default == "" {
-		return errNoKeyStore
-	}
-	_, err = pushNow(ctx, "", false)
-	return err
-}
-
-// syncServerNow syncs the vault with the server and waits. It returns
-// account.ErrNotLoggedIn when this machine is not signed in.
-func syncServerNow(ctx *cliCtx) error {
-	if ctx == nil || ctx.Keyring == nil {
-		return account.ErrNotLoggedIn
-	}
-	a, err := openAccount(ctx)
-	if err != nil {
-		return err
-	}
-	bg, cancel := timeout(2 * time.Minute)
-	defer cancel()
-	res, err := a.Sync(bg, account.SyncOptions{})
-	if err != nil {
-		return err
-	}
-	if len(res.Conflicts) > 0 {
-		return account.ErrConflicts
-	}
-	return nil
-}
-
-// requireStored is storeKeysNow for commands about to encrypt files to new
-// keys: a failed upload stops them, so no file is encrypted to a key that
-// exists on this device alone. Having no second place at all only warns
-// (doctor reports it); offline skips the upload on purpose.
-func requireStored(ctx *cliCtx, offline bool, what string) error {
-	if offline {
-		fmt.Fprintf(os.Stderr, "! %s: --offline, so the new keys are on this device only until it syncs (esec vault sync --server, or esec vault backup --push)\n", what)
-		return nil
-	}
-	err := storeKeysNow(ctx)
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, errNoKeyStore):
-		fmt.Fprintf(os.Stderr, "! %s: the new keys are on this device only: %v\n", what, err)
-		return nil
-	}
-	return fmt.Errorf("%s: the new keys are stored here but could not be stored elsewhere, so nothing was encrypted to them yet: %w; fix that and run the command again (it keeps the keys), or pass --offline", what, err)
 }

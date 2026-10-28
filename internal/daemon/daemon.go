@@ -132,8 +132,9 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	b.Lock()
 	// Plugins are found by name on PATH: put the checked ones first.
 	guard.PinPlugins()
-	g := newGuarder(keystore.New(), b.Session)
+	g := newGuarder(localSecurityKeys, b.Session)
 	b.Guard, b.Chain = g, describePID
+	b.Unseal = func(project, env, pub, path string) (string, error) { return unseal(kr, project, env, pub, path) }
 	fwd := broker.NewServer(nil, p, audit, logger)
 	fwd.ControlOnlyApproval, fwd.Forwarded = true, true
 	fwd.Guard, fwd.Chain = g, describePID
@@ -173,6 +174,8 @@ func (s *Server) Serve(parent context.Context) error {
 	workers.Go(func() { s.work(ctx) })
 	workers.Go(func() { s.serverLoop(ctx) })
 	workers.Go(func() { s.verifyLoop(ctx) })
+	workers.Go(func() { s.unsealLoop(ctx) })
+	workers.Go(func() { s.securityKeyLoop(ctx) })
 	brokerDone := make(chan error, 1)
 	workers.Go(func() { brokerDone <- s.Broker.Serve(ctx, paths.SocketPath()); cancel() })
 	if s.Forward != nil && ManagedSocket() {

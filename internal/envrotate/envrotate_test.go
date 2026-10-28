@@ -7,10 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"filippo.io/age"
 	"github.com/mscno/esec"
 
-	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/keystore"
 )
 
@@ -59,7 +57,8 @@ func TestRotateReencryptsAllFormatsAndKeepsOldKey(t *testing.T) {
 	ignored := filepath.Join(repo, ".git", ".env.dev")
 	write(t, ignored, "ESEC_PUBLIC_KEY="+pub+"\nTOKEN=x\n")
 
-	res, err := Rotate(ks, "acme/store", "dev", repo, Options{})
+	var sealed string
+	res, err := Rotate(ks, "acme/store", "dev", repo, Options{Old: oldPriv, Cache: true, Seal: func(p string) error { sealed = p; return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +70,9 @@ func TestRotateReencryptsAllFormatsAndKeepsOldKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	newPriv := entries[EnvKey("dev")]
+	if newPriv != sealed {
+		t.Fatal("the cached key is not the one sealed")
+	}
 	if newPriv == oldPriv || entries[pubKeyEntry(res.NewPublic)] != newPriv || entries[pubKeyEntry(pub)] != oldPriv {
 		t.Fatal("keyring not updated with the new key and the retained old key")
 	}
@@ -117,8 +119,12 @@ func TestRotateAbortsWithoutChangesOnAmbiguousFile(t *testing.T) {
 	write(t, bad, "ESEC_PUBLIC_KEY="+pub+"\nCOPY="+pub+"\n")
 	before, _ := os.ReadFile(good) //nolint:gosec // test temp dir
 
-	if _, err := Rotate(ks, "acme/store", "dev", repo, Options{}); err == nil {
+	sealed := false
+	if _, err := Rotate(ks, "acme/store", "dev", repo, Options{Old: oldPriv, Cache: true, Seal: func(string) error { sealed = true; return nil }}); err == nil {
 		t.Fatal("ambiguous file accepted")
+	}
+	if sealed {
+		t.Fatal("a new key was sealed although rotation failed")
 	}
 	after, _ := os.ReadFile(good) //nolint:gosec // test temp dir
 	if !bytes.Equal(before, after) {
@@ -135,48 +141,33 @@ func TestRotateAbortsWithoutChangesOnAmbiguousFile(t *testing.T) {
 	}
 }
 
-func TestRotateUnknownEnvironment(t *testing.T) {
-	ks, _, _ := setup(t)
-	if _, err := Rotate(ks, "acme/store", "prod", t.TempDir(), Options{}); err == nil {
-		t.Fatal("missing environment accepted")
+func TestRotateNeedsOldKeyAndSeal(t *testing.T) {
+	ks, _, priv := setup(t)
+	if _, err := Rotate(ks, "acme/store", "dev", t.TempDir(), Options{}); err == nil {
+		t.Fatal("rotated with no old key")
+	}
+	if _, err := Rotate(ks, "acme/store", "dev", t.TempDir(), Options{Old: priv}); err == nil {
+		t.Fatal("rotated with nowhere to seal the new key")
 	}
 }
 
-// TestRotateGuardedWithClearCopy covers a device that still holds a clear
-// copy of a guarded environment's key: the rotation is a guarded one, the
-// new key is born guarded and the clear copies go.
-func TestRotateGuardedWithClearCopy(t *testing.T) {
+// A failed seal changes nothing: files keep the old key, nothing is cached.
+func TestRotateSealFails(t *testing.T) {
 	ks, pub, priv := setup(t)
-	gid, err := age.GenerateX25519Identity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapped, err := guard.Wrap(gid.Recipient(), guard.Key{Project: "acme/store", Env: "dev", Level: "touch", Private: priv})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries, _ := ks.Read("acme/store")
-	entries[keystore.GuardEntry(pub)], entries[keystore.GuardEnvEntry("dev")] = wrapped, pub
-	if err := ks.Write("acme/store", entries, true); err != nil {
-		t.Fatal(err)
-	}
 	repo := t.TempDir()
-	write(t, filepath.Join(repo, ".env.dev"), "ESEC_PUBLIC_KEY="+pub+"\nTOKEN=s3cret\n")
-
-	if _, err := Rotate(ks, "acme/store", "dev", repo, Options{}); err != ErrGuarded {
-		t.Fatalf("a guarded environment rotated without the guard: %v", err)
+	file := filepath.Join(repo, ".env.dev")
+	write(t, file, "ESEC_PUBLIC_KEY="+pub+"\nTOKEN=s3cret\n")
+	before, _ := os.ReadFile(file) //nolint:gosec // test temp dir
+	_, err := Rotate(ks, "acme/store", "dev", repo, Options{Old: priv, Cache: true, Seal: func(string) error { return os.ErrPermission }})
+	if err == nil {
+		t.Fatal("rotation went on without its seal")
 	}
-	res, err := Rotate(ks, "acme/store", "dev", repo, Options{Guard: &Guard{ID: gid}})
-	if err != nil {
-		t.Fatal(err)
+	after, _ := os.ReadFile(file) //nolint:gosec // test temp dir
+	entries, _ := ks.Read("acme/store")
+	if !bytes.Equal(before, after) || entries[EnvKey("dev")] != priv {
+		t.Fatal("something changed although the seal failed")
 	}
-	entries, _ = ks.Read("acme/store")
-	if !res.Guarded || entries[keystore.GuardEnvEntry("dev")] != res.NewPublic || entries[keystore.GuardEntry(res.NewPublic)] == "" {
-		t.Fatalf("not rotated guarded: %+v %v", res, entries)
-	}
-	for k, v := range entries {
-		if v == priv || k == EnvKey("dev") || k == pubKeyEntry(res.NewPublic) {
-			t.Fatalf("a clear copy is left: %s", k)
-		}
+	if left, _ := filepath.Glob(filepath.Join(repo, ".esec-rotate-*")); len(left) != 0 {
+		t.Fatal("temporary files left behind")
 	}
 }

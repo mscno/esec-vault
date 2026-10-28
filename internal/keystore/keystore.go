@@ -57,7 +57,7 @@ func (s *Store) SetSealed(project string, sealed bool) error {
 	if err != nil {
 		return err
 	}
-	return s.write(project, entries, true, &sealed, false)
+	return s.write(project, entries, true, &sealed, keepAll)
 }
 
 // New returns the default store honoring ESEC_KEYRING_DIR / ~/.config.
@@ -83,14 +83,50 @@ func (s *Store) Read(project string) (map[string]string, error) {
 // under its public key fails, and a named key without its public-key entry
 // gets one (see fileKeys).
 func (s *Store) Write(project string, entries map[string]string, force bool) error {
-	return s.write(project, entries, force, nil, false)
+	return s.write(project, entries, force, nil, keepAll)
 }
 
 // WriteGuarded is Write for guarding keys: a key filed under its public key
 // may give way to its guarded entry, so it is no longer kept in the clear.
 func (s *Store) WriteGuarded(project string, entries map[string]string) error {
-	return s.write(project, entries, true, nil, true)
+	return s.write(project, entries, true, nil, keepGuarding)
 }
+
+// Forget removes every entry holding the private key priv from project's
+// keyring, returning their names. The keyring is then a cache of keys
+// sealed in the project's repository: forgetting a key that is guarded
+// there keeps it off this device's disk. The caller makes sure the key is
+// sealed first.
+func (s *Store) Forget(project, priv string) ([]string, error) {
+	entries, err := s.Read(project)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var gone []string
+	for name, v := range entries {
+		if strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(priv)) {
+			gone = append(gone, name)
+			delete(entries, name)
+		}
+	}
+	if len(gone) == 0 {
+		return nil, nil
+	}
+	sort.Strings(gone)
+	return gone, s.write(project, entries, true, nil, keepNone)
+}
+
+// keep says which entries a write must keep.
+type keep int
+
+const (
+	keepAll      keep = iota // keys are only ever added
+	keepGuarding             // a clear key may give way to its guarded entry
+	keepNone                 // Forget: the keyring is a cache
+)
 
 // Repair files every named key under its public key, returning the entries
 // it added.
@@ -103,7 +139,7 @@ func (s *Store) Repair(project string) ([]string, error) {
 	if len(added) == 0 {
 		return nil, nil
 	}
-	return added, s.write(project, entries, true, nil, false)
+	return added, s.write(project, entries, true, nil, keepAll)
 }
 
 // Delete removes a project's keyring.
@@ -359,7 +395,7 @@ func (s *Store) readPlain(p string) ([]byte, error) {
 
 // write stores entries; sealed nil keeps the existing form or applies the
 // default for new files.
-func (s *Store) write(project string, entries map[string]string, force bool, sealed *bool, guarding bool) error {
+func (s *Store) write(project string, entries map[string]string, force bool, sealed *bool, mode keep) error { //nolint:gocyclo // path checks, keep rules, seal form, atomic write
 	p, err := s.path(project)
 	if err != nil {
 		return err
@@ -387,8 +423,10 @@ func (s *Store) write(project string, entries map[string]string, force bool, sea
 		if err != nil {
 			return err
 		}
-		if err := checkKept(project, old, entries, guarding); err != nil {
-			return err
+		if mode != keepNone {
+			if err := checkKept(project, old, entries, mode == keepGuarding); err != nil {
+				return err
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err

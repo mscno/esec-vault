@@ -1,5 +1,11 @@
 # The guard, the project file, and keys that cannot be lost
 
+> Superseded in part by [sealed-keys.md](sealed-keys.md): guarded
+> environments are now sealed straight to each reader's security keys in
+> the repository; the shared guard identity, its holders and its keyring
+> entries are gone. The threat model, the dialog, presence, forwarding and
+> the agent rules below still hold.
+
 This note records why esec-vault manages many independent projects the way
 it does: a committed `esec.toml` per project, private keys that are only
 ever added and always stored twice, a hardware guard for the keys agents

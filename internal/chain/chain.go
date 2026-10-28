@@ -209,6 +209,9 @@ type State struct {
 	Slots         map[string]*SlotState
 	// Delegates are keys that may sign some project and group changes.
 	Delegates map[string]*DelegateState
+	// SecurityKeys are the hardware keys that open the person's guarded
+	// seals.
+	SecurityKeys map[string]*SecurityKeyState
 	// Epochs lists every user key the chain has had, oldest first.
 	Epochs []KeyEpoch
 	// Links holds the decoded links, in order.
@@ -404,7 +407,7 @@ func VerifyProof(proof *envelope.Envelope) (*DeviceProof, error) {
 
 // New returns the empty state for user.
 func New(user string) *State {
-	return &State{User: user, Devices: map[string]*DeviceState{}, Slots: map[string]*SlotState{}, Delegates: map[string]*DelegateState{}}
+	return &State{User: user, Devices: map[string]*DeviceState{}, Slots: map[string]*SlotState{}, Delegates: map[string]*DelegateState{}, SecurityKeys: map[string]*SecurityKeyState{}}
 }
 
 // Verify checks a complete chain from its first link.
@@ -673,6 +676,10 @@ func (s *State) apply(e *envelope.Envelope, l Link) error { //nolint:gocyclo // 
 		return s.applyDelegateAdd(l)
 	case TypeDelegateRemove:
 		return s.applyDelegateRemove(l)
+	case TypeSecurityKeyAdd:
+		return s.applySecurityKeyAdd(l)
+	case TypeSecurityKeyRemove:
+		return s.applySecurityKeyRemove(l)
 	}
 	return fmt.Errorf("unknown link type %q", l.Type)
 }
@@ -807,6 +814,11 @@ func (s *State) clone() *State {
 	for k, v := range s.Delegates {
 		c := *v
 		n.Delegates[k] = &c
+	}
+	n.SecurityKeys = make(map[string]*SecurityKeyState, len(s.SecurityKeys))
+	for k, v := range s.SecurityKeys {
+		c := *v
+		n.SecurityKeys[k] = &c
 	}
 	return &n
 }

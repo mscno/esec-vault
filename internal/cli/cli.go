@@ -41,15 +41,20 @@ type cli struct {
 	Activity ActivityCmd `cmd:"" group:"start" help:"Which programs and agents asked for keys, and what was allowed: the local audit log."`
 	Verify   VerifyCmd   `cmd:"" group:"start" help:"Check no key can be lost: every key your checkouts and their git history use is here and in a second place, and none serves two projects."`
 
-	Project  ProjectCmd  `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
-	Projects ProjectsCmd `cmd:"" group:"secrets" help:"Every project on this machine: where it is checked out, its environments, its keys here."`
-	Env      EnvCmd      `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate, and what picked a change up."`
-	Hook     HookCmd     `cmd:"" group:"secrets" help:"A git pre-commit hook that refuses secrets in the clear and files encrypted to the wrong key."`
-	Secrets  SecretsCmd  `cmd:"" group:"secrets" help:"Find, set and rotate values in secrets files; check them before a commit."`
-	Run      RunCmd      `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
-	Forward  ForwardCmd  `cmd:"" group:"secrets" help:"SSH to a machine that may then ask this one for guarded keys, each read after your touch here."`
-	Keyring  KeyringCmd  `cmd:"" group:"secrets" help:"Manage the global keyring store."`
-	Guard    GuardCmd    `cmd:"" group:"secrets" help:"Guard prod keys with your YubiKeys: every read needs your touch, which no agent can make."`
+	Project      ProjectCmd      `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
+	Projects     ProjectsCmd     `cmd:"" group:"secrets" help:"Every project on this machine: where it is checked out, its environments, its keys here."`
+	Env          EnvCmd          `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate, and what picked a change up."`
+	Hook         HookCmd         `cmd:"" group:"secrets" help:"A git pre-commit hook that refuses secrets in the clear and files encrypted to the wrong key."`
+	Secrets      SecretsCmd      `cmd:"" group:"secrets" help:"Find, set and rotate values in secrets files; check them before a commit."`
+	Run          RunCmd          `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
+	Forward      ForwardCmd      `cmd:"" group:"secrets" help:"SSH to a machine that may then ask this one for guarded keys, each read after your touch here."`
+	Keyring      KeyringCmd      `cmd:"" group:"secrets" help:"Manage the global keyring store."`
+	Seal         SealCmd         `cmd:"" group:"secrets" help:"Environment keys sealed in the repository (.esec/), for their readers and a recovery key: status, sync, check."`
+	Share        ShareCmd        `cmd:"" group:"secrets" help:"Share environments with GitHub users (pinned by id), groups or keys: their keys are sealed in."`
+	Unshare      UnshareCmd      `cmd:"" group:"secrets" help:"Stop sharing environments with someone, and optionally rotate."`
+	CI           CICmd           `cmd:"" name:"ci" group:"secrets" help:"Give CI jobs and deploys their own age key, sealed into environments; they need only esec."`
+	Guard        GuardCmd        `cmd:"" group:"secrets" help:"Guard environments: sealed to your YubiKeys only, every read needs your touch, which no agent can make."`
+	SecurityKeys SecurityKeysCmd `cmd:"" name:"security-keys" aliases:"keys" group:"secrets" help:"Your YubiKeys: register the plugged-in ones, set one up, test, remove. Nobody types a recipient."`
 
 	Access      TeamCmd        `cmd:"" name:"access" aliases:"team" group:"team" help:"Who reads which environments of a shared project: share it, grant, revoke, offboard."`
 	Group       GroupCmd       `cmd:"" group:"team" help:"Groups of people or machines that read the same environments (acme/backend, acme/production)."`
@@ -80,7 +85,6 @@ type cli struct {
 	Uninstall UninstallCmd `cmd:"" group:"service" help:"Remove service; optionally purge local vault data."`
 
 	Members MembersCmd `cmd:"" group:"git" help:"Manage team member identity proofs."`
-	Share   ShareCmd   `cmd:"" group:"git" help:"Seal project keys to team members (writes committed blobs)."`
 	Sync    SyncCmd    `cmd:"" group:"git" help:"Open your committed share blobs into the global keyring store."`
 
 	Version kong.VersionFlag `help:"Show version"`
@@ -197,7 +201,7 @@ func Execute(version string) {
 // isMutation reports whether a command changes keyrings, so it runs under the
 // keyring lock and is followed by a snapshot and a server push.
 func isMutation(command string) bool {
-	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "group sync", "guard init", "guard enable", "guard holders", "guard recover"} {
+	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "group sync", "guard enable", "guard disable", "seal sync", "seal migrate", "seal recover", "share", "unshare", "ci add", "ci remove", "security-keys add", "security-keys remove"} {
 		if strings.HasPrefix(command, prefix) {
 			return true
 		}

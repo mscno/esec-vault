@@ -121,6 +121,36 @@ It never creates a second identity unasked: that would split your keys.
 	"hook uninstall": examples(
 		"esec vault hook uninstall",
 	),
+	"security-keys": `Your security keys open your guarded environments: every read needs a touch, which no agent can make. Signed in to a vault server, the list lives in your account, so your other machines and the people who share with you seal to every key you register; otherwise it is this machine's own. Recipients are found by plugging the key in, never typed.
+
+` + examples(
+		"esec vault security-keys",
+		"esec vault security-keys --json     # for scripts, agents and the Mac app",
+	),
+	"security-keys add": `Registers each plugged-in YubiKey that holds an age identity (age-plugin-yubikey), asking for a name. Guarded environments are then sealed to it too. A key whose touch policy is not always is registered with a warning: after one touch, other programs can decrypt for a while.
+
+` + examples(
+		"esec vault security-keys add",
+		"esec vault security-keys add --name \"spare, in the safe\"",
+		"esec vault security-keys add --recipient age1se1… --kind se --name \"MacBook Touch ID\"",
+	),
+	"security-keys remove": `Stops a key opening new seals; guarded environments are sealed again without it. Names are fixed once registered: to rename, remove the key and add it under the new name. Seals in git history still open with a removed key, so for a lost key whose PIN may be known, rotate.
+
+` + examples(
+		"esec vault security-keys remove \"blue, on my keychain\" --reason lost",
+	),
+	"security-keys setup": `Makes a new age identity on a plugged-in YubiKey (age-plugin-yubikey --generate) with touch policy always and the PIN asked once per session, then registers it. Needs a terminal for the PIN.
+
+` + examples(
+		"esec vault security-keys setup",
+		"esec vault security-keys setup --serial 15584441 --name spare",
+	),
+	"security-keys test": `Encrypts a random value to a key and decrypts it with the key (a touch), proving it still works. Test the spare in the safe now and then.
+
+` + examples(
+		"esec vault security-keys test",
+		"esec vault security-keys test spare",
+	),
 	"env status": `Deployments fetch their keys when they start, so one that has not started since a change still runs with what it had. --since counts from when you changed a value (a commit, a deploy); by default from when the environment's key last changed.
 
 ` + examples(
@@ -425,47 +455,67 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault recover",
 		"esec vault recover --file vault-backup.esec",
 	),
-	"guard": `The guard keeps environment keys that open only after you allow it in a dialog and touch your security key. It is one age identity wrapped to your YubiKeys (age-plugin-yubikey) and to the recovery key your phrase derives; guarded keys are wrapped to it and sync and back up as ciphertext.
+	"guard": `A guarded environment's key is sealed (.esec/<env>.age) to its readers' security keys and recovery keys only: no software key on any machine opens it. Reading it goes through the background service: a dialog says what is read and who asked, then your YubiKey waits for a touch. One touch opens one environment.
 
 ` + examples(
-		"esec vault guard                           # holders, guarded keys, any still in the clear here",
+		"esec vault guard                           # guarded environments in your checkouts, and your security keys",
 		"esec vault guard --json",
 	),
-	"guard init": `Use YubiKey slots with touch policy always: a cached touch also lets other programs in for 15 seconds. Without --holder, every YubiKey age-plugin-yubikey lists holds the guard. The recovery key is added unless --no-recovery, so losing every YubiKey does not lose the guarded keys.
-
-` + examples(
-		"age-plugin-yubikey --generate --touch-policy always --pin-policy once   # on each YubiKey",
-		"esec vault guard init",
-		"esec vault guard init --holder age1yubikey1…,age1yubikey1…",
-	),
-	"guard enable": `Wraps the environment's key to the guard and removes its clear copy from this device's keyring; esec.toml records the guard. Reads then go through esec vault run, which asks and waits for a touch. Older backups still hold the key in software form: rotate it once for full protection.
+	"guard enable": `Seals the environment's key again, to its readers' security keys only, and removes it from this device's keyring. esec.toml records the guard. Copies cached on other devices stay until guard enable runs there, and old commits hold the key sealed as it was: rotate once for full protection.
 
 ` + examples(
 		"esec vault guard enable --env prod                  # every read needs a touch",
 		"esec vault guard enable --env staging --level session",
-		"esec vault guard enable --env prod --retired        # also old keys, which open git history",
-		"esec vault guard enable --project acme/api          # on another device: drop the clear copies",
+		"esec vault guard enable --project acme/store       # every environment esec.toml guards",
 	),
-	"guard check": examples(
-		"esec vault guard check            # one touch; nothing is read out",
+	"guard disable": examples(
+		"esec vault guard disable --env staging",
 	),
-	"guard export": `Everything written is ciphertext. With it, rage and age-plugin-yubikey open the keys without esec: rage -d -j yubikey -o guard.key guard.age, then rage -d -i guard.key FILE.age.
+	"seal": `Each environment's key is sealed in the repository, in .esec/<env>.age (a standard age file), to its readers: people by GitHub id, their security keys for guarded environments, groups, machines, and always a recovery key your 24 words derive. .esec/seals.toml records who it was sealed to, signed. The repository and your phrase are enough to recover every key, in every commit.
 
 ` + examples(
-		"esec vault guard export --out ~/esec-age",
+		"esec vault seal                    # who each key is sealed to, and what to seal again",
+		"esec vault seal --all --json       # every checkout here, for the Mac app",
 	),
-	"guard recover": `For when every security key is lost: the 24-word phrase opens the guard (its recovery key holds it unless guard init had --no-recovery), and it is rewrapped to the YubiKeys plugged in now. Guarded keys stay as they are.
+	"seal sync": `Seals again what changed: readers added in esec.toml, a reader's new or removed security key, someone shared with who has now signed up. It also opens into this device's keyring the keys it can, so esec finds them with no vault.
 
 ` + examples(
-		"esec vault guard recover                          # new YubiKey plugged in",
-		"esec vault guard recover --remove age1yubikey1…   # and drop the lost one",
+		"esec vault seal sync",
+		"esec vault seal sync --all",
+		"esec vault seal sync --all --guarded   # after adding a security key (a touch each)",
 	),
-	"guard holders add": examples(
-		"esec vault guard holders add                   # every plugged-in YubiKey not holding it yet",
-		"esec vault guard holders add age1yubikey1…     # one by its recipient",
+	"seal check": examples(
+		"esec vault seal check              # what the pre-commit hook and CI check, with no network",
 	),
-	"guard holders remove": examples(
-		"esec vault guard holders remove age1yubikey1…  # a lost one; rotate guarded keys if its PIN may be known",
+	"seal migrate": examples(
+		"esec vault seal migrate --all      # seal every key this device holds and no seal does yet",
+	),
+	"seal recover": `Every security key lost, or a new one to add without a touch per environment: your phrase opens every seal (each includes your recovery key), and they are sealed again for their readers' current keys.
+
+` + examples(
+		"esec vault seal recover --all",
+		"esec vault seal recover --all --no-guarded   # every environment, not only guarded ones",
+	),
+	"share": `Seals environments to more readers: GitHub users by login, pinned to their numeric id (a renamed or re-registered login never inherits access); groups; or keys. A person without an account is sealed in once they sign up. Commit .esec/ and esec.toml: sharing is a reviewed change, like code.
+
+` + examples(
+		"esec vault share dev,staging --with alice",
+		"esec vault share prod --with alice,bob       # guarded: sealed to their security keys",
+		"esec vault share dev --with \"group acme/backend\"",
+		"esec vault share dev --with laptop=age1…",
+	),
+	"unshare": examples(
+		"esec vault unshare prod --with alice --rotate",
+	),
+	"ci add": `Makes an age key for a CI job or a deploy and seals environments to it, so it reads them with esec alone (ESEC_AGE_IDENTITY). The key is stored straight in GitHub or Fly with their own CLIs, never on a command line, or shown once.
+
+` + examples(
+		"esec vault ci add deploy --env prod --fly acme-store",
+		"esec vault ci add actions --env staging --github acme/store",
+		"esec vault ci add build --env dev     # prints the key once",
+	),
+	"ci remove": examples(
+		"esec vault ci remove deploy",
 	),
 	"projects": `Like a git client's list of repositories: each project's global id (acme/store) and where it is checked out on this machine. Commands that find an esec.toml remember its checkout by themselves.
 

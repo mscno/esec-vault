@@ -2,19 +2,18 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
-	"filippo.io/age"
+	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
 	"github.com/tyler-smith/go-bip39"
 
 	"github.com/mscno/esec-vault/internal/account"
-	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/identity"
-	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/vaultfile"
@@ -135,21 +134,23 @@ type DrillCmd struct {
 }
 
 // Run implements drill.
-func (c *DrillCmd) Run(_ *cliCtx) error {
+func (c *DrillCmd) Run(_ *cliCtx) error { //nolint:gocyclo // one sequential drill: backup, phrase, seals, coverage
 	cfg, err := remote.Load()
 	if err != nil {
 		return err
 	}
-	if c.Remote == "" && cfg.Default == "" {
-		return errors.New("no backup destination to drill: esec vault remote add")
-	}
 	bg, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	key, blob, err := remote.Latest(bg, cfg, c.Remote)
-	if err != nil {
-		return err
+	var key string
+	var blob []byte
+	if c.Remote != "" || cfg.Default != "" {
+		if key, blob, err = remote.Latest(bg, cfg, c.Remote); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Downloaded %s. Nothing is written to disk; the phrase opens it in memory.\n", key)
+	} else {
+		fmt.Fprintln(os.Stderr, "No backup destination: checking that the phrase opens the keys sealed in your checkouts.")
 	}
-	fmt.Fprintf(os.Stderr, "Downloaded %s. Nothing is written to disk; the phrase opens it in memory.\n", key)
 	mnemonic, err := promptMnemonic("Paste your 24-word recovery phrase: ")
 	if err != nil {
 		return err
@@ -165,18 +166,26 @@ func (c *DrillCmd) Run(_ *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	v, err := vaultfile.OpenWithMaster(blob, &keys.Public, &keys.Private)
-	if err != nil {
-		return fmt.Errorf("the phrase does not open the newest backup: %w", err)
+	var v *vaultfile.Vault
+	if blob != nil {
+		if v, err = vaultfile.OpenWithMaster(blob, &keys.Public, &keys.Private); err != nil {
+			return fmt.Errorf("the phrase does not open the newest backup: %w", err)
+		}
+		fmt.Printf("✓ The phrase opens %s (generation %d, %s).\n", key, v.Generation, v.CreatedAt.Format(time.DateOnly))
 	}
-	fmt.Printf("✓ The phrase opens %s (generation %d, %s).\n", key, v.Generation, v.CreatedAt.Format(time.DateOnly))
 
-	guarded, err := drillGuard(v.Projects, keys.Private)
-	if err != nil {
-		return err
+	n, failed := drillSeals(keys.Private)
+	for _, f := range failed {
+		fmt.Printf("  ✗ %s\n", safetext.Clean(f))
 	}
-	if guarded >= 0 {
-		fmt.Printf("✓ The recovery key opens the guard and its %d guarded key(s).\n", guarded)
+	if len(failed) > 0 {
+		return fmt.Errorf("drill failed: the phrase does not open %d sealed key(s); seal them again (esec vault seal sync in each checkout) and drill again", len(failed))
+	}
+	fmt.Printf("✓ The phrase alone opens all %d key(s) sealed in your checkouts, guarded ones too.\n", n)
+	if v == nil {
+		_ = verify.SaveDrill(time.Now().UTC())
+		fmt.Println("Drill passed. Do it again every few months, and after changing the passphrase.")
+		return nil
 	}
 
 	reg, err := workspace.Load()
@@ -208,40 +217,41 @@ func (c *DrillCmd) Run(_ *cliCtx) error {
 	return nil
 }
 
-// drillGuard opens the guard in v with the recovery key, and every guarded
-// key with the guard. It returns -1 when there is no guard.
-func drillGuard(projects map[string]map[string]string, recoveryPriv [32]byte) (int, error) {
-	g, err := guard.FromEntries(projects["default"])
-	if errors.Is(err, guard.ErrNotSetUp) {
-		return -1, nil
-	}
+// drillSeals opens every seal in every checkout this machine knows with
+// the recovery key alone, as a cold recovery would. It returns how many
+// opened, and which did not.
+func drillSeals(recoveryPriv [32]byte) (int, []string) {
+	id, err := coreseal.X25519Identity(hex.EncodeToString(recoveryPriv[:]))
 	if err != nil {
-		return 0, err
+		return 0, []string{err.Error()}
 	}
-	s, err := guard.X25519IdentityString(recoveryPriv)
+	reg, err := workspace.Load()
 	if err != nil {
-		return 0, err
-	}
-	rec, err := age.ParseX25519Identity(s)
-	if err != nil {
-		return 0, err
-	}
-	id, err := g.Open(rec)
-	if err != nil {
-		return 0, fmt.Errorf("the recovery key does not open the guard (was it set up with --no-recovery?): %w", err)
+		return 0, []string{err.Error()}
 	}
 	n := 0
-	for p, entries := range projects {
-		for k, val := range entries {
-			if !keystore.IsGuardEntry(k) {
+	var failed []string
+	seen := map[string]bool{}
+	for _, co := range reg.Checkouts {
+		if workspace.Check(co) != workspace.StatusOK {
+			continue
+		}
+		pf, err := projectfile.Load(co.Path)
+		if err != nil || seen[pf.Project] {
+			continue
+		}
+		seen[pf.Project] = true
+		for _, env := range pf.Envs() {
+			data, err := coreseal.Read(co.Path, env)
+			if err != nil {
 				continue
 			}
-			pub := strings.ToLower(strings.TrimPrefix(k, "ESEC_GUARD_"))
-			if _, err := guard.Unwrap(id, val, pub, keystore.PublicHex); err != nil {
-				return n, fmt.Errorf("guarded key %s… of %s does not open: %w", pub[:12], p, err)
+			if _, err := coreseal.Open(data, pf.Project, env, pf.Env[env].Key, id); err != nil {
+				failed = append(failed, pf.Project+" "+env+": "+err.Error())
+				continue
 			}
 			n++
 		}
 	}
-	return n, nil
+	return n, failed
 }

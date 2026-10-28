@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	coreseal "github.com/mscno/esec/pkg/seal"
 	"golang.org/x/term"
 
 	"github.com/mscno/esec-vault/internal/account"
@@ -17,6 +18,7 @@ import (
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/safetext"
+	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/service"
 	"github.com/mscno/esec-vault/internal/verify"
 	"github.com/mscno/esec-vault/internal/workspace"
@@ -95,6 +97,7 @@ func (c *SetupCmd) Run(ctx *cliCtx) error {
 	r.daemon()
 	r.checkouts()
 	if haveID {
+		r.seals()
 		r.keysHere()
 		r.guard()
 		r.verify()
@@ -376,6 +379,17 @@ func tildePaths(paths []string) []string {
 
 // keysHere says which environments of the checkouts have no key here.
 func (r *setupRun) keysHere() {
+	// Open what this person can into the keyring first: a new machine then
+	// has every unguarded key of every checkout, with no sync.
+	if !r.c.Check {
+		if s, err := newSealing(r.ctx); err == nil {
+			if targets, err := sealTargets("", true); err == nil {
+				for _, t := range targets {
+					s.unsealAll(t.root, t.pf)
+				}
+			}
+		}
+	}
 	views, err := projectViews()
 	if err != nil {
 		r.add("keys here", "failed", err.Error(), "esec vault projects")
@@ -390,11 +404,79 @@ func (r *setupRun) keysHere() {
 		}
 	}
 	if len(missing) == 0 {
-		r.add("keys here", "ok", fmt.Sprintf("every environment of %d project(s)", len(views)), "")
+		r.add("keys here", "ok", fmt.Sprintf("every environment of %d project(s) opens here", len(views)), "")
 		return
 	}
-	r.add("keys here", "todo", fmt.Sprintf("%d environment(s) without their key here: %s", len(missing), strings.Join(firstN(missing, 5), ", ")),
+	r.add("keys here", "todo", fmt.Sprintf("%d environment(s) not shared with you: %s", len(missing), strings.Join(firstN(missing, 5), ", ")),
 		"esec vault projects (each says what to do)")
+}
+
+// sealState sorts the environments of every checkout: keys not sealed in
+// their repository yet, seals to make again (unguarded ones: guarded ones
+// need a touch, so they wait for seal sync), and seals that fail the check.
+func sealState(s *sealing, targets []sealTarget) (unsealed, stale, broken []string) {
+	for _, t := range targets {
+		recs, _ := seal.LoadRecords(t.root)
+		for _, p := range seal.Check(t.pf, recs, func(env string) ([]byte, error) { return coreseal.Read(t.root, env) }) {
+			if p.Level == seal.Fail && !strings.Contains(p.Detail, "not sealed in the repository") {
+				broken = append(broken, t.pf.Project+" "+p.Env+": "+p.Detail)
+			}
+		}
+		for _, env := range t.pf.Envs() {
+			e := t.pf.Env[env]
+			if e.Key == "" {
+				continue
+			}
+			if _, err := coreseal.Read(t.root, env); err != nil {
+				unsealed = append(unsealed, t.pf.Project+" "+env)
+				continue
+			}
+			if why, err := seal.Stale(s.bg(), s.dir, e, recs[env], s.sign); err == nil && len(why) > 0 && !seal.Guarded(e.Guard) {
+				stale = append(stale, t.pf.Project+" "+env)
+			}
+		}
+	}
+	return unsealed, stale, broken
+}
+
+// seals makes sure every key of every checkout is sealed in its repository
+// with a recovery key, and current: keys this device holds and no seal does
+// yet are sealed; changed readers are sealed again.
+func (r *setupRun) seals() {
+	targets, err := sealTargets("", true)
+	if err != nil || len(targets) == 0 {
+		return
+	}
+	s, err := newSealing(r.ctx)
+	if err != nil {
+		r.add("seals", "failed", err.Error(), "esec vault seal --all")
+		return
+	}
+	unsealed, stale, broken := sealState(s, targets)
+	if len(broken) > 0 {
+		r.add("seals", "failed", fmt.Sprintf("%d seal problem(s): %s", len(broken), strings.Join(firstN(broken, 3), "; ")), "esec vault seal --all")
+		return
+	}
+	if len(unsealed)+len(stale) == 0 {
+		r.add("seals", "ok", fmt.Sprintf("every key of %d project(s) is sealed in its repository, with your recovery key", len(targets)), "")
+		return
+	}
+	if !r.may(fmt.Sprintf("%d key(s) to seal in their repositories (%s). Seal them now?", len(unsealed)+len(stale), strings.Join(firstN(append(unsealed, stale...), 3), ", "))) {
+		r.add("seals", "todo", fmt.Sprintf("%d key(s) not sealed in their repository, %d to seal again", len(unsealed), len(stale)), "esec vault seal migrate --all && esec vault seal sync --all")
+		return
+	}
+	failed := 0
+	if len(unsealed) > 0 && (&SealMigrateCmd{All: true}).Run(r.ctx) != nil {
+		failed++
+	}
+	if len(stale) > 0 && (&SealSyncCmd{All: true}).Run(r.ctx) != nil {
+		failed++
+	}
+	if failed > 0 {
+		r.add("seals", "failed", "some keys could not be sealed", "esec vault seal --all")
+		return
+	}
+	r.add("seals", "done", "sealed; commit .esec/ and esec.toml in each repository", "")
 }
 
 func firstN(list []string, n int) []string {
@@ -413,7 +495,7 @@ func (r *setupRun) guard() {
 		return
 	}
 	if !st.SetUp {
-		r.add("guard", "todo", "prod keys are not behind your YubiKey yet", "esec vault guard init")
+		r.add("guard", "todo", "no security key yet: plug in your YubiKey to keep prod behind a touch", "esec vault security-keys add")
 		return
 	}
 	var inClear []guardProject
@@ -431,7 +513,7 @@ func (r *setupRun) guard() {
 		r.guardHere(inClear)
 	}
 	if len(st.Holders) < 2 {
-		r.add("spare YubiKey", "todo", "one holder: losing it means recovering from the phrase", "esec vault guard holders add")
+		r.add("spare YubiKey", "todo", "one security key: losing it means recovering with the phrase", "esec vault security-keys add")
 	}
 }
 

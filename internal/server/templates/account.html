@@ -56,6 +56,21 @@
 
 <p class="muted">Sign changes made on these pages with a passkey, or let the server sign removals: <a href="/account/signing">Signing</a>.</p>
 
+<h2 id="security-keys">Security keys</h2>
+{{with .SecurityKeys}}
+<div class="scroll">
+<table>
+  <thead><tr><th>Name</th><th>Kind</th><th>Serial</th><th>Added</th></tr></thead>
+  <tbody>
+  {{range .}}<tr><td>{{.Name}}</td><td>{{.Kind}}</td><td>{{.Serial}}</td><td>{{ago .Added}}</td></tr>{{end}}
+  </tbody>
+</table>
+</div>
+<p class="muted">Guarded environments are sealed to these: each read needs a touch of one. Add or remove them on a device: <code>esec vault security-keys</code>.</p>
+{{else}}
+<p class="muted">None yet. Plug in a YubiKey and run <code>esec vault security-keys add</code> on a device; your guarded environments are then sealed to it.</p>
+{{end}}
+
 <h2 id="devices">Devices</h2>
 <div class="scroll">
 <table>

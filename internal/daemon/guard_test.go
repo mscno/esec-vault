@@ -10,9 +10,11 @@ import (
 	"filippo.io/age"
 	"github.com/mscno/esec"
 
+	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
+
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/guard"
-	"github.com/mscno/esec-vault/internal/keystore"
 )
 
 func TestGuarderOpensAndCaches(t *testing.T) { //nolint:gocyclo // one story, step by step
@@ -24,44 +26,49 @@ func TestGuarderOpensAndCaches(t *testing.T) { //nolint:gocyclo // one story, st
 		t.Fatal(err)
 	}
 	t.Setenv(guard.IdentitiesEnv, idFile)
-	ks := keystore.New()
-	g, gid, err := guard.New([]string{yubi.Recipient().String()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := guard.Save(ks, g); err != nil {
-		t.Fatal(err)
-	}
-	entries := map[string]string{}
-	pubs := map[string]string{}
+	repo := t.TempDir()
+	pf := &projectfile.File{Project: "acme/store"}
+	privs := map[string]string{}
 	for env, level := range map[string]string{"prod": "touch", "staging": "session"} {
 		pub, priv, _ := esec.GenerateKeypair()
-		v, err := guard.Wrap(gid.Recipient(), guard.Key{Project: "acme/store", Env: env, Level: level, Private: priv})
+		data, err := coreseal.Seal(coreseal.Payload{Project: "acme/store", Env: env, Guard: level, Private: priv}, yubi.Recipient())
 		if err != nil {
 			t.Fatal(err)
 		}
-		entries[keystore.GuardEntry(pub)], entries[keystore.GuardEnvEntry(env)] = v, pub
-		pubs[env] = priv
+		if err := coreseal.Write(repo, env, data); err != nil {
+			t.Fatal(err)
+		}
+		pf.SetEnv(env, pub)
+		e := pf.Env[env]
+		e.Guard = level
+		pf.Env[env] = e
+		privs[env] = priv
 	}
-	if err := ks.Write("acme/store", entries, false); err != nil {
+	if err := pf.Save(repo); err != nil {
 		t.Fatal(err)
 	}
+	path := func(env string) string { return filepath.Join(repo, ".env."+env) }
+	req := func(env string) broker.GuardRequest {
+		return broker.GuardRequest{Project: "acme/store", Env: env, Path: path(env), PublicKey: pf.Env[env].Key}
+	}
 
-	gd := newGuarder(ks, func() (bool, time.Time) { return false, time.Time{} })
+	gd := newGuarder(func() ([]string, error) { return []string{yubi.Recipient().String()}, nil }, func() (bool, time.Time) { return false, time.Time{} })
 	opens := 0
 	gd.presence = func() guard.Presence {
 		opens++
 		return guard.DefaultPresence
 	}
-	if has, err := gd.Has("acme/store", "prod", ""); !has || err != nil {
+	if has, err := gd.Has(req("prod")); !has || err != nil {
 		t.Fatal("Has", err)
 	}
-	if has, err := gd.Has("acme/other", "prod", ""); has || err != nil {
-		t.Fatal("Has other", err)
+	other := req("prod")
+	other.Project = "acme/other"
+	if _, err := gd.Has(other); err == nil {
+		t.Fatal("a file of acme/store was taken for acme/other")
 	}
 	for i := 0; i < 2; i++ {
-		priv, how, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "prod"})
-		if err != nil || priv != pubs["prod"] || how != "touch" {
+		priv, how, err := gd.Key(req("prod"))
+		if err != nil || priv != privs["prod"] || how != "touch" {
 			t.Fatalf("prod: %v %s", err, how)
 		}
 	}
@@ -69,51 +76,40 @@ func TestGuarderOpensAndCaches(t *testing.T) { //nolint:gocyclo // one story, st
 		t.Fatalf("touch-guarded key opened %d times for 2 reads", opens)
 	}
 	for i := 0; i < 2; i++ {
-		if priv, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "staging"}); err != nil || priv != pubs["staging"] {
+		if priv, _, err := gd.Key(req("staging")); err != nil || priv != privs["staging"] {
 			t.Fatalf("staging: %v", err)
 		}
 	}
 	if opens != 3 {
 		t.Fatalf("session-guarded key opened %d times; want once", opens-2)
 	}
-	// Moved to another project's keyring, it is refused.
-	if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/shop", Env: "staging"}); err == nil {
-		t.Fatal("served a key for another project")
-	}
 	gd.clear()
-	if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "staging"}); err != nil || opens != 4 {
+	if _, _, err := gd.Key(req("staging")); err != nil || opens != 4 {
 		t.Fatalf("after lock: %v, opens %d", err, opens)
 	}
-	// A forwarded read never uses the open session key, nor fills it.
+	// A forwarded read brings its seal, never uses the open session key,
+	// nor fills it.
+	sealed, _ := coreseal.Read(repo, "staging")
 	for i := 0; i < 2; i++ {
-		if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "staging", Forwarded: true}); err != nil {
+		fr := broker.GuardRequest{Project: "acme/store", Env: "staging", PublicKey: pf.Env["staging"].Key, Forwarded: true, Seal: sealed}
+		if _, _, err := gd.Key(fr); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if opens != 6 {
-		t.Fatalf("forwarded reads opened the guard %d times; want 2", opens-4)
+		t.Fatalf("forwarded reads opened %d times; want 2", opens-4)
 	}
-	// The key decides the environment: prod's file asked for as staging
-	// is refused before any dialog.
-	if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "staging", PublicKey: pubOf(t, pubs["prod"])}); err == nil || opens != 6 {
-		t.Fatalf("prod's key served as staging: %v (opens %d)", err, opens)
+	// prod's file asked for as staging: staging's seal holds another key.
+	wrong := req("staging")
+	wrong.PublicKey = pf.Env["prod"].Key
+	if _, _, err := gd.Key(wrong); err == nil {
+		t.Fatal("prod's key served as staging")
 	}
-	// An unknown file key never falls back to the environment's key.
-	if has, _ := gd.Has("acme/store", "prod", strings.Repeat("ab", 32)); has {
-		t.Fatal("a foreign file key matched prod's guarded key")
-	}
-	if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "prod\nAsked by: you"}); err == nil {
+	bad := req("prod")
+	bad.Env = "prod\nAsked by: you"
+	if _, _, err := gd.Key(bad); err == nil {
 		t.Fatal("served an invalid environment name")
 	}
-}
-
-func pubOf(t *testing.T, priv string) string {
-	t.Helper()
-	pub, err := keystore.PublicHex(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pub
 }
 
 func TestDescribeReadCannotBeForged(t *testing.T) {

@@ -12,8 +12,10 @@ import (
 
 	"github.com/mscno/esec/pkg/projectfile"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/safetext"
+	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/secretfile"
 	"github.com/mscno/esec-vault/internal/workspace"
 )
@@ -134,6 +136,10 @@ type envView struct {
 	// Mismatch is set when esec.toml names another key than this device
 	// holds for the environment.
 	Mismatch bool `json:"mismatch,omitempty"`
+	// Readers are who it is sealed to, as esec.toml names them.
+	Readers []string `json:"readers,omitempty"`
+	// Pending are readers not sealed in yet (no account or security key).
+	Pending []string `json:"pending,omitempty"`
 	// Action is the command that fixes what is wrong, if anything.
 	Action string `json:"action,omitempty"`
 }
@@ -186,13 +192,19 @@ func projectViews() ([]projectView, error) {
 			get(id).KeysHere = true
 		}
 	}
+	me := ""
+	if st, err := account.LoadState(); err == nil {
+		me = st.User
+	}
 	out := make([]projectView, 0, len(byID))
 	for _, v := range byID {
 		var pf *projectfile.File
+		var recs seal.Records
 		for _, c := range v.Checkouts {
 			if c.Status == workspace.StatusOK {
 				if f, err := projectfile.Load(c.Path); err == nil {
 					pf = f
+					recs, _ = seal.LoadRecords(c.Path)
 					break
 				}
 			}
@@ -203,7 +215,7 @@ func projectViews() ([]projectView, error) {
 				return nil, err
 			}
 		}
-		v.Envs = envViews(pf, entries)
+		v.Envs = envViews(pf, entries, recs, me)
 		for i := range v.Envs {
 			v.Envs[i].Action = envAction(v.Project, v.Envs[i])
 		}
@@ -213,59 +225,72 @@ func projectViews() ([]projectView, error) {
 	return out, nil
 }
 
-// envViews lists the environments esec.toml declares and those this
-// device holds keys for.
-func envViews(pf *projectfile.File, entries map[string]string) []envView {
-	names := map[string]bool{}
-	if pf != nil {
-		for name := range pf.Env {
-			names[name] = true
-		}
+// envViews lists the environments esec.toml declares, and whether this
+// device opens each: its key cached here ("clear"), sealed to this person
+// and opened on first use ("sealed"), opened with a touch ("guarded"), or
+// not at all ("missing").
+func envViews(pf *projectfile.File, entries map[string]string, recs seal.Records, me string) []envView {
+	if pf == nil {
+		return []envView{}
 	}
-	for k := range entries {
-		if env, ok := keystore.EnvName(k); ok {
-			names[env] = true
-		}
-	}
-	out := make([]envView, 0, len(names))
-	for name := range names {
-		e := envView{Name: name, Guard: projectfile.GuardNone, Here: "missing"}
-		if pf != nil {
-			e.Key, e.Guard = pf.Env[name].Key, pf.Env[name].GuardLevel()
-		}
-		pub, level := envPublic(entries, name)
-		switch level {
-		case "":
-		case projectfile.GuardNone:
+	out := make([]envView, 0, len(pf.Env))
+	for _, name := range pf.Envs() {
+		pe := pf.Env[name]
+		e := envView{Name: name, Key: pe.Key, Guard: pe.GuardLevel(), Here: "missing", Readers: pe.Readers}
+		switch {
+		case pe.Key != "" && entries[keystore.PubEntry(pe.Key)] != "" && !seal.Guarded(pe.Guard):
 			e.Here = "clear"
-		default:
+		case sealedFor(recs[name], me) && seal.Guarded(pe.Guard):
 			e.Here = "guarded"
-			if e.Guard == projectfile.GuardNone {
-				e.Guard = level
+		case sealedFor(recs[name], me):
+			e.Here = "sealed"
+		}
+		if priv := entries[keystore.EnvEntry(name)]; priv != "" && pe.Key != "" {
+			if pub, err := keystore.PublicHex(priv); err == nil && pub != pe.Key && entries[keystore.PubEntry(pe.Key)] == "" {
+				e.Mismatch = true
 			}
 		}
-		if pub != "" && e.Key != "" && pub != e.Key {
-			e.Mismatch = true
-		}
-		if e.Key == "" {
-			e.Key = pub
+		if rec := recs[name]; rec != nil {
+			for _, sf := range rec.Readers {
+				if sf.Pending != "" {
+					e.Pending = append(e.Pending, sf.Reader)
+				}
+			}
 		}
 		out = append(out, e)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// sealedFor reports whether a seal was made for this person ("me", their
+// GitHub id).
+func sealedFor(rec *seal.Record, me string) bool {
+	if rec == nil {
+		return false
+	}
+	for _, sf := range rec.Readers {
+		r, err := seal.ParseReader(sf.Reader)
+		if err != nil || sf.Pending != "" {
+			continue
+		}
+		if r.Kind == seal.KindMe || (me != "" && r.ID == me) {
+			return true
+		}
+	}
+	return false
 }
 
 // envAction is the one command that fixes an environment, "" when it is
 // fine.
 func envAction(project string, e envView) string {
 	switch {
-	case e.Here == "missing" || e.Mismatch:
-		// A teammate may have added or rotated it; sync brings keys you may
-		// hold, access request asks for one you may not.
-		return "esec vault sync (or, for a shared project: esec vault access request " + e.Name + " --project " + project + ")"
-	case e.Here == "clear" && e.Guard != projectfile.GuardNone:
-		return "esec vault guard enable --project " + project + " --env " + e.Name
+	case e.Here == "missing":
+		// Not sealed to this person: someone who reads it shares it.
+		return "ask a reader of " + e.Name + " to run: esec vault share " + e.Name + " --with YOUR-GITHUB-LOGIN"
+	case e.Mismatch:
+		return "esec vault seal sync --project " + project
+	case len(e.Pending) > 0:
+		return "esec vault seal sync --project " + project + " (" + strings.Join(e.Pending, ", ") + " not sealed in yet)"
 	}
 	return ""
 }

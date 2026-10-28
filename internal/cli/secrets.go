@@ -16,6 +16,7 @@ import (
 
 	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
 
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/caller"
@@ -23,6 +24,7 @@ import (
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/notify"
 	"github.com/mscno/esec-vault/internal/safetext"
+	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/secretfile"
 	"github.com/mscno/esec-vault/internal/storage"
 )
@@ -533,6 +535,30 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 			add(f.Path, account.CheckWarn, "someone who lost access may still hold the "+f.Env+" key", "esec vault env rotate "+f.Env)
 		}
 	}
+	// Every project's seals: each key sealed, recorded, signed, recoverable.
+	roots := map[string]bool{}
+	for _, f := range files {
+		if f.Root != "" {
+			roots[f.Root] = true
+		}
+	}
+	if _, here, err := projectRoot(root); err == nil {
+		roots[here] = true
+	}
+	for r := range roots {
+		problems, err := sealLint(r, c.Staged)
+		if err != nil {
+			add(filepath.Join(r, projectfile.ProjectFileName), account.CheckWarn, "seals not checked: "+err.Error(), "")
+			continue
+		}
+		for _, p := range problems {
+			level := account.CheckWarn
+			if p.Level == seal.Fail {
+				level = account.CheckFail
+			}
+			add(filepath.Join(r, coreseal.Dir, p.Env+".age"), level, p.Env+": "+p.Detail, p.Fix)
+		}
+	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Level == account.CheckFail && out[j].Level != account.CheckFail })
 	failed := 0
 	for _, f := range out {
@@ -566,6 +592,54 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 		return fmt.Errorf("%d problem(s) in secrets files", failed)
 	}
 	return nil
+}
+
+// sealLint checks a project's seals, on disk or as staged for the next
+// commit.
+func sealLint(root string, staged bool) ([]seal.Problem, error) {
+	if !staged {
+		pf, err := projectfile.Load(root)
+		if err != nil {
+			return nil, err
+		}
+		recs, err := seal.LoadRecords(root)
+		if err != nil {
+			return nil, err
+		}
+		return seal.Check(pf, recs, func(env string) ([]byte, error) { return coreseal.Read(root, env) }), nil
+	}
+	top, err := gitOutput(root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, err
+	}
+	top = strings.TrimSpace(top)
+	resolved := root
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		resolved = r
+	}
+	rel, err := filepath.Rel(top, resolved)
+	if err != nil {
+		return nil, err
+	}
+	show := func(name string) ([]byte, error) {
+		out, err := gitOutput(top, "show", ":"+filepath.ToSlash(filepath.Join(rel, name)))
+		return []byte(out), err
+	}
+	data, err := show(projectfile.ProjectFileName)
+	if err != nil {
+		return nil, nil //nolint:nilerr // esec.toml is not in the commit
+	}
+	pf, err := projectfile.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	recs := seal.Records{}
+	if data, err := show(filepath.Join(coreseal.Dir, seal.RecordsFile)); err == nil {
+		if recs, err = seal.ParseRecords(data); err != nil {
+			return nil, err
+		}
+	}
+	return seal.Check(pf, recs, func(env string) ([]byte, error) { return show(filepath.Join(coreseal.Dir, env+".age")) }), nil
 }
 
 // stagedSecrets reads the staged version of every secrets file staged for

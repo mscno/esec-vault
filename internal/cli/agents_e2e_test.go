@@ -19,13 +19,13 @@ import (
 func TestProjectInitAgainKeepsGuardedKey(t *testing.T) {
 	r := newGuardRig(t)
 	repo := initTestRepo(t)
-	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--format", "env", "--offline")
+	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--format", "env")
 	r.must(repo, "", "guard", "enable", "--env", "prod")
 	before, _ := projectfile.Load(repo)
 
-	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--guard", "prod", "--format", "env", "--offline")
+	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--guard", "prod", "--format", "env")
 	after, _ := projectfile.Load(repo)
-	if after.Env["prod"] != before.Env["prod"] {
+	if !after.Env["prod"].Equal(before.Env["prod"]) {
 		t.Fatalf("prod changed: %+v → %+v", before.Env["prod"], after.Env["prod"])
 	}
 	t.Setenv("ESEC_VAULT_HOME", r.home)
@@ -45,7 +45,7 @@ func TestProjectInitAgainKeepsGuardedKey(t *testing.T) {
 func TestManyAgentsAtOnce(t *testing.T) {
 	r := newGuardRig(t)
 	repo := initTestRepo(t)
-	r.must(repo, "", "project", "init", "acme/store", "--env", "dev", "--format", "env", "--offline")
+	r.must(repo, "", "project", "init", "acme/store", "--env", "dev", "--format", "env")
 	toml := filepath.Join(repo, projectfile.ProjectFileName)
 	data, err := os.ReadFile(toml) //nolint:gosec // a test checkout
 	if err != nil {
@@ -60,7 +60,7 @@ func TestManyAgentsAtOnce(t *testing.T) {
 	errs := make(chan string, len(envs))
 	for _, env := range envs {
 		wg.Go(func() {
-			if out, code := r.run(repo, "", "env", "add", env, "--offline"); code != 0 {
+			if out, code := r.run(repo, "", "env", "add", env); code != 0 {
 				errs <- fmt.Sprintf("env add %s: %d %s", env, code, out)
 			}
 		})
@@ -123,7 +123,7 @@ func TestManyAgentsAtOnce(t *testing.T) {
 func TestLintAgainstProjectFile(t *testing.T) {
 	r := newGuardRig(t)
 	repo := initTestRepo(t)
-	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,staging", "--format", "env", "--offline")
+	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,staging", "--format", "env")
 	if out := r.must(repo, "", "secrets", "lint"); !strings.Contains(out, "every value encrypted") {
 		t.Fatalf("lint: %s", out)
 	}

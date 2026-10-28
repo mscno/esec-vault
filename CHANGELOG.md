@@ -1,5 +1,35 @@
 # Unreleased
 
+**Keys live with the code.** Each environment's private key is sealed in
+its repository, `.esec/<env>.age` (a standard age file), to its readers and
+always to a recovery key the 24 words derive. The repository and the phrase
+are enough to recover every key in every commit; nobody handles a key.
+
+- **Readers by GitHub id**: `esec vault share dev --with alice` pins alice by
+  her numeric GitHub id, seals to her user key (or, for guarded
+  environments, her YubiKeys) from her signed chain; someone without an
+  account is pinned and sealed in once they sign up. `unshare --rotate`.
+- **Signed records** in `.esec/seals.toml`: `seal check`, `secrets lint`
+  (staged too), the pre-commit hook and CI catch a swapped key, an unsealed
+  reader or a seal without a recovery key, with no network.
+- **YubiKeys as things you plug in**: `security-keys add` registers plugged-in
+  keys with a name in your signed chain (everyone who seals for you uses
+  them), `setup` provisions one, `test`, `remove`; the background service
+  notices a new one. Guarded environments are sealed straight to security
+  keys: one touch opens one environment. The shared guard identity is gone
+  (`guard init`, `holders`, `recover`, `check`, `export`).
+- **`seal`**: `status`, `sync` (reseal what changed, open what you can into
+  the keyring cache), `check`, `migrate`, `recover` (the phrase reseals
+  everything, no security key needed).
+- **`ci add NAME --env prod --github OWNER/REPO | --fly APP`**: CI gets its
+  own age key, stored with gh or fly, never shown; `esec run` reads with
+  `ESEC_AGE_IDENTITY` and nothing else.
+- **A new machine needs only your identity**: `setup` (and the background
+  service) open every unguarded key of every checkout from the repository.
+- `drill` opens every seal with the phrase alone; `verify` counts a sealed
+  key as kept in two places. `project init`, `env add`, `env rotate` seal
+  before they write (`--offline` is gone).
+
 Many independent projects, keys that cannot be lost, and prod keys only a
 touch of your YubiKey opens, so agents can work beside them.
 

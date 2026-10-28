@@ -3,14 +3,18 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"filippo.io/age"
+	"github.com/mscno/esec"
 	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
 
 	"github.com/mscno/esec-vault/internal/keystore"
 )
@@ -22,6 +26,9 @@ type guardRig struct {
 	bin  string
 	home string
 	env  []string
+	// yubi stands in for a YubiKey: its recipient counts as this person's
+	// security key.
+	yubi *age.X25519Identity
 }
 
 func newGuardRig(t *testing.T) *guardRig {
@@ -40,7 +47,8 @@ func newGuardRig(t *testing.T) *guardRig {
 		"ESEC_VAULT_GUARD_IDENTITIES="+idFile, "ESEC_VAULT_SERVER=", "XDG_CONFIG_HOME=",
 		// Never the person's keychain: a 0600 file in the test's home.
 		"ESEC_SECRET_STORE=file")}
-	r.must("", "", "guard", "init", "--holder", yubi.Recipient().String(), "--no-recovery")
+	r.must("", "", "identity", "init", "--no-passphrase", "--skip-confirm")
+	r.yubi = yubi
 	return r
 }
 
@@ -73,14 +81,20 @@ func TestGuardedProjectLifecycle(t *testing.T) { //nolint:gocyclo // one story, 
 	r := newGuardRig(t)
 	repo := initTestRepo(t)
 
-	// Born guarded: prod's key never exists in the clear on disk.
+	// Born sealed: dev for me, prod for my security key; both to my
+	// recovery key. prod's key never exists in the clear on this device.
 	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--guard", "prod", "--format", "env")
 	pf, err := projectfile.Load(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pf.Env["prod"].Guard != "touch" || pf.Env["prod"].Key == "" || pf.Env["dev"].GuardLevel() != "none" || pf.Files.Format != "env" {
+	if pf.Env["prod"].Guard != "touch" || pf.Env["prod"].Key == "" || pf.Env["dev"].GuardLevel() != "none" || len(pf.Env["dev"].Readers) != 1 {
 		t.Fatalf("esec.toml: %+v", pf)
+	}
+	for _, env := range []string{"dev", "prod"} {
+		if _, err := os.Stat(filepath.Join(repo, ".esec", env+".age")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("ESEC_VAULT_HOME", r.home)
 	t.Setenv("ESEC_KEYRING_DIR", "")
@@ -88,73 +102,130 @@ func TestGuardedProjectLifecycle(t *testing.T) { //nolint:gocyclo // one story, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, isClear := entries[keystore.EnvEntry("prod")]; isClear || entries[keystore.GuardEnvEntry("prod")] != pf.Env["prod"].Key || entries[keystore.GuardEntry(pf.Env["prod"].Key)] == "" {
-		t.Fatalf("prod key not guarded: %v", keys(entries))
+	if entries[keystore.PubEntry(pf.Env["prod"].Key)] != "" || entries[keystore.EnvEntry("prod")] != "" {
+		t.Fatalf("prod's key is in the clear here: %v", keys(entries))
 	}
-	if _, isClear := entries[keystore.PubEntry(pf.Env["prod"].Key)]; isClear {
-		t.Fatal("prod key filed in the clear")
+	if entries[keystore.PubEntry(pf.Env["dev"].Key)] == "" {
+		t.Fatal("dev's key was not cached")
+	}
+	// The seals are standard age files: the stand-in YubiKey opens prod's;
+	// dev's does not open with it.
+	prodSeal, _ := os.ReadFile(filepath.Join(repo, ".esec", "prod.age")) //nolint:gosec // a test checkout
+	if _, err := coreseal.Open(prodSeal, "acme/store", "prod", pf.Env["prod"].Key, r.yubi); err != nil {
+		t.Fatalf("the security key does not open prod: %v", err)
+	}
+	devSeal, _ := os.ReadFile(filepath.Join(repo, ".esec", "dev.age")) //nolint:gosec // a test checkout
+	if _, err := coreseal.Open(devSeal, "acme/store", "dev", "", r.yubi); err == nil {
+		t.Fatal("dev is sealed to the security key: it should need only the user key")
+	}
+	if out := r.must(repo, "", "seal", "check"); !strings.Contains(out, "sealed, signed, and recoverable") {
+		t.Fatalf("seal check: %s", out)
 	}
 
-	// Listed as guarded; never printed.
-	var list []struct {
-		Env     string `json:"env"`
-		Guarded bool   `json:"guarded"`
-	}
-	if err := json.Unmarshal([]byte(r.must(repo, "", "env", "list", "--json")), &list); err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 2 || !list[1].Guarded || list[1].Env != "prod" {
-		t.Fatalf("env list: %+v", list)
-	}
+	// Never printed.
 	if out, code := r.run(repo, "y\n", "env", "show-key", "prod"); code == 0 {
 		t.Fatalf("show-key printed a guarded key: %s", out)
 	}
-
 	// Writing a prod value needs only the public key.
 	r.must(repo, "sk_live_123\n", "secrets", "set", "API_KEY", "--env", "prod", "--create")
-	if out := r.must(repo, "", "guard", "check"); !strings.Contains(out, "1 guarded key(s) checked") {
-		t.Fatalf("check: %s", out)
-	}
 
-	// Rotation opens the old key with the guard and guards the new one.
+	// Rotation opens the old key with the security key and seals the new
+	// one the same way.
 	r.must(repo, "", "env", "rotate", "prod", "--yes")
 	pf2, _ := projectfile.Load(repo)
 	if pf2.Env["prod"].Key == pf.Env["prod"].Key || pf2.Env["prod"].Guard != "touch" {
 		t.Fatalf("rotation: %+v", pf2.Env["prod"])
 	}
-	entries, _ = keystore.New().Read("acme/store")
-	if entries[keystore.GuardEntry(pf.Env["prod"].Key)] == "" || entries[keystore.GuardEntry(pf2.Env["prod"].Key)] == "" {
-		t.Fatalf("rotation lost a guarded key: %v", keys(entries))
+	prodSeal, _ = os.ReadFile(filepath.Join(repo, ".esec", "prod.age")) //nolint:gosec // a test checkout
+	p, err := coreseal.Open(prodSeal, "acme/store", "prod", pf2.Env["prod"].Key, r.yubi)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if out := r.must(repo, "", "guard", "check"); !strings.Contains(out, "2 guarded key(s) checked") {
-		t.Fatalf("check after rotate: %s", out)
+	plain, err := esec.DecryptFile(filepath.Join(repo, ".env.prod"), "", p.Private)
+	if err != nil || !strings.Contains(string(plain), "sk_live_123") {
+		t.Fatalf("rotated prod: %s %v", plain, err)
 	}
 
-	// Guarding an existing environment later.
+	// Guarding an existing environment later, and back.
 	r.must(repo, "", "guard", "enable", "--env", "dev", "--level", "session")
 	pf3, _ := projectfile.Load(repo)
-	if pf3.Env["dev"].Guard != "session" {
-		t.Fatalf("enable: %+v", pf3.Env["dev"])
+	entries, _ = keystore.New().Read("acme/store")
+	if pf3.Env["dev"].Guard != "session" || entries[keystore.PubEntry(pf3.Env["dev"].Key)] != "" {
+		t.Fatalf("enable: %+v, cached: %v", pf3.Env["dev"], keys(entries))
 	}
-	status := r.must(repo, "", "guard", "--json")
-	if !strings.Contains(status, `"envs": [`) || !strings.Contains(status, `"dev"`) {
+	if status := r.must(repo, "", "guard", "--json"); !strings.Contains(status, `"dev"`) || !strings.Contains(status, `"set_up": true`) {
 		t.Fatalf("status: %s", status)
 	}
+	r.must(repo, "", "guard", "disable", "--env", "dev")
+	entries, _ = keystore.New().Read("acme/store")
+	if entries[keystore.PubEntry(pf3.Env["dev"].Key)] == "" {
+		t.Fatal("disable did not cache dev's key again")
+	}
 
-	// Export writes plain age files.
-	out := filepath.Join(t.TempDir(), "export")
-	r.must(repo, "", "guard", "export", "--out", out)
-	files, _ := filepath.Glob(filepath.Join(out, "acme_store.*.age"))
-	if len(files) != 3 {
-		t.Fatalf("export: %v", files)
+	// A CI key reads prod with plain esec and ESEC_AGE_IDENTITY.
+	out := r.must(repo, "", "ci", "add", "deploy", "--env", "prod")
+	var ciKey string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "AGE-SECRET-KEY-1") {
+			ciKey = line
+		}
+	}
+	if ciKey == "" {
+		t.Fatalf("no CI key printed: %s", out)
+	}
+	esecDecrypt := func() ([]byte, error) {
+		cmd := exec.Command(buildEsec(t), "decrypt", "prod")
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "ESEC_AGE_IDENTITY="+ciKey, "ESEC_KEYRING_DIR="+t.TempDir(), "ESEC_VAULT_HOME="+t.TempDir(), "ESEC_CONFIG=")
+		return cmd.CombinedOutput()
+	}
+	if got, err := esecDecrypt(); err != nil || !strings.Contains(string(got), "sk_live_123") {
+		t.Fatalf("CI with esec alone: %v\n%s", err, got)
+	}
+	r.must(repo, "", "ci", "remove", "deploy")
+	if _, err := esecDecrypt(); err == nil {
+		t.Fatal("a removed CI key still reads prod")
+	}
+
+	// Tampering with esec.toml is caught with no network.
+	data, _ := os.ReadFile(filepath.Join(repo, "esec.toml")) //nolint:gosec // a test checkout
+	swapped := strings.Replace(string(data), pf3.Env["dev"].Key, strings.Repeat("b", 64), 1)
+	if err := os.WriteFile(filepath.Join(repo, "esec.toml"), []byte(swapped), 0o600); err != nil { //nolint:gosec // a test checkout
+		t.Fatal(err)
+	}
+	if out, code := r.run(repo, "", "seal", "check"); code == 0 || !strings.Contains(out, "names key") {
+		t.Fatalf("a swapped key passed: %s", out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "esec.toml"), data, 0o600); err != nil { //nolint:gosec // a test checkout
+		t.Fatal(err)
 	}
 }
 
-func TestGuardInitRefusesTwice(t *testing.T) {
-	r := newGuardRig(t)
-	if out, code := r.run("", "", "guard", "init", "--holder", "age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq", "--no-recovery"); code == 0 || !strings.Contains(out, "set up already") {
-		t.Fatalf("second init: %d %s", code, out)
+var (
+	esecOnce     sync.Once
+	esecBin      string
+	errEsecBuild error
+)
+
+// buildEsec builds core esec once, for tests of machines that have only it.
+func buildEsec(t *testing.T) string {
+	t.Helper()
+	esecOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "esec-core-bin-") //nolint:usetesting // shared by every test in the run
+		if err != nil {
+			errEsecBuild = err
+			return
+		}
+		esecBin = filepath.Join(dir, "esec")
+		out, err := exec.Command("go", "build", "-o", esecBin, "github.com/mscno/esec/cmd/esec").CombinedOutput()
+		if err != nil {
+			errEsecBuild = fmt.Errorf("build esec: %w\n%s", err, out)
+		}
+	})
+	if errEsecBuild != nil {
+		t.Fatal(errEsecBuild)
 	}
+	return esecBin
 }
 
 func keys(m map[string]string) []string {
@@ -192,9 +263,10 @@ func TestProjectsRegistryAndVerify(t *testing.T) {
 		t.Fatalf("scan: %s", out)
 	}
 
-	// Each key is unique and on this device only: one place, no reuse.
+	// Each key is unique, on this device and sealed in its repository with
+	// a recovery key: two places, no reuse.
 	out, code := r.run("", "", "verify", "--no-server", "--no-backup", "--json")
-	if code == 0 || !strings.Contains(out, "in one place only") || strings.Contains(out, "several projects") {
+	if code != 0 || !strings.Contains(out, "sealed in the repository") || strings.Contains(out, "several projects") {
 		t.Fatalf("verify: %d %s", code, out)
 	}
 	// A secrets file copied from a to b: one key now serves two projects.

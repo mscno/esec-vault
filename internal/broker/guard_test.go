@@ -18,7 +18,7 @@ type fakeGuard struct {
 	forwarded bool
 }
 
-func (g *fakeGuard) Has(project, env, pub string) (bool, error) { return project == "acme/store", nil }
+func (g *fakeGuard) Has(req GuardRequest) (bool, error) { return req.Project == "acme/store", nil }
 
 func (g *fakeGuard) Key(req GuardRequest) (string, string, error) {
 	g.asked.Add(1)

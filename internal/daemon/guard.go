@@ -3,19 +3,20 @@ package daemon
 import (
 	"errors"
 	"fmt"
-	"io/fs"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"filippo.io/age"
+	"github.com/mscno/esec/pkg/projectfile"
+	coreseal "github.com/mscno/esec/pkg/seal"
 
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/caller"
 	"github.com/mscno/esec-vault/internal/guard"
-	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/safetext"
+	"github.com/mscno/esec-vault/internal/seal"
 )
 
 // sessionTTL bounds how long a session-guarded key stays open when the
@@ -37,7 +38,9 @@ var envNameRe = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
 // read and which programs asked, then the touch. A session-guarded key
 // stays open until the broker locks; a touch-guarded one never does.
 type guarder struct {
-	ks *keystore.Store
+	// securityKeys returns this person's security keys, for a seal without
+	// a record (a forwarded one).
+	securityKeys func() ([]string, error)
 	// session reports the broker's session, to end cached keys with it.
 	session func() (bool, time.Time)
 	// presence is read at each use, so tests can swap the default.
@@ -60,9 +63,9 @@ type cachedKey struct {
 	until   time.Time
 }
 
-func newGuarder(ks *keystore.Store, session func() (bool, time.Time)) *guarder {
+func newGuarder(securityKeys func() ([]string, error), session func() (bool, time.Time)) *guarder {
 	return &guarder{
-		ks: ks, session: session, timeout: openTimeout,
+		securityKeys: securityKeys, session: session, timeout: openTimeout,
 		presence: func() guard.Presence { return guard.DefaultPresence },
 		turn:     make(chan struct{}, 1),
 		waiting:  map[string]bool{},
@@ -70,27 +73,60 @@ func newGuarder(ks *keystore.Store, session func() (bool, time.Time)) *guarder {
 	}
 }
 
-// Has implements broker.Guarder. A keyring that cannot be read is an
-// error, not "no guarded key": the broker must not fall back to a clear
-// key it loaded earlier.
-func (g *guarder) Has(project, env, pub string) (bool, error) {
-	entries, err := g.ks.Read(project)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+// Has implements broker.Guarder: a read is guarded when the project's
+// esec.toml or seal record says so, or when it comes forwarded with its
+// seal. The claim only routes the read: a guarded seal opens only with a
+// security key whatever the claim says. A project file that cannot be read
+// is an error, not "not guarded".
+func (g *guarder) Has(req broker.GuardRequest) (bool, error) {
+	if len(req.Seal) > 0 {
+		return true, nil
+	}
+	root, pf, err := projectOf(req)
+	if err != nil || pf == nil {
+		return false, err
+	}
+	if seal.Guarded(pf.Env[req.Env].Guard) {
+		return true, nil
+	}
+	recs, err := seal.LoadRecords(root)
+	if err != nil {
+		return false, err
+	}
+	rec := recs[req.Env]
+	return rec != nil && seal.Guarded(rec.Guard), nil
+}
+
+// projectOf finds the project of a local read's file: its root and
+// esec.toml, nil when the file belongs to none. It must be the project
+// asked for.
+func projectOf(req broker.GuardRequest) (string, *projectfile.File, error) {
+	if req.Path == "" || req.Forwarded {
+		return "", nil, nil
+	}
+	pf, path, err := projectfile.Find(filepath.Dir(req.Path))
+	if errors.Is(err, projectfile.ErrNotFound) {
+		return "", nil, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read the keyring of %s: %w", project, err)
+		return "", nil, err
 	}
-	_, _, ok := guard.Lookup(entries, env, pub)
-	return ok, nil
+	if pf.Project != req.Project {
+		return "", nil, fmt.Errorf("%s belongs to %s, not %s", req.Path, pf.Project, req.Project)
+	}
+	return filepath.Dir(path), pf, nil
 }
 
 // Key implements broker.Guarder.
 func (g *guarder) Key(req broker.GuardRequest) (string, string, error) {
-	value, pub, keyEnv, err := g.find(req)
+	if !envNameRe.MatchString(req.Env) {
+		return "", "", fmt.Errorf("invalid environment name %q", safetext.CleanN(req.Env, 40))
+	}
+	data, recipients, err := g.find(req)
 	if err != nil {
 		return "", "", err
 	}
+	pub := strings.ToLower(req.PublicKey)
 	// A forwarded read is always one the person sees and touches.
 	if !req.Forwarded {
 		if priv, ok := g.cached(pub, req.Project, req.Env); ok {
@@ -120,90 +156,72 @@ func (g *guarder) Key(req broker.GuardRequest) (string, string, error) {
 			return priv, "session (open)", nil
 		}
 	}
-	gd, err := guard.Load(g.ks)
+	p, err := g.open(data, req, recipients, describeRead(req, req.Env, pub), release)
 	if err != nil {
 		return "", "", err
 	}
-	id, err := g.open(gd, describeRead(req, keyEnv, pub), release)
-	if err != nil {
-		return "", "", err
+	if p.Guard == "session" && !req.Forwarded && pub != "" {
+		g.keep(pub, req.Project, p)
 	}
-	k, err := guard.Unwrap(id, value, pub, keystore.PublicHex)
-	if err != nil {
-		return "", "", err
-	}
-	if err := belongs(k, req); err != nil {
-		return "", "", err
-	}
-	if k.Level == "session" && !req.Forwarded {
-		g.keep(pub, req.Project, k)
-	}
-	if k.Level == "" {
-		k.Level = "touch"
-	}
-	return k.Private, k.Level, nil
+	return p.Private, p.Guard, nil
 }
 
-// find looks the guarded key up: its keyring value, public key, and the
-// environment it belongs to. The key decides what is read, not the
-// environment asked for: a prod file renamed .env.dev is still prod.
-func (g *guarder) find(req broker.GuardRequest) (value, pub, keyEnv string, err error) {
-	if req.Env != "" && !envNameRe.MatchString(req.Env) {
-		return "", "", "", fmt.Errorf("invalid environment name %q", safetext.CleanN(req.Env, 40))
+// find returns the read's seal and the security keys it was made for: the
+// seal a forwarded read carries, or the one in the local project.
+func (g *guarder) find(req broker.GuardRequest) ([]byte, []string, error) {
+	if len(req.Seal) > 0 {
+		keys, err := g.securityKeys()
+		return req.Seal, keys, err
 	}
-	entries, err := g.ks.Read(req.Project)
+	root, pf, err := projectOf(req)
 	if err != nil {
-		return "", "", "", err
+		return nil, nil, err
 	}
-	value, pub, ok := guard.Lookup(entries, req.Env, req.PublicKey)
-	if !ok {
-		return "", "", "", fmt.Errorf("no guarded key for %s %s", req.Project, req.Env)
+	if pf == nil {
+		return nil, nil, fmt.Errorf("no project file (esec.toml) above %s", req.Path)
 	}
-	keyEnv = guard.EnvOf(entries, pub)
-	if keyEnv != "" && req.Env != "" && keyEnv != req.Env {
-		return "", "", "", fmt.Errorf("the file is encrypted to %s's key, not %s's", keyEnv, req.Env)
+	data, err := coreseal.Read(root, req.Env)
+	if err != nil {
+		return nil, nil, err
 	}
-	return value, pub, keyEnv, nil
-}
-
-// belongs checks the opened key's own record against the request.
-func belongs(k *guard.Key, req broker.GuardRequest) error {
-	if k.Project != "" && k.Project != req.Project {
-		return errors.New("the guarded key belongs to another project")
+	recs, err := seal.LoadRecords(root)
+	if err != nil {
+		return nil, nil, err
 	}
-	if k.Env != "" && req.Env != "" && k.Env != req.Env {
-		return fmt.Errorf("the guarded key belongs to %s, not %s", k.Env, req.Env)
+	if rec := recs[req.Env]; rec != nil {
+		return data, rec.Recipients(), nil
 	}
-	return nil
+	keys, err := g.securityKeys()
+	return data, keys, err
 }
 
 // keep holds a session key open until the broker's session ends.
-func (g *guarder) keep(pub, project string, k *guard.Key) {
+func (g *guarder) keep(pub, project string, p *coreseal.Payload) {
 	until := time.Now().Add(sessionTTL)
 	if unlocked, expires := g.session(); unlocked && !expires.IsZero() {
 		until = expires
 	}
 	g.mu.Lock()
-	g.cache[pub] = cachedKey{priv: k.Private, project: project, env: k.Env, until: until}
+	g.cache[pub] = cachedKey{priv: p.Private, project: project, env: p.Env, until: until}
 	g.mu.Unlock()
 }
 
-// open asks and opens the guard, giving up after the timeout. A plugin
-// that never returns is left behind, and the next read may go ahead.
-func (g *guarder) open(gd *guard.Guard, text string, release func()) (*age.X25519Identity, error) {
+// open asks and opens the seal, giving up after the timeout. A plugin that
+// never returns is left behind, and the next read may go ahead.
+func (g *guarder) open(data []byte, req broker.GuardRequest, recipients []string, text string, release func()) (*coreseal.Payload, error) {
 	type result struct {
-		id  *age.X25519Identity
+		p   *coreseal.Payload
 		err error
 	}
 	done := make(chan result, 1)
 	presence := g.presence()
 	go func() {
-		id, err := presence.Open(gd, "esec: allow a guarded read?", text)
-		done <- result{id, err}
+		p, err := presence.OpenSeal(data, req.Project, req.Env, req.PublicKey, recipients, "esec: allow a guarded read?", text)
+		done <- result{p, err}
 	}()
 	select {
 	case r := <-done:
-		return r.id, r.err
+		return r.p, r.err
 	case <-time.After(g.timeout):
 		release()
 		return nil, errors.New("the guarded read timed out waiting for the dialog or the security key")

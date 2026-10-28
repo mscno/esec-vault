@@ -50,6 +50,9 @@ type Request struct {
 	Content []byte `json:"content,omitempty"`
 	// Host names the machine a forwarded request comes from.
 	Host string `json:"host,omitempty"`
+	// Seal is the environment's sealed key (.esec/<env>.age), for a
+	// request forwarded from another machine.
+	Seal []byte `json:"seal,omitempty"`
 }
 
 // GuardRequest is a read of a guarded key, as the guard is asked for it.
@@ -65,14 +68,16 @@ type GuardRequest struct {
 	// Caller is the asking program and its parents.
 	Caller  string
 	Session string
+	// Seal is the sealed key a forwarded request carries.
+	Seal []byte
 }
 
 // Guarder opens guarded keys: it asks the person, then waits for the
 // hardware touch.
 type Guarder interface {
-	// Has reports whether project holds a guarded key for env or pub. An
-	// error means it could not tell: the broker then serves nothing.
-	Has(project, env, pub string) (bool, error)
+	// Has reports whether the read is of a guarded key. An error means it
+	// could not tell: the broker then serves nothing.
+	Has(req GuardRequest) (bool, error)
 	// Key returns the private key, after the person allowed it.
 	Key(req GuardRequest) (priv string, how string, err error)
 }
@@ -110,6 +115,9 @@ type Server struct {
 	ControlOnlyApproval bool
 	// Guard opens guarded keys; nil serves none.
 	Guard Guarder
+	// Unseal opens an unguarded key sealed in the repository of a file
+	// (project, env, public key, path) when the broker does not hold it.
+	Unseal func(project, env, pub, path string) (string, error)
 	// Forwarded marks a broker reached from other machines (esec vault
 	// forward): every read asks the person, and files come in requests.
 	Forwarded bool
@@ -353,7 +361,7 @@ func (s *Server) authorize(uid, pid uint32, req *Request) *Response {
 	return nil
 }
 
-func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
+func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response { //nolint:gocyclo // checks, then guarded or cached or sealed key, then decrypt
 	if req.Project == "" || req.Path == "" {
 		return &Response{OK: false, Error: "project and path are required"}
 	}
@@ -404,7 +412,13 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		}
 		var err error
 		if key, err = s.keyFor(req.Project, req.Env, pubkey); err != nil {
-			return &Response{OK: false, Error: err.Error()}
+			// Not held yet (a new checkout, a key rotated elsewhere): the
+			// key sealed in the repository, opened with this identity.
+			k, uerr := s.unseal(req, pubHex)
+			if uerr != nil {
+				return &Response{OK: false, Error: err.Error()}
+			}
+			key = k
 		}
 	}
 
@@ -426,13 +440,41 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 	return &Response{OK: true, Secrets: secrets}
 }
 
+// unseal opens a key sealed in the request's project when the broker is
+// unlocked, and holds it for the session.
+func (s *Server) unseal(req *Request, pub string) (string, error) {
+	if s.Unseal == nil {
+		return "", errors.New("no unsealer")
+	}
+	s.keysMu.RLock()
+	locked := s.locked || (!s.expires.IsZero() && !time.Now().Before(s.expires))
+	s.keysMu.RUnlock()
+	if locked {
+		return "", errors.New("vault is locked")
+	}
+	key, err := s.Unseal(req.Project, req.Env, pub, req.Path)
+	if err != nil {
+		return "", err
+	}
+	s.keysMu.Lock()
+	if s.Keys == nil {
+		s.Keys = map[string]map[string]string{}
+	}
+	if s.Keys[req.Project] == nil {
+		s.Keys[req.Project] = map[string]string{}
+	}
+	s.Keys[req.Project]["ESEC_PRIVATE_KEY_"+strings.ToUpper(pub)] = key
+	s.keysMu.Unlock()
+	return key, nil
+}
+
 // isGuarded asks the guard whether the read is of a guarded key. When it
 // cannot tell, nothing is served: not even a clear key loaded earlier.
 func (s *Server) isGuarded(uid, pid uint32, req *Request, pub string) (bool, *Response) {
 	if s.Guard == nil {
 		return false, nil
 	}
-	guarded, err := s.Guard.Has(req.Project, req.Env, pub)
+	guarded, err := s.Guard.Has(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Forwarded: s.Forwarded, Seal: req.Seal})
 	if err != nil {
 		_ = s.auditEntry(AuditEntry{UID: uid, PID: pid, Op: req.Op, Project: req.Project, Env: req.Env, Decision: "deny", Detail: "guard: " + err.Error(), Session: req.Session})
 		return false, &Response{OK: false, Error: err.Error()}
@@ -466,7 +508,7 @@ func (s *Server) guardedKey(uid, pid uint32, req *Request, pub string) (string, 
 	if err := s.auditEntry(entry); err != nil {
 		return "", auditFailed()
 	}
-	key, how, err := s.Guard.Key(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Host: req.Host, Forwarded: s.Forwarded, UID: uid, PID: pid, Caller: chain, Session: req.Session})
+	key, how, err := s.Guard.Key(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Host: req.Host, Forwarded: s.Forwarded, UID: uid, PID: pid, Caller: chain, Session: req.Session, Seal: req.Seal})
 	if err != nil {
 		entry.Decision, entry.Detail = "deny", "guard: "+err.Error()
 		_ = s.auditEntry(entry)

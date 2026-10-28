@@ -223,7 +223,7 @@ func keySafetyIssues() (issues, advice []string) {
 			}
 		}
 		if st.SetUp && len(st.Holders) < 2 {
-			advice = append(advice, "the guard has one holder: add a spare YubiKey (esec vault guard holders add)")
+			advice = append(advice, "one security key: add a spare YubiKey (esec vault security-keys add), or losing it means recovering with the phrase")
 		}
 	}
 	return issues, advice

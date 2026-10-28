@@ -3,83 +3,17 @@ package guard
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"strings"
 	"time"
 
 	"filippo.io/age"
 	"filippo.io/age/plugin"
+	coreseal "github.com/mscno/esec/pkg/seal"
 	"golang.org/x/term"
 
-	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/notify"
 )
-
-// Load reads the account's guard from the default keyring.
-func Load(ks *keystore.Store) (*Guard, error) {
-	entries, err := ks.Read("default")
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, ErrNotSetUp
-	}
-	if err != nil {
-		return nil, err
-	}
-	return FromEntries(entries)
-}
-
-// Save stores the guard in the default keyring, keeping its other entries.
-func Save(ks *keystore.Store, g *Guard) error {
-	entries, err := ks.Read("default")
-	if errors.Is(err, fs.ErrNotExist) {
-		entries, err = map[string]string{}, nil
-	}
-	if err != nil {
-		return err
-	}
-	for k, v := range g.Entries() {
-		entries[k] = v
-	}
-	return ks.Write("default", entries, true)
-}
-
-// Lookup finds a guarded key in a project's keyring entries: the one filed
-// under pub (a file's own public key, which also finds keys rotated away
-// from), or, when the file's key is not known, the one the environment
-// names. A known pub never falls back to the environment: a file encrypted
-// to another key must not open the environment's. It returns the keyring
-// value and the key's public key.
-func Lookup(entries map[string]string, env, pub string) (value, pubHex string, ok bool) {
-	if pub != "" {
-		if v := entries[keystore.GuardEntry(pub)]; v != "" {
-			return v, strings.ToLower(pub), true
-		}
-		return "", "", false
-	}
-	if env != "" {
-		if p := entries[keystore.GuardEnvEntry(env)]; p != "" {
-			if v := entries[keystore.GuardEntry(p)]; v != "" {
-				return v, strings.ToLower(p), true
-			}
-		}
-	}
-	return "", "", false
-}
-
-// EnvOf returns the environment whose current guarded key is pub, or ""
-// for a retired key no environment names any more.
-func EnvOf(entries map[string]string, pub string) string {
-	var envs []string
-	for k, v := range entries {
-		if strings.HasPrefix(k, keystore.GuardEnvPrefix) && strings.EqualFold(v, pub) {
-			envs = append(envs, strings.ToLower(strings.TrimPrefix(k, keystore.GuardEnvPrefix)))
-		}
-	}
-	if len(envs) != 1 {
-		return ""
-	}
-	return envs[0]
-}
 
 // ErrDenied is returned when the person turned a guarded read down.
 var ErrDenied = errors.New("the guarded read was denied")
@@ -96,13 +30,13 @@ type Presence struct {
 	Note func(message string)
 }
 
-// Open asks, then opens the guard identity with this machine's holders.
-// With only software identities (an IdentitiesEnv file of AGE-SECRET-KEY
-// lines) there is no hardware to protect and no dialog: whoever can read
-// that file opens the guard without this program anyway.
-func (p Presence) Open(g *Guard, title, text string) (*age.X25519Identity, error) {
+// OpenSeal asks, then opens a seal with this machine's security keys among
+// recipients (the seal's record of them). With only software stand-ins
+// there is no hardware to protect and no dialog: whoever can read that file
+// opens the seal without this program anyway.
+func (p Presence) OpenSeal(data []byte, project, env, pub string, recipients []string, title, text string) (*coreseal.Payload, error) {
 	ui := p.ui()
-	ids, err := g.Identities(ui)
+	ids, err := Identities(recipients, ui)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +49,7 @@ func (p Presence) Open(g *Guard, title, text string) (*age.X25519Identity, error
 			return nil, ErrDenied
 		}
 	}
-	return g.Open(ids...)
+	return Open(data, project, env, pub, ids...)
 }
 
 func softwareOnly(ids []age.Identity) bool {
