@@ -23,6 +23,21 @@ struct HealthView: View {
                         .disabled(store.busy != nil)
                 }
             }
+            let setup = store.setup
+            if !setup.isEmpty {
+                Section {
+                    ForEach(setup) { SetupRow(item: $0) }
+                } header: {
+                    Text("Set up")
+                } footer: {
+                    if let problems = store.status?.problems, !problems.isEmpty {
+                        VStack(alignment: .leading) {
+                            ForEach(problems, id: \.self) { Text("! " + $0) }
+                        }
+                        .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+            }
             if let report = store.verify?.report {
                 Section("Where keys are kept") {
                     LabeledContent("Keys", value: "\(report.keys.count), in \(report.files) files across \(report.checkouts) checkouts and their git history")
@@ -36,7 +51,7 @@ struct HealthView: View {
                         }
                     }
                 }
-                let problems = report.keys.filter { !($0.problems ?? []).isEmpty }
+                let problems = report.keys.filter { !($0.problems ?? []).isEmpty && $0.unheld != true }
                 if !problems.isEmpty {
                     Section("Needs attention") {
                         ForEach(problems) { k in
@@ -53,39 +68,70 @@ struct HealthView: View {
                     }
                 }
             }
-            Section("Recovery") {
-                LabeledContent("Last drill") {
-                    if let d = store.verify?.drill, d.timeIntervalSince1970 > 1 {
-                        Text(d.formatted(date: .abbreviated, time: .omitted))
-                    } else {
-                        Text("Never — run esec vault drill in Terminal").foregroundStyle(.orange)
-                    }
-                }
-            }
-            Section("Hardware guard") {
-                if let g = store.guardStatus, g.setUp {
+            if let g = store.guardStatus, g.setUp {
+                Section("Holding the guard") {
                     ForEach(g.holders, id: \.self) { h in
                         Label(holderName(h), systemImage: h.hasPrefix("age1yubikey") ? "key.horizontal.fill" : "doc.plaintext")
                             .help(h)
                     }
-                    if g.holders.count < 2 {
-                        Text("One holder: losing it loses the guarded keys. Add a spare YubiKey.").foregroundStyle(.orange)
-                    }
                     ForEach(g.projects.filter { !($0.clear ?? []).isEmpty }, id: \.project) { p in
-                        Text("\(p.project): guarded keys still in the clear on this Mac").foregroundStyle(.orange)
+                        HStack {
+                            Text("\(p.project): a guarded key is still in the clear on this Mac").foregroundStyle(.orange)
+                            Spacer()
+                            Button("Guard It Here") {
+                                let checkout = store.projects.first { $0.project == p.project }?.checkouts.first { $0.status == "ok" }?.path
+                                Task { await store.perform("Guarding — touch your security key…", ["guard", "enable", "--project", p.project], in: checkout, then: p.project) }
+                            }
+                            .disabled(store.busy != nil)
+                        }
                     }
-                } else {
-                    Text("Not set up. In Terminal: esec vault guard init").foregroundStyle(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Key Health")
+        .navigationTitle("Overview")
     }
 
     private func holderName(_ h: String) -> String {
         if h.hasPrefix("age1yubikey") { return "YubiKey " + h.dropFirst(12).prefix(8) + "…" }
         if h.hasPrefix("age1se") { return "Secure Enclave " + h.dropFirst(7).prefix(8) + "…" }
         return "Recovery key " + h.dropFirst(4).prefix(8) + "…"
+    }
+}
+
+struct SetupRow: View {
+    @Environment(Store.self) private var store
+    let item: SetupItem
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Image(systemName: symbol).foregroundStyle(color).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                Text(item.detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let command = item.command {
+                Button(item.interactive ? "Open in Terminal" : "Do It") { Task { await store.doSetup(item) } }
+                    .disabled(store.busy != nil)
+                    .help("esec vault " + command.joined(separator: " "))
+            }
+        }
+    }
+
+    private var symbol: String {
+        switch item.state {
+        case .done: "checkmark.circle.fill"
+        case .warning: "exclamationmark.circle.fill"
+        case .todo: "circle"
+        }
+    }
+
+    private var color: Color {
+        switch item.state {
+        case .done: .green
+        case .warning: .orange
+        case .todo: .secondary
+        }
     }
 }

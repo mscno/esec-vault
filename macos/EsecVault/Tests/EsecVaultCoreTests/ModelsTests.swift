@@ -37,3 +37,34 @@ import Testing
     let g = try JSON.decoder.decode(GuardStatus.self, from: Data(json.utf8))
     #expect(g.setUp && g.holders.count == 2 && g.projects[0].clear == ["abcd"])
 }
+
+@Test func decodesStatusAndActivity() throws {
+    let status = try JSON.decoder.decode(Status.self, from: Data(#"""
+    {"daemon":{"ok":true,"pid":7,"unlocked":true,"version":"v1","up_to_date":false},"identity":"3e8c","recoverable":true,
+     "push_pending":false,"destinations":{"last_push":"2026-10-28T08:00:00Z","remote":{"usb":{"last_push":"2026-10-28T08:00:00Z"}}},"problems":["x"]}
+    """#.utf8))
+    #expect(status.daemon?.upToDate == false && status.destinations?.remote?["usb"] != nil)
+
+    let entries = try JSON.decoder.decode([ActivityEntry].self, from: Data(#"""
+    [{"ts":"2026-10-28T08:00:48Z","uid":501,"pid":42,"op":"get","project":"acme/shop","env":"prod","decision":"allow","detail":"guard","caller":"zsh ▸ claude ▸ esec-vault","session":"claude-7"}]
+    """#.utf8))
+    #expect(entries[0].agent == "claude" && entries[0].env == "prod")
+}
+
+@Test func setupChecklist() throws {
+    let status = try JSON.decoder.decode(Status.self, from: Data(#"{"identity":"3e8c","recoverable":true,"push_pending":false}"#.utf8))
+    let guardOne = try JSON.decoder.decode(GuardStatus.self, from: Data(#"{"set_up":true,"holders":["age1yubikey1q","age1rec"],"projects":[]}"#.utf8))
+    let items = Setup.items(status: status, guardStatus: guardOne, verify: nil)
+    let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+    #expect(byID["identity"]?.state == .done)
+    #expect(byID["daemon"]?.command == ["daemon", "install"])
+    #expect(byID["second-place"]?.state == .todo)
+    #expect(byID["guard"]?.state == .warning)
+    #expect(byID["drill"]?.command == ["drill"])
+}
+
+@Test func quotesShellArguments() {
+    let cli = CLI(binary: URL(fileURLWithPath: "/usr/local/bin/esec-vault"))
+    #expect(cli.commandLine(["guard", "enable", "--project", "acme/store"]) == "/usr/local/bin/esec-vault guard enable --project acme/store")
+    #expect(cli.commandLine(["x", "it's here"]) == #"/usr/local/bin/esec-vault x 'it'\''s here'"#)
+}

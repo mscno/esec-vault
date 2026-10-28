@@ -15,7 +15,9 @@ struct EsecVaultApp: App {
                 .task { store.start() }
         }
         .commands {
-            CommandGroup(after: .newItem) {
+            CommandGroup(replacing: .newItem) {
+                Button("New Project…") { NotificationCenter.default.post(name: .newProject, object: nil) }
+                    .keyboardShortcut("n")
                 Button("Find Checkouts…") { NotificationCenter.default.post(name: .scanFolder, object: nil) }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Refresh") { Task { await store.refresh() } }
@@ -45,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
     static let scanFolder = Notification.Name("EsecVaultScanFolder")
+    static let newProject = Notification.Name("EsecVaultNewProject")
 }
 
 extension Health {
@@ -84,6 +87,17 @@ struct MenuContent: View {
         if let at = store.verify?.at, at.timeIntervalSince1970 > 1 {
             Text("Checked \(at.formatted(.relative(presentation: .named)))")
         }
+        if store.setupTodo > 0 {
+            Text("\(store.setupTodo) setup step(s) to do")
+        }
+        let recent = store.recentGuarded.prefix(5)
+        if !recent.isEmpty {
+            Divider()
+            Text("Guarded keys, last 24 hours")
+            ForEach(Array(recent)) { e in
+                Text("\(e.decision == "allow" ? "✓" : e.decision == "deny" ? "✗" : "?") \(e.project ?? "") \(e.env ?? "") · \(e.session ?? e.agent ?? "you") · \(e.ts.formatted(date: .omitted, time: .shortened))")
+            }
+        }
         Divider()
         Button("Open esec Vault") {
             openWindow(id: "main")
@@ -91,8 +105,9 @@ struct MenuContent: View {
         }
         Button("Check Keys Now") { Task { await store.verifyNow() } }
             .disabled(store.busy != nil)
-        Button("Refresh") { Task { await store.refresh() } }
+        Button("Refresh") { Task { await store.refresh(full: true) } }
         Divider()
+        Toggle("Open at Login", isOn: Binding(get: { store.opensAtLogin }, set: { store.opensAtLogin = $0 }))
         Button("Quit") { NSApp.terminate(nil) }
     }
 }

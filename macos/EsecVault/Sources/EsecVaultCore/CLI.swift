@@ -35,17 +35,23 @@ public struct CLI: Sendable {
 
     /// Runs a command and returns its standard output. Both pipes are read
     /// while it runs, so a large output cannot block it.
-    public func run(_ args: [String], stdin: String? = nil) async throws -> Data {
+    /// A command that edits a project runs in one of its checkouts (in), as
+    /// it would in a terminal there.
+    public func run(_ args: [String], in dir: String? = nil, stdin: String? = nil) async throws -> Data {
         let binary = self.binary
-        return try await Task.detached { try Self.runBlocking(binary, args, stdin) }.value
+        return try await Task.detached { try Self.runBlocking(binary, args, dir, stdin) }.value
     }
 
-    private static func runBlocking(_ binary: URL, _ args: [String], _ stdin: String?) throws -> Data {
+    private static func runBlocking(_ binary: URL, _ args: [String], _ dir: String?, _ stdin: String?) throws -> Data {
             let p = Process()
             p.executableURL = binary
             p.arguments = args
+            if let dir { p.currentDirectoryURL = URL(fileURLWithPath: dir) }
             var env = ProcessInfo.processInfo.environment
             env["NO_COLOR"] = "1"
+            // The app is not an agent: it asks for no value, and the audit
+            // log should say which reads it caused.
+            env["ESEC_VAULT_SESSION"] = "esec Vault app"
             p.environment = env
             let out = Pipe(), err = Pipe()
             p.standardOutput = out
@@ -92,6 +98,23 @@ public struct CLI: Sendable {
     public func guardStatus() async throws -> GuardStatus { try await json(GuardStatus.self, ["guard", "--json"]) }
     public func lastVerify() async throws -> VerifySaved { try await json(VerifySaved.self, ["verify", "--last", "--json"]) }
     public func verifyNow() async throws -> VerifyReport { try await json(VerifyReport.self, ["verify", "--json"]) }
+    public func status() async throws -> Status { try await json(Status.self, ["status", "--json"]) }
+    public func activity(project: String? = nil, limit: Int = 200) async throws -> [ActivityEntry] {
+        var args = ["activity", "--json", "--limit", String(limit)]
+        if let project { args += ["--project", project] }
+        return try await json([ActivityEntry].self, args)
+    }
+
+    /// The shell command line for args, to show or to run in Terminal.
+    public func commandLine(_ args: [String]) -> String {
+        ([binary.path] + args).map(Self.quote).joined(separator: " ")
+    }
+
+    /// Quotes s for a POSIX shell.
+    public static func quote(_ s: String) -> String {
+        if !s.isEmpty, s.allSatisfy({ $0.isLetter || $0.isNumber || "-_./=:,@".contains($0) }) { return s }
+        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }
 
 private final class DataBox: @unchecked Sendable {
