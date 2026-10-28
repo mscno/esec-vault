@@ -1,3 +1,9 @@
+# v0.22.1
+
+- Fix the release: v0.22.0 was tagged but built no binaries, since the age
+  plugin ownership check did not compile for Windows. CI now builds every
+  release target. Otherwise the same as v0.22.0, below.
+
 # v0.22.0
 
 Needs esec v0.12.0. Redeploy the vault server before registering security

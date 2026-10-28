@@ -28,6 +28,26 @@ jobs:
           go mod download
           go test -race -coverprofile=coverage.txt -covermode=atomic ./...
 
+  cross:
+    name: Build every release target
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+      - name: Setup go
+        uses: actions/setup-go@v7
+        with:
+          cache: true
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          for os in darwin freebsd linux windows; do
+            for arch in amd64 arm64; do
+              echo "$os/$arch"
+              CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build ./...
+            done
+          done
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

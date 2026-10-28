@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // pluginNames are the hardware plugins the guard knows.
@@ -42,7 +41,7 @@ func CheckPlugin(name string) (string, error) {
 		if info.Mode().Perm()&0o022 != 0 {
 			return "", fmt.Errorf("refusing age-plugin-%s: %s is writable by other users", name, p)
 		}
-		if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != 0 && int(st.Uid) != os.Getuid() {
+		if uid, ok := ownerOf(info); ok && uid != 0 && uid != os.Getuid() {
 			return "", fmt.Errorf("refusing age-plugin-%s: %s belongs to another user", name, p)
 		}
 	}
