@@ -430,8 +430,15 @@ var commandDetails = map[string]string{
 ` + examples(
 		"esec vault guard export --out ~/esec-age",
 	),
+	"guard recover": `For when every security key is lost: the 24-word phrase opens the guard (its recovery key holds it unless guard init had --no-recovery), and it is rewrapped to the YubiKeys plugged in now. Guarded keys stay as they are.
+
+` + examples(
+		"esec vault guard recover                          # new YubiKey plugged in",
+		"esec vault guard recover --remove age1yubikey1…   # and drop the lost one",
+	),
 	"guard holders add": examples(
-		"esec vault guard holders add age1yubikey1…     # the spare YubiKey",
+		"esec vault guard holders add                   # every plugged-in YubiKey not holding it yet",
+		"esec vault guard holders add age1yubikey1…     # one by its recipient",
 	),
 	"guard holders remove": examples(
 		"esec vault guard holders remove age1yubikey1…  # a lost one; rotate guarded keys if its PIN may be known",
@@ -451,6 +458,14 @@ var commandDetails = map[string]string{
 		"esec vault verify --root ~/src     # also find checkouts there",
 		"esec vault verify --last --json    # the last check, without checking",
 		"esec vault verify --no-history --no-backup",
+	),
+	"activity": `Every request a program made to the background service for keys, newest first: the project and environment, what was decided (allow, ask, deny), the asking programs (zsh ▸ claude ▸ esec-vault) and the agent session label (ESEC_VAULT_SESSION).
+
+` + examples(
+		"esec vault activity",
+		"esec vault activity --project acme/store --env prod",
+		"esec vault activity --denied --since 24h",
+		"esec vault activity --json",
 	),
 	"drill": `Downloads the newest backup and opens it in memory with the recovery phrase alone, as a new machine would; checks it holds every key your checkouts use, and that the recovery key opens the guard and every guarded key. Nothing is written.
 

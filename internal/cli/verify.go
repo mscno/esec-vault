@@ -60,7 +60,11 @@ func (c *VerifyCmd) Run(ctx *cliCtx) error {
 	if rep == nil {
 		return runErr
 	}
-	_ = verify.SaveLast(rep, runErr, time.Now().UTC())
+	// Only a full check is kept for doctor, the daemon and the Mac app: one
+	// that skipped places would report every key as held in one place.
+	if c.History && c.Server && c.Backup {
+		_ = verify.SaveLast(rep, runErr, time.Now().UTC())
+	}
 	if c.JSON {
 		if err := printJSON(rep); err != nil {
 			return err
@@ -91,7 +95,7 @@ func printVerify(rep *verify.Report) {
 		fmt.Println("No checkouts known on this machine: esec vault verify --root ~/src finds them.")
 	}
 	for _, k := range rep.Keys {
-		if len(k.Problems) == 0 {
+		if len(k.Problems) == 0 || k.Unheld {
 			continue
 		}
 		u := k.Uses[0]
@@ -107,6 +111,15 @@ func printVerify(rep *verify.Report) {
 		for _, p := range k.Problems {
 			fmt.Println("  ! " + safetext.Clean(p))
 		}
+	}
+	if rep.Unheld > 0 {
+		fmt.Printf("\n%d key(s) belong to projects you hold no key of anywhere checked (another person's project, or an environment you cannot read):\n", rep.Unheld)
+		for _, k := range rep.Keys {
+			if k.Unheld {
+				fmt.Printf("  %s… %s %s\n", k.Public[:12], safetext.Clean(k.Uses[0].Project), safetext.Clean(k.Uses[0].Env))
+			}
+		}
+		fmt.Println("  If one of them is yours, its key is lost: esec vault restore, or ask whoever holds it.")
 	}
 	if rep.OK() {
 		fmt.Printf("✓ Every key is in at least two places, and none serves two projects.\n")
@@ -180,7 +193,7 @@ func (c *DrillCmd) Run(_ *cliCtx) error {
 	rep := verify.Build(uses, []verify.Source{{Name: "backup", Projects: v.Projects}})
 	if rep.Lost > 0 {
 		for _, k := range rep.Keys {
-			if k.Places == 0 {
+			if k.Places == 0 && !k.Unheld {
 				fmt.Printf("  ✗ %s… (%s %s) is not in the backup\n", k.Public[:12], safetext.Clean(k.Uses[0].Project), safetext.Clean(k.Uses[0].Env))
 			}
 		}

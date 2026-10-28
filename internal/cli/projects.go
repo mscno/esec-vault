@@ -35,13 +35,13 @@ func registerCheckout(dir string) {
 	if os.Getenv("ESEC_VAULT_NO_REGISTER") != "" {
 		return
 	}
-	r, err := workspace.Load()
-	if err != nil {
-		return
-	}
 	abs, _ := filepath.Abs(dir)
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = resolved
+	}
+	r, err := workspace.Load()
+	if err != nil {
+		return
 	}
 	for _, c := range r.Checkouts {
 		// Refresh "seen" at most daily, so ordinary commands rarely write.
@@ -49,10 +49,79 @@ func registerCheckout(dir string) {
 			return
 		}
 	}
-	if _, _, err := r.Add(abs, time.Now().UTC().Truncate(time.Second)); err != nil {
+	_ = workspace.Update(func(r *workspace.Registry) error {
+		_, _, err := r.Add(abs, time.Now().UTC().Truncate(time.Second))
+		return err
+	})
+}
+
+// recordEnvKey records an environment's new public key in the esec.toml of
+// root, when that is the project's. A failure only warns: the keys and
+// files are right, the file is a record.
+func recordEnvKey(root, project, env, pub string) {
+	pf, err := projectfile.Load(root)
+	if err != nil || pf.Project != project {
 		return
 	}
-	_ = r.Save()
+	pf.SetEnv(env, pub)
+	if err := pf.Save(root); err != nil {
+		fmt.Fprintln(os.Stderr, "! esec.toml: "+err.Error())
+	}
+}
+
+// checkoutsByProject returns, by project, one checkout per repository: a
+// repository's worktrees are one, its main worktree preferred. With under
+// set, it first finds the checkouts there and keeps only those; where says
+// which checkouts were looked at, for messages.
+func checkoutsByProject(under string) (dirs map[string][]string, where string, err error) {
+	where = "known on this machine (esec vault projects scan ~/src)"
+	if under != "" {
+		if under, err = filepath.Abs(under); err != nil {
+			return nil, "", err
+		}
+		if resolved, rerr := filepath.EvalSymlinks(under); rerr == nil {
+			under = resolved
+		}
+		where = "under " + under
+		err = workspace.Update(func(r *workspace.Registry) error {
+			_, scanErr := r.Scan(under, 6, time.Now().UTC().Truncate(time.Second))
+			return scanErr
+		})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	reg, err := workspace.Load()
+	if err != nil {
+		return nil, "", err
+	}
+	type repo struct{ project, common string }
+	chosen := map[repo]string{}
+	var order []repo
+	for _, co := range reg.Checkouts {
+		if workspace.Check(co) != workspace.StatusOK {
+			continue
+		}
+		if under != "" && co.Path != under && !strings.HasPrefix(co.Path, under+string(filepath.Separator)) {
+			continue
+		}
+		common, main := workspace.GitRepo(co.Path)
+		k := repo{co.Project, common}
+		if common == "" {
+			k.common = co.Path // not in git: each is its own
+		}
+		if prev, ok := chosen[k]; !ok {
+			order = append(order, k)
+			chosen[k] = co.Path
+		} else if main && prev != co.Path {
+			chosen[k] = co.Path
+		}
+	}
+	dirs = map[string][]string{}
+	for _, k := range order {
+		dirs[k.project] = append(dirs[k.project], chosen[k])
+	}
+	return dirs, where, nil
 }
 
 // envView is one environment as the projects commands show it.
@@ -65,6 +134,8 @@ type envView struct {
 	// Mismatch is set when esec.toml names another key than this device
 	// holds for the environment.
 	Mismatch bool `json:"mismatch,omitempty"`
+	// Action is the command that fixes what is wrong, if anything.
+	Action string `json:"action,omitempty"`
 }
 
 type checkoutView struct {
@@ -133,6 +204,9 @@ func projectViews() ([]projectView, error) {
 			}
 		}
 		v.Envs = envViews(pf, entries)
+		for i := range v.Envs {
+			v.Envs[i].Action = envAction(v.Project, v.Envs[i])
+		}
 		out = append(out, *v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
@@ -182,6 +256,20 @@ func envViews(pf *projectfile.File, entries map[string]string) []envView {
 	return out
 }
 
+// envAction is the one command that fixes an environment, "" when it is
+// fine.
+func envAction(project string, e envView) string {
+	switch {
+	case e.Here == "missing" || e.Mismatch:
+		// A teammate may have added or rotated it; sync brings keys you may
+		// hold, access request asks for one you may not.
+		return "esec vault sync (or, for a shared project: esec vault access request " + e.Name + " --project " + project + ")"
+	case e.Here == "clear" && e.Guard != projectfile.GuardNone:
+		return "esec vault guard enable --project " + project + " --env " + e.Name
+	}
+	return ""
+}
+
 // ProjectsListCmd lists projects.
 type ProjectsListCmd struct {
 	JSON bool `help:"Print JSON, for scripts, agents and the Mac app"`
@@ -222,6 +310,18 @@ func (c *ProjectsListCmd) Run(_ *cliCtx) error {
 		fmt.Printf("%-34s %-28s %s\n", safetext.Clean(v.Project), safetext.Clean(strings.Join(envs, " ")), safetext.Clean(where))
 	}
 	fmt.Println("\n🔒 guarded  ? no key on this device  ! esec.toml names another key")
+	var todo []string
+	for _, v := range views {
+		for _, e := range v.Envs {
+			if e.Action != "" {
+				todo = append(todo, fmt.Sprintf("  %s %s: %s", safetext.Clean(v.Project), safetext.Clean(e.Name), safetext.Clean(e.Action)))
+			}
+		}
+	}
+	if len(todo) > 0 {
+		fmt.Println("\nTo do:")
+		fmt.Println(strings.Join(todo, "\n"))
+	}
 	return nil
 }
 
@@ -311,15 +411,13 @@ type ProjectsAddCmd struct {
 
 // Run implements projects add.
 func (c *ProjectsAddCmd) Run(_ *cliCtx) error {
-	r, err := workspace.Load()
-	if err != nil {
+	var co workspace.Checkout
+	var isNew bool
+	err := workspace.Update(func(r *workspace.Registry) (err error) {
+		co, isNew, err = r.Add(c.Dir, time.Now().UTC().Truncate(time.Second))
 		return err
-	}
-	co, isNew, err := r.Add(c.Dir, time.Now().UTC().Truncate(time.Second))
+	})
 	if err != nil {
-		return err
-	}
-	if err := r.Save(); err != nil {
 		return err
 	}
 	if isNew {
@@ -337,14 +435,13 @@ type ProjectsRemoveCmd struct {
 
 // Run implements projects remove.
 func (c *ProjectsRemoveCmd) Run(_ *cliCtx) error {
-	r, err := workspace.Load()
+	err := workspace.Update(func(r *workspace.Registry) error {
+		if !r.Remove(c.Dir) {
+			return fmt.Errorf("no checkout at %s", c.Dir)
+		}
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	if !r.Remove(c.Dir) {
-		return fmt.Errorf("no checkout at %s", c.Dir)
-	}
-	if err := r.Save(); err != nil {
 		return err
 	}
 	fmt.Printf("Forgot %s (nothing on disk changed)\n", tildePath(c.Dir))
@@ -360,12 +457,13 @@ type ProjectsScanCmd struct {
 
 // Run implements projects scan.
 func (c *ProjectsScanCmd) Run(_ *cliCtx) error {
-	r, err := workspace.Load()
+	var found []workspace.Checkout
+	var scanErr error
+	err := workspace.Update(func(r *workspace.Registry) error {
+		found, scanErr = r.Scan(c.Root, c.Depth, time.Now().UTC().Truncate(time.Second))
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	found, scanErr := r.Scan(c.Root, c.Depth, time.Now().UTC().Truncate(time.Second))
-	if err := r.Save(); err != nil {
 		return err
 	}
 	if c.JSON {
@@ -386,12 +484,12 @@ type ProjectsPruneCmd struct{}
 
 // Run implements projects prune.
 func (c *ProjectsPruneCmd) Run(_ *cliCtx) error {
-	r, err := workspace.Load()
+	var gone []workspace.Checkout
+	err := workspace.Update(func(r *workspace.Registry) error {
+		gone = r.Prune()
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	gone := r.Prune()
-	if err := r.Save(); err != nil {
 		return err
 	}
 	for _, co := range gone {

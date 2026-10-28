@@ -35,7 +35,9 @@ func pushNow(ctx *cliCtx, remoteName string, prune bool) (*remote.PushResult, er
 	}
 	cctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	return remote.PushNow(cctx, id, keystore.New(), remoteName, prune)
+	ks := keystore.New()
+	ks.Locked = ctx.keyringLocked
+	return remote.PushNow(cctx, id, ks, remoteName, prune)
 }
 
 // maybeAutoPush performs a debounced push if one is due. It is called at the

@@ -32,6 +32,10 @@ type Store struct {
 	Dir string
 	// Secrets holds the keyring cache key. Nil means the default secret store.
 	Secrets secretstore.Store
+	// Locked says the caller holds Dir's mutation lock already (a command
+	// that changes keys and then stores them elsewhere), so nothing that
+	// reads the whole store takes it again.
+	Locked bool
 }
 
 // IsSealed reports whether a project's keyring file is sealed.

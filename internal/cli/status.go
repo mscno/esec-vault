@@ -173,13 +173,17 @@ func (c *DoctorCmd) Run(ctx *cliCtx) error {
 	}
 	issues = append(issues, permissionIssues()...)
 	issues = append(issues, daemonVersionIssues(ctx)...)
-	issues = append(issues, keySafetyIssues()...)
+	safety, advice := keySafetyIssues()
+	issues = append(issues, safety...)
 	dirs := c.Dirs
 	if len(dirs) == 0 {
 		dirs = []string{"."}
 	}
 	for _, dir := range dirs {
 		issues = append(issues, scanRepos(dir)...)
+	}
+	for _, a := range advice {
+		fmt.Println("-", a)
 	}
 	if len(issues) == 0 {
 		fmt.Println("No problems found")
@@ -193,36 +197,36 @@ func (c *DoctorCmd) Run(ctx *cliCtx) error {
 	return &exitCodeError{code: 1, msg: fmt.Sprintf("%d problem(s) found", len(issues))}
 }
 
-// keySafetyIssues reports what verify and the guard last found: keys in one
-// place, lost or shared between projects, a drill long ago, and guarded keys
-// still in the clear on this device.
-func keySafetyIssues() []string {
-	var out []string
+// keySafetyIssues reports what verify and the guard last found: keys lost,
+// in one place or shared between projects, and guarded keys still in the
+// clear on this device. advice is what is worth doing but not a fault: a
+// check or a drill long ago, a guard with one security key.
+func keySafetyIssues() (issues, advice []string) {
 	last, err := verify.LoadLast()
 	switch {
 	case err != nil:
-		out = append(out, "last key check unreadable: "+err.Error())
+		issues = append(issues, "last key check unreadable: "+err.Error())
 	case last.At.IsZero():
-		out = append(out, "keys never checked: esec vault verify --root ~/src")
-	case time.Since(last.At) > 7*24*time.Hour:
-		out = append(out, fmt.Sprintf("keys last checked %s ago: esec vault verify", time.Since(last.At).Round(time.Hour)))
+		advice = append(advice, "keys never checked: esec vault verify --root ~/src")
 	case last.Report != nil && !last.Report.OK():
-		out = append(out, fmt.Sprintf("%d key(s) need attention (%d lost): esec vault verify", last.Report.Problems, last.Report.Lost))
+		issues = append(issues, fmt.Sprintf("%d key(s) need attention (%d lost): esec vault verify", last.Report.Problems, last.Report.Lost))
+	case time.Since(last.At) > 7*24*time.Hour:
+		advice = append(advice, fmt.Sprintf("keys last checked %s ago: esec vault verify", time.Since(last.At).Round(time.Hour)))
 	}
 	if last != nil && !last.At.IsZero() && (last.Drill.IsZero() || time.Since(last.Drill) > 180*24*time.Hour) {
-		out = append(out, "no recovery drill in six months: esec vault drill")
+		advice = append(advice, "no recovery drill in six months: esec vault drill")
 	}
 	if st, err := readGuardStatus(); err == nil {
 		for _, p := range st.Projects {
 			if len(p.Clear) > 0 {
-				out = append(out, fmt.Sprintf("%s: %d guarded key(s) still in the clear here: esec vault guard enable --project %s", p.Project, len(p.Clear), p.Project))
+				issues = append(issues, fmt.Sprintf("%s: %d guarded key(s) still in the clear here: esec vault guard enable --project %s", p.Project, len(p.Clear), p.Project))
 			}
 		}
 		if st.SetUp && len(st.Holders) < 2 {
-			out = append(out, "the guard has one holder: add a spare YubiKey (esec vault guard holders add)")
+			advice = append(advice, "the guard has one holder: add a spare YubiKey (esec vault guard holders add)")
 		}
 	}
-	return out
+	return issues, advice
 }
 
 // daemonVersionIssues reports a managed daemon that is not running this build.

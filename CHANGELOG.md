@@ -36,8 +36,31 @@ touch of your YubiKey opens, so agents can work beside them.
   by one project only. The background service runs it daily and notifies
   on problems; `doctor` reports it. **`esec vault drill`** proves the newest
   backup opens with the phrase alone and holds every key.
+- **`esec vault activity`**: the local audit log, newest first: which
+  programs and agent sessions asked for which keys, and what was decided.
+- **Many agents at once**: a command changing keys waits for another one
+  (which may be waiting for a touch) instead of failing; the checkout list
+  locks too, so no agent's checkout is lost.
+- **`esec.toml` edits keep your comments**: only changed lines are
+  rewritten. Unknown keys warn instead of failing (a newer esec wrote them);
+  `files.name` must show its format and agree with `files.format`, which
+  also beats `ESEC_FORMAT` from a shell. `secrets lint` fails a file
+  encrypted to another key than esec.toml names.
+- **`projects`** says what to fix per environment (`action` in JSON);
+  `project init` can be run again safely and prints next steps;
+  `guard holders add` with no argument adds every plugged-in YubiKey.
 - **Mac app** (`macos/EsecVault`): a menu bar app and window over the
-  above; metadata only, never values.
+  above: a setup checklist, activity, projects with actions (new project,
+  add environment, rotate, guard), live updates, open at login. Metadata
+  only, never values.
+
+Fixed along the way: storing a new key in a backup destination from
+`project init`, `env add` or `env rotate` failed with "writer busy" (the
+command already held the keyring lock); a monorepo's subprojects were
+reported as sharing keys; keys of other people's projects were reported as
+lost; `verify` read every object of every repository once per worktree;
+`env rotate-exposed` left esec.toml naming the old key and skipped projects
+with worktrees.
 
 # v0.21.0
 

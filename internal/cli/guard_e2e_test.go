@@ -207,7 +207,11 @@ func TestProjectsRegistryAndVerify(t *testing.T) {
 	if !strings.Contains(out, "one key serves several projects: acme/a, acme/b") {
 		t.Fatalf("reuse not caught: %s", out)
 	}
-	// The result is kept for doctor and the Mac app.
+	// Only a full check is kept for doctor and the Mac app.
+	if _, err := os.Stat(filepath.Join(r.home, "verify.json")); err == nil {
+		t.Fatal("a partial check was kept")
+	}
+	r.run("", "", "verify")
 	if _, err := os.Stat(filepath.Join(r.home, "verify.json")); err != nil {
 		t.Fatal(err)
 	}

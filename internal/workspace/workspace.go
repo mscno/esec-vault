@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/mscno/esec-vault/internal/paths"
+	"github.com/mscno/esec-vault/internal/storage"
 )
 
 // Checkout is one directory holding a project's esec.toml.
@@ -55,7 +57,25 @@ func Load() (*Registry, error) {
 	return &r, nil
 }
 
-// Save writes the registry atomically.
+// Update loads the registry, changes it and saves it, holding a lock so
+// many commands at once (agents in many checkouts) lose no change.
+func Update(change func(*Registry) error) error {
+	unlock, err := storage.LockWait(filepath.Join(paths.Home(), "locks", "projects"), 30*time.Second, nil)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	r, err := Load()
+	if err != nil {
+		return err
+	}
+	if err := change(r); err != nil {
+		return err
+	}
+	return r.Save()
+}
+
+// Save writes the registry atomically. Use Update, which locks.
 func (r *Registry) Save() error {
 	sort.Slice(r.Checkouts, func(i, j int) bool {
 		if r.Checkouts[i].Project != r.Checkouts[j].Project {
@@ -184,6 +204,9 @@ func (r *Registry) Scan(root string, depth int, now time.Time) ([]Checkout, erro
 	if err != nil {
 		return nil, err
 	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved // WalkDir does not follow a symlinked root (~/src → /Volumes/…)
+	}
 	base := strings.Count(root, string(filepath.Separator))
 	var found []Checkout
 	var errs []error
@@ -215,4 +238,19 @@ func (r *Registry) Scan(root string, depth int, now time.Time) ([]Checkout, erro
 		return found, err
 	}
 	return found, errors.Join(errs...)
+}
+
+// GitRepo returns the git common directory of the repository holding dir
+// (the same for all its worktrees), and whether dir is in its main
+// worktree. common is "" outside git.
+func GitRepo(dir string) (common string, main bool) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir").Output()
+	if err != nil {
+		return "", false
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 {
+		return "", false
+	}
+	return lines[0], lines[0] == lines[1]
 }

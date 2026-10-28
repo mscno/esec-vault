@@ -15,6 +15,7 @@ import (
 
 	"github.com/mscno/esec"
 	"github.com/mscno/esec-vault/internal/keystore"
+	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/storage"
 	"github.com/mscno/esec/pkg/config"
 	"github.com/mscno/esec/pkg/crypto"
@@ -69,7 +70,31 @@ func (c *ProjectInitCmd) Run(ctx *cliCtx) error {
 		source = "project ID argument"
 	}
 	fmt.Fprintf(os.Stderr, "Project %s ready in %s (project ID from %s). Keys stored outside the repository.\n", project, dir, source)
+	c.nextSteps()
 	return nil
+}
+
+// nextSteps says what to do now. Running init again is safe: it keeps
+// existing keys and files.
+func (c *ProjectInitCmd) nextSteps() {
+	if c.ctx != nil && c.ctx.Quiet {
+		return
+	}
+	env := c.Env[0]
+	steps := []string{
+		"git add esec.toml and the secrets files (they hold no secret in the clear)",
+		"esec vault secrets set NAME --env " + env + " --create   # add a value (--generate makes one)",
+		"esec vault run " + env + " -- COMMAND                      # run with the values",
+	}
+	if slices.Contains(c.Env, "prod") && !slices.Contains(c.Guard, "prod") {
+		if st, err := readGuardStatus(); err == nil && st.SetUp {
+			steps = append(steps, "esec vault guard enable --env prod                 # every prod read needs your touch")
+		}
+	}
+	fmt.Fprintln(os.Stderr, "Next:")
+	for _, s := range steps {
+		fmt.Fprintln(os.Stderr, "  "+s)
+	}
 }
 
 func (c *ProjectInitCmd) projectID() (string, error) {
@@ -144,8 +169,12 @@ func (c *ProjectInitCmd) writeProjectFile(project, format string, entries map[st
 	if err != nil {
 		return err
 	}
+	if f.Project != project {
+		// Another project's keys do not belong to this one.
+		f.Env = nil
+	}
 	f.Project = project
-	if f.Files.Format == "" {
+	if f.FilesFormat() == "" {
 		f.Files.Format = strings.TrimPrefix(format, ".")
 	}
 	for _, env := range c.Env {
@@ -168,16 +197,23 @@ func (c *ProjectInitCmd) guardNew(project string, entries map[string]string) err
 	if len(c.Guard) == 0 {
 		return nil
 	}
+	var todo []string
 	for _, env := range c.Guard {
 		if !slices.Contains(c.Env, env) {
 			return fmt.Errorf("--guard %s: not one of --env", env)
 		}
+		if entries[keystore.GuardEnvEntry(env)] == "" {
+			todo = append(todo, env)
+		}
 	}
-	id, err := openGuard(fmt.Sprintf("Create guarded keys for %s: %s", project, strings.Join(c.Guard, ", ")))
+	if len(todo) == 0 {
+		return nil
+	}
+	id, err := openGuard(fmt.Sprintf("Create guarded keys for %s: %s", project, strings.Join(todo, ", ")))
 	if err != nil {
 		return err
 	}
-	for _, env := range c.Guard {
+	for _, env := range todo {
 		if _, err := guardEnv(entries, id, project, env, projectfile.GuardTouch); err != nil {
 			return err
 		}
@@ -202,23 +238,29 @@ func envPublic(entries map[string]string, env string) (pub, level string) {
 
 func prepareEnvironments(c *ProjectInitCmd, format string, entries map[string]string) (map[string]string, error) {
 	files := map[string]string{}
+	cfg, err := config.LoadDir(c.Dir)
+	if err != nil {
+		return nil, err
+	}
 	for _, env := range c.Env {
 		if err := validateEnvName(env); err != nil {
 			return nil, err
 		}
 		name := environmentKey(env)
+		// A guarded environment keeps its key: never make a clear one
+		// beside it.
+		guardedPub := strings.ToLower(entries[keystore.GuardEnvEntry(env)])
 		priv, exists := entries[name]
 		var pub string
 		var err error
-		if exists {
+		switch {
+		case guardedPub != "":
+			pub = guardedPub
+		case exists:
 			pub, err = publicHex(priv)
-		} else {
+		default:
 			pub, priv, err = esec.GenerateKeypair()
 		}
-		if err != nil {
-			return nil, err
-		}
-		cfg, err := config.LoadDir(c.Dir)
 		if err != nil {
 			return nil, err
 		}
@@ -250,8 +292,10 @@ func prepareEnvironments(c *ProjectInitCmd, format string, entries map[string]st
 				files[file] = string(content)
 			}
 		}
-		entries[name] = priv
-		entries[esec.EsecPrivateKey+"_"+strings.ToUpper(pub)] = priv
+		if guardedPub == "" {
+			entries[name] = priv
+			entries[esec.EsecPrivateKey+"_"+strings.ToUpper(pub)] = priv
+		}
 	}
 	return files, nil
 }
@@ -539,11 +583,15 @@ func resolveProject(explicit string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p, path, err := projectfile.FindProjectFile(cwd)
-	if err == nil {
-		registerCheckout(filepath.Dir(path))
+	f, path, err := projectfile.Find(cwd)
+	if err != nil {
+		return "", err
 	}
-	return p, err
+	if u := f.Unknown(); len(u) > 0 {
+		fmt.Fprintf(os.Stderr, "! esec.toml: ignoring %s (from a newer esec, or a typo)\n", safetext.Clean(strings.Join(u, ", ")))
+	}
+	registerCheckout(filepath.Dir(path))
+	return f.Project, nil
 }
 func ensureGitignoreEntry(dir, entry string) error {
 	p := filepath.Join(dir, ".gitignore")

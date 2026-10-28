@@ -41,20 +41,23 @@ type Options struct {
 // Run checks every checkout this machine knows (and Roots) against this
 // device, the vault server and the newest backup.
 func Run(ctx context.Context, opts Options) (*Report, error) {
+	if len(opts.Roots) > 0 {
+		now := time.Now().UTC().Truncate(time.Second)
+		err := workspace.Update(func(r *workspace.Registry) error {
+			for _, root := range opts.Roots {
+				if _, err := r.Scan(root, 5, now); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 	reg, err := workspace.Load()
 	if err != nil {
 		return nil, err
-	}
-	now := time.Now().UTC().Truncate(time.Second)
-	for _, root := range opts.Roots {
-		if _, err := reg.Scan(root, 5, now); err != nil {
-			return nil, err
-		}
-	}
-	if len(opts.Roots) > 0 {
-		if err := reg.Save(); err != nil {
-			return nil, err
-		}
 	}
 	var checkouts []string
 	for _, c := range reg.Checkouts {

@@ -87,3 +87,62 @@ func TestVerifyFindsLostReusedAndHistoricKeys(t *testing.T) { //nolint:gocyclo /
 		t.Fatalf("reuse not found: %+v", rep.Keys)
 	}
 }
+
+// A monorepo's subprojects each claim only their own files' history; a
+// worktree adds no second read of the same history.
+func TestHistoryByCheckoutInMonorepoAndWorktrees(t *testing.T) {
+	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	t.Setenv("ESEC_CONFIG", "")
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-q")
+	pubs := map[string]string{}
+	for _, sub := range []string{"svc/a", "svc/b"} {
+		dir := filepath.Join(repo, sub)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := projectfile.WriteProjectFile(dir, "acme/"+filepath.Base(sub)); err != nil {
+			t.Fatal(err)
+		}
+		pub, _, _ := esec.GenerateKeypair()
+		pubs[sub] = pub
+		if err := os.WriteFile(filepath.Join(dir, ".env.prod"), []byte("ESEC_PUBLIC_KEY="+pub+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A file under no checkout belongs to nobody known here.
+	stray, _, _ := esec.GenerateKeypair()
+	if err := os.WriteFile(filepath.Join(repo, ".env.ci"), []byte("ESEC_PUBLIC_KEY="+stray+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "-A")
+	gitRun(t, repo, "commit", "-q", "-m", "init")
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitRun(t, repo, "worktree", "add", "-q", wt)
+
+	checkouts := []string{filepath.Join(repo, "svc/a"), filepath.Join(repo, "svc/b"), filepath.Join(wt, "svc/a")}
+	if got := repos(context.Background(), checkouts); len(got) != 1 || len(got[0].roots) != 3 {
+		t.Fatalf("repos: %+v", got)
+	}
+	uses, _, err := Collect(context.Background(), checkouts, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sub, pub := range pubs {
+		for _, u := range uses[pub] {
+			if u.Project != "acme/"+filepath.Base(sub) {
+				t.Fatalf("%s's key claimed by %s", sub, u.Project)
+			}
+		}
+	}
+	if len(uses[stray]) != 0 {
+		t.Fatalf("stray file claimed: %+v", uses[stray])
+	}
+	if _, err := os.Stat(historyFile()); err != nil {
+		t.Fatalf("history not cached: %v", err)
+	}
+	rep := Build(uses, []Source{{Name: "this device", Projects: map[string]map[string]string{}}})
+	if rep.Problems != 0 || rep.Lost != 0 || rep.Unheld != 2 {
+		t.Fatalf("keys of projects held nowhere are not losses: %+v", rep)
+	}
+}

@@ -35,11 +35,13 @@ func BuildSnapshot(id *identity.Identity, ks *keystore.Store) (*Snapshot, error)
 		return nil, err
 	}
 	defer unlock()
-	unlockKeys, err := storage.Lock(ks.Dir)
-	if err != nil {
-		return nil, err
+	if !ks.Locked {
+		unlockKeys, err := storage.Lock(ks.Dir)
+		if err != nil {
+			return nil, err
+		}
+		defer unlockKeys()
 	}
-	defer unlockKeys()
 	v, master, err := collect(id, ks)
 	if err != nil {
 		return nil, err

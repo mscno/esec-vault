@@ -176,6 +176,15 @@ func creationFormat(dir, explicit string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// esec.toml decides a project's format: every machine and agent must
+	// name its files alike. A flag may only agree; ESEC_FORMAT from a shell
+	// is a personal default and yields.
+	if project := cfg.ProjectFormat; project != "" {
+		if explicit != "" && strings.TrimPrefix(explicit, ".") != project {
+			return "", fmt.Errorf("--format %s: this project's esec.toml uses %s files (files.format)", explicit, project)
+		}
+		explicit = project
+	}
 	if explicit == "" {
 		explicit = os.Getenv("ESEC_FORMAT")
 	}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/kong"
 
@@ -31,13 +32,14 @@ type cliCtx struct {
 }
 
 type cli struct {
-	Setup  SetupCmd  `cmd:"" group:"start" help:"Guided identity, remote and background-service setup."`
-	Init   InitCmd   `cmd:"" group:"start" help:"Set up an identity and first backup in one go."`
-	Login  LoginCmd  `cmd:"" group:"start" help:"Sign in to a vault server and get your keys on this machine."`
-	Logout LogoutCmd `cmd:"" group:"start" help:"End this machine's vault server session."`
-	Status StatusCmd `cmd:"" group:"start" help:"Show identity, vault and backup status."`
-	Doctor DoctorCmd `cmd:"" group:"start" help:"Diagnose setup problems (unmigrated keyrings, loose permissions)."`
-	Verify VerifyCmd `cmd:"" group:"start" help:"Check no key can be lost: every key your checkouts and their git history use is here and in a second place, and none serves two projects."`
+	Setup    SetupCmd    `cmd:"" group:"start" help:"Guided identity, remote and background-service setup."`
+	Init     InitCmd     `cmd:"" group:"start" help:"Set up an identity and first backup in one go."`
+	Login    LoginCmd    `cmd:"" group:"start" help:"Sign in to a vault server and get your keys on this machine."`
+	Logout   LogoutCmd   `cmd:"" group:"start" help:"End this machine's vault server session."`
+	Status   StatusCmd   `cmd:"" group:"start" help:"Show identity, vault and backup status."`
+	Doctor   DoctorCmd   `cmd:"" group:"start" help:"Diagnose setup problems (unmigrated keyrings, loose permissions)."`
+	Activity ActivityCmd `cmd:"" group:"start" help:"Which programs and agents asked for keys, and what was allowed: the local audit log."`
+	Verify   VerifyCmd   `cmd:"" group:"start" help:"Check no key can be lost: every key your checkouts and their git history use is here and in a second place, and none serves two projects."`
 
 	Project  ProjectCmd  `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
 	Projects ProjectsCmd `cmd:"" group:"secrets" help:"Every project on this machine: where it is checked out, its environments, its keys here."`
@@ -194,7 +196,7 @@ func Execute(version string) {
 // isMutation reports whether a command changes keyrings, so it runs under the
 // keyring lock and is followed by a snapshot and a server push.
 func isMutation(command string) bool {
-	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "sync", "restore", "access sync", "group sync"} {
+	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "group sync", "guard init", "guard enable", "guard holders", "guard recover"} {
 		if strings.HasPrefix(command, prefix) {
 			return true
 		}
@@ -206,7 +208,11 @@ func runCommand(run func() error, mutation bool) error {
 	if !mutation {
 		return run()
 	}
-	unlock, err := storage.Lock(paths.KeyringDir())
+	// Agents run many commands at once: wait for another one (which may be
+	// waiting for a touch or the network) rather than fail.
+	unlock, err := storage.LockWait(paths.KeyringDir(), 3*time.Minute, func() {
+		fmt.Fprintln(os.Stderr, "Waiting for another esec-vault command that is changing keys (it may be waiting for a touch or the network)…")
+	})
 	if err != nil {
 		return err
 	}

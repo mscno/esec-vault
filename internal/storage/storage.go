@@ -2,8 +2,10 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mscno/esec/pkg/filelock"
 )
@@ -62,4 +64,25 @@ func WriteKeepMode(path string, data []byte) error {
 // Lock excludes concurrent mutations and is released by the kernel on exit.
 func Lock(home string) (func(), error) {
 	return filelock.Acquire(home)
+}
+
+// LockWait is Lock, waiting up to timeout for another process to finish.
+// waiting is called once, when it starts to wait.
+func LockWait(home string, timeout time.Duration, waiting func()) (func(), error) {
+	deadline := time.Now().Add(timeout)
+	told := false
+	for {
+		unlock, err := filelock.Acquire(home)
+		if err == nil {
+			return unlock, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("another esec-vault command kept the keys busy for %s: %w", timeout, err)
+		}
+		if !told && waiting != nil {
+			waiting()
+			told = true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

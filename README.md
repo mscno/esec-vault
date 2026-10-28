@@ -350,7 +350,8 @@ esec vault access revoke alice --yes   # commands that ask take --yes (or --forc
 `access revoke`, `access offboard`, `group list`,
 `group show`, `machine list`, `machine whoami`, `devices list`, `env list`,
 `keyring list`, `delegate list`, `changes`, `projects`, `projects show`,
-`projects scan`, `guard`, `guard check`, `verify` and `verify --last`. It shows names, public keys
+`projects scan`, `guard`, `guard check`, `verify`, `verify --last` and
+`activity`. It shows names, public keys
 and fingerprints, never a private key.
 
 A command that would ask a question with no terminal attached, and no
@@ -396,6 +397,7 @@ masked. Guarded environments need your touch. See
 esec vault projects scan ~/src      # remember every checkout, like a git client
 esec vault projects                 # every project: checkouts, environments, keys here
 esec vault verify                   # every key in two places, none shared between projects
+esec vault activity                 # which programs and agents asked for keys
 esec vault drill                    # the newest backup opens with your phrase alone
 ```
 
@@ -702,8 +704,10 @@ key = "9a2e…"
 Commit it to Git. It contains no private key. It names the project, how its
 secrets files are named, and each environment with its current public key
 and guard (see [Guard prod keys with a YubiKey](#guard-prod-keys-with-a-yubikey)).
-`env add`, `env rotate` and `guard enable` keep it up to date; `secrets lint`
-and `verify` check files against it. Optional settings:
+`env add`, `env rotate` and `guard enable` keep it up to date, changing only
+the lines they must, so your comments stay. `secrets lint` fails a file
+encrypted to another key than the one it names. Keys it does not know (from
+a newer esec) are ignored with a warning. Optional settings:
 
 ```toml
 [files]
@@ -1615,8 +1619,9 @@ nowhere). Environment keys are wrapped to the guard. Adding or removing a
 YubiKey rewraps only the guard:
 
 ```sh
-esec vault guard holders add age1yubikey1…      # one touch of a current key
+esec vault guard holders add                    # every plugged-in YubiKey; one touch of a current one
 esec vault guard holders remove age1yubikey1…   # a lost key
+esec vault guard recover --remove age1yubikey1… # every YubiKey lost: the phrase opens it, new ones hold it
 ```
 
 The wrapped guard and keys are ciphertext, so they sync to your other
@@ -1726,7 +1731,7 @@ its directories on this machine, several for clones and worktrees. Commands
 that find an `esec.toml` add its checkout by themselves.
 
 ```sh
-esec vault projects                       # checkouts, environments, keys here
+esec vault projects                       # checkouts, environments, keys here, what to fix
 esec vault projects show acme/store       # with its secrets files
 esec vault projects scan ~/src            # find and remember every checkout
 esec vault projects add .  |  remove DIR  |  prune
@@ -1753,19 +1758,37 @@ esec vault keyring repair    # file keys from older keyrings under their public 
 
 `verify` reads every secrets file in every checkout and every one in their
 git history, and reports each key that is not on this device, held in only
-one place, held nowhere (lost), or used by two projects. The background
-service runs it daily and notifies only when something is wrong; `doctor`
-reports it, and a drill older than six months.
+one place, held nowhere (lost), or used by two projects. History is read once
+per repository (worktrees share it), each file counted for the checkout whose
+directory holds it (so a monorepo's subprojects stay apart), and cached until
+a ref changes. A key of a project you hold no key of anywhere (someone else's
+repository, an environment you cannot read) is listed apart, not as lost.
+The background service runs it daily and notifies only when something is
+wrong; `doctor` reports it, and suggests a drill when the last is older than
+six months. Only a full check (no `--no-…` flags) is kept for them.
 
 ## The Mac app
 
-`macos/EsecVault` is a menu bar app with a window: every project grouped by
-namespace, its checkouts (open in Finder or Terminal), environments with
-their guard and whether this Mac holds the key, secrets files with values
-left in the clear, and key health from `verify`. It guards an environment
-from a context menu (esec's dialog and your touch, as in Terminal). It reads
-metadata only and never asks for a value; every action is an `esec-vault`
-command you could type.
+`macos/EsecVault` is a menu bar app with a window. It reads metadata only and
+never asks for a value; every action is an `esec-vault` command you could
+type, and it shows which.
+
+- **Overview**: a setup checklist (recovery phrase, background service, a
+  second place for keys, the YubiKey guard and a spare, a recovery drill),
+  each step with a button that does it, or opens Terminal for steps that ask
+  for a phrase, a PIN or a touch; then key health from `verify`.
+- **Activity**: every request for keys, newest first: allowed, asked or
+  refused, by which programs (`zsh ▸ claude ▸ esec-vault`) and which agent
+  session. The menu bar lists the last day's reads of guarded keys.
+- **Projects** by namespace: checkouts (Finder, Terminal), environments with
+  their guard, whether this Mac holds the key and the command that fixes it;
+  secrets files with values left in the clear; recent requests. Add an
+  environment, rotate a key or guard one from there.
+- **New Project** (⌘N): pick a folder, name the environments, guard prod;
+  it runs `project init`.
+
+It updates when `esec-vault` changes its files (an agent running a command
+shows up at once), and can open at login (menu bar › Open at Login).
 
 ```sh
 cd macos/EsecVault && ./bundle.sh install   # ~/Applications/esec Vault.app
@@ -2069,6 +2092,7 @@ Migration is explicit; installing the binary does not alter live keys.
 | Check setup and repository coverage | `esec vault doctor --dir ~/projects` |
 | Every project on this machine | `esec vault projects` |
 | Check no key can be lost | `esec vault verify` |
+| See which programs and agents asked for keys | `esec vault activity` |
 | Prove the backup restores with the phrase | `esec vault drill` |
 | Guard an environment with your YubiKey | `esec vault guard enable --env prod` |
 | Use guarded keys from another machine | `esec vault forward HOST` |

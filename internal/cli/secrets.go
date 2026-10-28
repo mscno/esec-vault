@@ -467,6 +467,7 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 		out = append(out, lintFinding{Path: relTo(root, path), Level: level, Detail: detail, Fix: fix})
 	}
 	views := map[string]*account.TeamView{}
+	projectFiles := map[string]*projectfile.File{}
 	a, aerr := openAccount(ctx)
 	bg, cancel := timeout(5 * time.Minute)
 	defer cancel()
@@ -477,6 +478,19 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 		if f.Project == "" {
 			add(f.Path, account.CheckWarn, "no esec.toml above it, so no project's key to check it against", "esec vault project init ORG/REPO")
 			continue
+		}
+		// esec.toml names each environment's current key: no network needed.
+		pf, ok := projectFiles[f.Root]
+		if !ok {
+			pf, _ = projectfile.Load(f.Root)
+			projectFiles[f.Root] = pf
+		}
+		if pf != nil && f.Env != "" {
+			if want := pf.Env[f.Env].Key; want != "" && !strings.EqualFold(want, f.PublicKey) {
+				add(f.Path, account.CheckFail, "encrypted to "+short(f.PublicKey)+", but esec.toml names "+short(want)+" as "+f.Env+"'s key",
+					"esec vault env rotate "+f.Env+" (re-encrypts it), or fix [env."+f.Env+"] in esec.toml")
+				continue
+			}
 		}
 		if f.Env == "" || aerr != nil {
 			continue
@@ -533,7 +547,7 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 			fmt.Printf("✓ %d secrets file(s): every value encrypted, each to its environment's current key.\n", len(files))
 		}
 		if aerr != nil {
-			fmt.Println("  (not signed in: checked only for values in the clear)")
+			fmt.Println("  (not signed in: checked for values in the clear and against esec.toml)")
 		}
 	}
 	if failed > 0 {
@@ -621,7 +635,7 @@ func (c *EnvStatusCmd) Run(ctx *cliCtx) error {
 // EnvRotateExposedCmd rotates, across checkouts, every environment whose
 // key someone who left may hold.
 type EnvRotateExposedCmd struct {
-	Root   string `type:"path" required:"" help:"A directory of checkouts, such as ~/src"`
+	Root   string `type:"path" help:"Only checkouts under this directory, such as ~/src (found and remembered); default: every checkout this machine knows"`
 	Org    string `help:"Only projects of this organisation"`
 	DryRun bool   `name:"dry-run" help:"Only list what would be rotated"`
 	Yes    bool   `help:"Do not ask"`
@@ -640,10 +654,6 @@ type rotatedRepo struct {
 
 // Run implements env rotate-exposed.
 func (c *EnvRotateExposedCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan, ask, then each checkout
-	root, err := filepath.Abs(c.Root)
-	if err != nil {
-		return err
-	}
 	a, err := openAccount(ctx)
 	if err != nil {
 		return err
@@ -654,22 +664,10 @@ func (c *EnvRotateExposedCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan,
 	if err != nil {
 		return err
 	}
-	// Checkouts by project: the directories of their esec.toml.
-	dirs := map[string][]string{}
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // unreadable parts are skipped
-		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor") {
-			return filepath.SkipDir
-		}
-		if d.Name() == projectfile.ProjectFileName {
-			if p, err := projectfile.ReadProjectFile(filepath.Dir(path)); err == nil {
-				dirs[p] = append(dirs[p], filepath.Dir(path))
-			}
-		}
-		return nil
-	})
+	dirs, root, err := checkoutsByProject(c.Root)
+	if err != nil {
+		return err
+	}
 	var plan []rotatedRepo
 	for _, n := range needs {
 		r := rotatedRepo{Project: n.Project, Env: n.Env}
@@ -677,9 +675,9 @@ func (c *EnvRotateExposedCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan,
 		case !n.Admin:
 			r.Skipped = "you are not an admin of it"
 		case len(dirs[n.Project]) == 0:
-			r.Skipped = "no checkout under " + root
+			r.Skipped = "no checkout " + root
 		case len(dirs[n.Project]) > 1:
-			r.Skipped = "several checkouts: " + strings.Join(dirs[n.Project], ", ")
+			r.Skipped = "checked out in several repositories, rotate in one: " + strings.Join(dirs[n.Project], ", ")
 		default:
 			r.Dir = dirs[n.Project][0]
 		}
@@ -719,8 +717,14 @@ func (c *EnvRotateExposedCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan,
 			r.Error, failed = err.Error(), failed+1
 			continue
 		}
+		recordEnvKey(r.Dir, r.Project, r.Env, res.NewPublic)
 		for _, f := range res.Files {
 			r.Files = append(r.Files, relTo(r.Dir, f))
+		}
+		if err != nil {
+			// Rotated, but a file could not be rewritten.
+			r.Error, failed = err.Error(), failed+1
+			continue
 		}
 		if _, err := a.PublishEnv(bg, r.Project, r.Env, "rotated"); err != nil {
 			r.Error, failed = "rotated here, but not published: "+err.Error()+" (esec vault access publish "+r.Env+" --project "+r.Project+")", failed+1
