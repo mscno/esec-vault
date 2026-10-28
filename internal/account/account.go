@@ -44,6 +44,11 @@ type Account struct {
 	ReplaceIdentity bool
 	// KeyringLocked records that the caller already holds the keyring lock.
 	KeyringLocked bool
+	// OpenKey, when set, gets an environment key the keyring does not hold
+	// (one sealed in a checkout, a guarded one after a touch), so machines
+	// and groups still get keys the keyring no longer keeps. pub is the
+	// public key wanted, "" for the checkout's current key.
+	OpenKey func(ctx context.Context, project, env, pub string) (string, error)
 }
 
 // Open loads the signed-in account of this machine.

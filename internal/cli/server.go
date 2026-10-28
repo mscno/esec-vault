@@ -44,6 +44,7 @@ func openAccount(ctx *cliCtx) (*account.Account, error) {
 		return nil, err
 	}
 	a.KeyringLocked = ctx.keyringLocked
+	a.OpenKey = openKeyFor(ctx)
 	return a, nil
 }
 

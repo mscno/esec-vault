@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"filippo.io/age"
 	"github.com/mscno/esec/pkg/projectfile"
@@ -213,6 +214,70 @@ func (s *sealing) softwareIDs(rec *seal.Record) []age.Identity {
 	return ids
 }
 
+// keysOpened holds the keys this command opened or made, by project,
+// environment and public key, so one touch serves the whole command; a key
+// that would not open is remembered too, so it is asked for once.
+var keysOpened = struct {
+	sync.Mutex
+
+	m map[string]keyOpened
+}{m: map[string]keyOpened{}}
+
+type keyOpened struct {
+	priv string
+	err  error
+}
+
+func openedKey(project, env, pub string) string {
+	return project + "\x00" + env + "\x00" + strings.ToLower(pub)
+}
+
+// rememberKey records a key this command opened or made.
+func rememberKey(project, env, priv string) {
+	if pub, err := keystore.PublicHex(priv); err == nil {
+		keysOpened.Lock()
+		keysOpened.m[openedKey(project, env, pub)] = keyOpened{priv: priv}
+		keysOpened.Unlock()
+	}
+}
+
+// openKeyFor gets the account a project's key its keyring does not keep,
+// from the project's checkout: a guarded key with a touch, once per
+// command. The vault server's machines and groups get keys this way.
+func openKeyFor(ctx *cliCtx) func(context.Context, string, string, string) (string, error) {
+	return func(_ context.Context, project, env, pub string) (string, error) {
+		root, pf, err := checkoutFor(project)
+		if err != nil {
+			return "", err
+		}
+		e, ok := pf.Env[env]
+		if !ok || e.Key == "" {
+			return "", fmt.Errorf("the checkout at %s has no %s key", root, env)
+		}
+		if pub != "" && !strings.EqualFold(e.Key, pub) {
+			return "", fmt.Errorf("the checkout at %s has another %s key than the project's: pull, or publish it (esec vault access publish %s)", root, env, env)
+		}
+		k := openedKey(project, env, e.Key)
+		keysOpened.Lock()
+		r, done := keysOpened.m[k]
+		keysOpened.Unlock()
+		if done {
+			return r.priv, r.err
+		}
+		s, err := newSealing(ctx)
+		if err == nil {
+			var o *opened
+			if o, err = s.open(root, pf, env, "send it to the project's machines and groups on the vault server"); err == nil { //nolint:contextcheck // sealing runs its own lookups
+				return o.Private, nil
+			}
+		}
+		keysOpened.Lock()
+		keysOpened.m[k] = keyOpened{err: err}
+		keysOpened.Unlock()
+		return "", err
+	}
+}
+
 // opened is a key opened for a command.
 type opened struct {
 	Private string
@@ -224,7 +289,21 @@ type opened struct {
 // dialog and a touch of a security key. Unguarded keys opened from a seal
 // are cached. why says what the key is opened for, in the dialog.
 func (s *sealing) open(root string, pf *projectfile.File, env, why string) (*opened, error) {
+	o, err := s.openOnce(root, pf, env, why)
+	if err == nil {
+		rememberKey(pf.Project, env, o.Private)
+	}
+	return o, err
+}
+
+func (s *sealing) openOnce(root string, pf *projectfile.File, env, why string) (*opened, error) {
 	e := pf.Env[env]
+	keysOpened.Lock()
+	r, done := keysOpened.m[openedKey(pf.Project, env, e.Key)]
+	keysOpened.Unlock()
+	if done && r.err == nil && e.Key != "" {
+		return &opened{Private: r.priv, Guard: e.GuardLevel()}, nil
+	}
 	if !seal.Guarded(e.Guard) {
 		if priv, ok := s.cached(pf.Project, env, e.Key); ok {
 			return &opened{Private: priv, Guard: projectfile.GuardNone}, nil

@@ -419,6 +419,11 @@ func (t *teamCtx) grant(st *team.State, holder string, envs []string) (*envelope
 	keys := map[string]string{}
 	var missing []string
 	for _, n := range envs {
+		if _, ok := have[n]; !ok && st.HasAccess(holder, n) {
+			if priv, ok := t.a.openKey(t.ctx, st.Project, n, st.Envs[n].PublicKey); ok {
+				have[n] = priv
+			}
+		}
 		if priv, ok := have[n]; ok && st.HasAccess(holder, n) {
 			keys[n] = priv
 		} else {
@@ -461,6 +466,23 @@ func (a *Account) withTeam(ctx context.Context, fn func(t *teamCtx) error) error
 		err = fn(t)
 		return errors.Join(err, t.save())
 	})
+}
+
+// openKey gets a key the keyring does not hold with OpenKey, checking that
+// it is pub (when given).
+func (a *Account) openKey(ctx context.Context, project, env, pub string) (string, bool) {
+	if a.OpenKey == nil {
+		return "", false
+	}
+	priv, err := a.OpenKey(ctx, project, env, pub)
+	if err != nil {
+		a.UI.Printf("! %s %s: %v\n", project, env, err)
+		return "", false
+	}
+	if got, err := team.PublicHex(priv); err != nil || pub != "" && got != pub {
+		return "", false
+	}
+	return priv, true
 }
 
 // localEnvs lists the named environments of a project's keyring.
@@ -569,8 +591,11 @@ func (a *Account) CreateTeam(ctx context.Context, project string, envs []string)
 			return err
 		}
 		local, err := a.localEnvs(project)
-		if err != nil {
+		if err != nil && len(envs) == 0 {
 			return err
+		}
+		if local == nil {
+			local = map[string]string{}
 		}
 		if len(envs) == 0 {
 			for n := range local {
@@ -585,7 +610,9 @@ func (a *Account) CreateTeam(ctx context.Context, project string, envs []string)
 		for _, n := range envs {
 			priv, ok := local[n]
 			if !ok {
-				return fmt.Errorf("this device has no %s key for %s", n, project)
+				if priv, ok = a.openKey(ctx, project, n, ""); !ok {
+					return fmt.Errorf("this device has no %s key for %s", n, project)
+				}
 			}
 			pub, _ := team.PublicHex(priv)
 			body.Envs = append(body.Envs, team.Env{Name: n, PublicKey: pub})
@@ -846,11 +873,15 @@ func (a *Account) PublishEnv(ctx context.Context, project, env, reason string) (
 		}
 		local, err := a.localEnvs(project)
 		if err != nil {
-			return err
+			local = map[string]string{}
 		}
 		priv, ok := local[env]
 		if !ok {
-			return fmt.Errorf("this device has no %s key for %s", env, project)
+			// A key the keyring does not keep (a guarded one): the
+			// checkout's current one.
+			if priv, ok = a.openKey(ctx, project, env, ""); !ok {
+				return fmt.Errorf("this device has no %s key for %s", env, project)
+			}
 		}
 		pub, _ := team.PublicHex(priv)
 		if cur, ok := st.Envs[env]; ok && cur.PublicKey == pub {

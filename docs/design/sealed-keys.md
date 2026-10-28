@@ -155,6 +155,27 @@ acme/store` (or Fly, or a KMS workload): the machine becomes a reader; the
 job runs `esec run prod -- …` with only its machine identity. No per-project
 secret to paste into CI.
 
+**Deploys and prod agents: three ways to give a running thing its key.**
+Seals do not replace the network; they sit beside it. None of them involves
+a touch: a guard is a property of reading on a person's own machine, so
+`guard = "touch"` asks the developer's YubiKey, never a deployed service or
+a prod agent, which read with what they hold.
+
+| Where it runs holds | It gets the key | After a rotation |
+|---|---|---|
+| The environment's key, `ESEC_PRIVATE_KEY_PROD` (a root secret) | directly; the file is on disk or embedded | the secret must be replaced |
+| An age identity, `ESEC_AGE_IDENTITY` (`ci add`) | opens `.esec/prod.age`, in the checkout or embedded in the binary beside the file (`//go:embed esec.toml .env.prod .esec/prod.age`) | nothing changes: the next build carries the new seal |
+| A machine key (`ESEC_VAULT_MACHINE_KEY`), an OIDC token (GitHub Actions, Fly.io), or both; a KMS-bound workload | `esec-vault machine run` asks the vault server, which returns the key sealed to that machine or group; the client checks it against the project chain | nothing changes: `env rotate` sends the new key |
+
+The server's copies are sent by a project admin's device. A key the
+keyring does not keep (every guarded key) is opened from the checkout for
+that, on the admin's machine: one touch per command when a machine or
+group is first given a guarded key (that is a read of prod on a dev
+machine), none on rotation, which sends the key it just made. The
+background service sends what it can without a touch and notifies about the
+rest (`esec vault access sync`). The machines themselves never wait for
+anyone.
+
 **An agent.** Unchanged: it writes values with the public key, runs with dev,
 asks the background service for prod (dialog, touch). New: it can run
 `esec vault seal sync` and `setup --check --json`, and never sees a key

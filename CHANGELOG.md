@@ -1,4 +1,7 @@
-# Unreleased
+# v0.22.0
+
+Needs esec v0.12.0. Redeploy the vault server before registering security
+keys: it must accept the new `security_key_add` chain links.
 
 **Keys live with the code.** Each environment's private key is sealed in
 its repository, `.esec/<env>.age` (a standard age file), to its readers and
@@ -26,6 +29,14 @@ are enough to recover every key in every commit; nobody handles a key.
   `ESEC_AGE_IDENTITY` and nothing else.
 - **A new machine needs only your identity**: `setup` (and the background
   service) open every unguarded key of every checkout from the repository.
+- **Machines and OIDC workloads still get keys over the network**, guarded
+  ones too: the vault server's machines, groups and workloads are sent keys
+  the keyring no longer keeps by opening them from the checkout (a guarded
+  one with one touch per command); `env rotate` sends the new key it just
+  made. `team create` shares every environment of `esec.toml`.
+- **Embedded seals** (esec): a binary that embeds `esec.toml`, its file and
+  `.esec/<env>.age` needs only `ESEC_AGE_IDENTITY`, which survives
+  rotation; `ESEC_PRIVATE_KEY_<ENV>` as a root secret still works.
 - `drill` opens every seal with the phrase alone; `verify` counts a sealed
   key as kept in two places. `project init`, `env add`, `env rotate` seal
   before they write (`--offline` is gone).

@@ -273,7 +273,7 @@ func keyStates(m map[string]string) string {
 // TeamCreateCmd creates a shared project.
 type TeamCreateCmd struct {
 	Project string   `help:"Project id (default: nearest esec.toml)"`
-	Env     []string `name:"env" sep:"," help:"Environments to share (default: every environment in your keyring for the project)"`
+	Env     []string `name:"env" sep:"," help:"Environments to share (default: every environment of its esec.toml, else of your keyring)"`
 }
 
 // Run implements team create.
@@ -294,7 +294,13 @@ func (c *TeamCreateCmd) Run(ctx *cliCtx) error {
 		fmt.Printf("✓ %s is shared already, with you as an admin; nothing changed.\n", project)
 		return nil
 	}
-	st, err := a.CreateTeam(bg, project, c.Env)
+	envs := c.Env
+	if _, pf, err := checkoutFor(project); len(envs) == 0 && err == nil {
+		// Guarded keys are not in the keyring: they are opened from the
+		// checkout, with a touch.
+		envs = pf.Envs()
+	}
+	st, err := a.CreateTeam(bg, project, envs)
 	if err != nil {
 		return err
 	}

@@ -7,7 +7,7 @@ require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/joho/godotenv v1.5.1
-	github.com/mscno/esec v0.11.0
+	github.com/mscno/esec v0.12.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/starfederation/datastar-go v1.2.2
 	github.com/tyler-smith/go-bip39 v1.1.0
@@ -19,6 +19,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/CAFxX/httpcompression v0.0.9 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect

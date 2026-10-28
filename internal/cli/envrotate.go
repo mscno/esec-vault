@@ -55,7 +55,10 @@ func (r *rotator) rotate(project, env, root string) (*envrotate.Result, error) {
 	return envrotate.Rotate(r.s.ks, project, env, root, envrotate.Options{
 		Old:   old.Private,
 		Cache: !seal.Guarded(level),
-		Seal:  func(priv string) error { return r.s.seal(proot, pf, env, priv, level, readers) },
+		Seal: func(priv string) error {
+			rememberKey(project, env, priv)
+			return r.s.seal(proot, pf, env, priv, level, readers)
+		},
 	})
 }
 

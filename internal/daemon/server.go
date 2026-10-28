@@ -177,6 +177,13 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) { //nolint:go
 	if len(res.Sent) > 0 {
 		s.Logger.Info("shared projects: sent keys", "to", strings.Join(res.Sent, "; "))
 	}
+	for _, u := range res.Unsent {
+		// Most often a guarded key, which only a touch opens.
+		s.Logger.Info("shared projects: not sent", "keys", u)
+		if s.stillWaiting("unsent " + u) {
+			Notifier("esec vault: keys to send", u+" is waiting for a key this background service cannot open by itself. Run: esec vault access sync")
+		}
+	}
 	for _, c := range res.Conflicts {
 		if s.stillWaiting("conflict " + c) {
 			Notifier("esec vault: key not replaced", c+": the team sent a key, but this device holds another. Run: esec vault access sync")
