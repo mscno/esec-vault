@@ -252,75 +252,53 @@ public struct ActivityEntry: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
-/// One step of setting up esec vault on this Mac, with the command that
-/// does it.
-public struct SetupItem: Hashable, Sendable, Identifiable {
-    public enum State: Sendable { case done, todo, warning }
+/// One step of `esec-vault setup --check --json`: what is set up on this
+/// Mac and what is left, with the command that does it.
+public struct SetupItem: Codable, Hashable, Sendable, Identifiable {
+    public enum State: Sendable { case done, todo, warning, skipped }
 
-    public let id: String
-    public let title: String
+    public let step: String
+    /// ok, done, todo, skipped or failed.
+    public let status: String
     public let detail: String
-    public let state: State
-    /// The esec-vault arguments that do or fix it.
-    public let command: [String]?
-    /// It asks questions (a phrase, a PIN, a touch): run it in Terminal.
-    public let interactive: Bool
-}
+    public let command: String?
 
-public enum Setup {
-    /// The setup checklist, from what status, guard and verify report.
-    public static func items(status: Status?, guardStatus: GuardStatus?, verify: VerifySaved?, now: Date = Date()) -> [SetupItem] {
-        var items: [SetupItem] = []
-        if let status {
-            let hasID = !(status.identity ?? "").isEmpty
-            items.append(SetupItem(id: "identity", title: "Recovery phrase",
-                                   detail: hasID ? "Your keys are backed by a 24-word phrase." : "Create your identity and write down its 24-word phrase.",
-                                   state: hasID ? .done : .todo, command: hasID ? nil : ["init"], interactive: true))
-            if let d = status.daemon {
-                items.append(SetupItem(id: "daemon", title: "Background service",
-                                       detail: d.upToDate ? "Running; it answers key requests and checks keys daily." : "Running an older version than the command line.",
-                                       state: d.upToDate ? .done : .warning, command: d.upToDate ? nil : ["daemon", "upgrade"], interactive: false))
-            } else {
-                items.append(SetupItem(id: "daemon", title: "Background service",
-                                       detail: "Not running: guarded keys, agents' requests and the daily check need it.",
-                                       state: .todo, command: ["daemon", "install"], interactive: false))
-            }
-            let remotes = status.destinations?.remote ?? [:]
-            let second = status.vaultServer != nil || !remotes.isEmpty
-            items.append(SetupItem(id: "second-place", title: "A second place for keys",
-                                   detail: second ? secondPlaceText(status) : "Keys are only on this Mac. Sign in to a vault server, or add a backup destination.",
-                                   state: second ? (status.pushPending ? .warning : .done) : .todo,
-                                   command: second ? (status.pushPending ? ["backup", "--verify", "--push"] : nil) : ["remote", "add"], interactive: true))
-        }
-        if let g = guardStatus {
-            if !g.setUp {
-                items.append(SetupItem(id: "guard", title: "YubiKey guard",
-                                       detail: "Prod keys open only with your touch, which no agent can make.",
-                                       state: .todo, command: ["guard", "init"], interactive: true))
-            } else {
-                let keys = g.holders.filter { $0.hasPrefix("age1yubikey") || $0.hasPrefix("age1se") }.count
-                items.append(SetupItem(id: "guard", title: "YubiKey guard",
-                                       detail: keys >= 2 ? "\(keys) security keys can open guarded keys." : "One security key: add a spare, or losing it means recovering from the phrase.",
-                                       state: keys >= 2 ? .done : .warning,
-                                       command: keys >= 2 ? nil : ["guard", "holders", "add"], interactive: true))
-            }
-        }
-        let drilled = verify?.drill.flatMap { $0.timeIntervalSince1970 > 1 ? $0 : nil }
-        let fresh = drilled.map { now.timeIntervalSince($0) < 180 * 86_400 } ?? false
-        items.append(SetupItem(id: "drill", title: "Recovery drill",
-                               detail: drilled == nil ? "Never practised: prove the newest backup opens with your phrase alone."
-                                   : fresh ? "Practised \(drilled!.formatted(date: .abbreviated, time: .omitted))."
-                                   : "Last practised over six months ago.",
-                               state: fresh ? .done : (drilled == nil ? .todo : .warning),
-                               command: fresh ? nil : ["drill"], interactive: true))
-        return items
+    public var id: String { step }
+
+    public init(step: String, status: String, detail: String, command: String?) {
+        self.step = step
+        self.status = status
+        self.detail = detail
+        self.command = command
     }
 
-    private static func secondPlaceText(_ s: Status) -> String {
-        var places: [String] = []
-        if let v = s.vaultServer { places.append(v.server) }
-        places += (s.destinations?.remote ?? [:]).keys.sorted()
-        let text = "Stored in " + places.joined(separator: ", ") + "."
-        return s.pushPending ? text + " A backup is waiting to be pushed." : text
+    public var title: String { step.prefix(1).uppercased() + step.dropFirst() }
+
+    public var state: State {
+        switch status {
+        case "ok", "done": .done
+        case "failed": .warning
+        case "skipped": .skipped
+        default: .todo
+        }
+    }
+
+    /// The esec-vault arguments of command, when it is one command to run
+    /// as it is (no placeholder such as SERVER, no alternatives).
+    public var args: [String]? {
+        guard let c = command, c.hasPrefix("esec vault ") else { return nil }
+        let rest = c.dropFirst("esec vault ".count)
+        if rest.contains("(") || rest.contains(" or ") || rest.contains(",")
+            || rest.split(separator: " ").contains(where: { $0.count > 1 && $0 == $0.uppercased() && $0.first!.isLetter }) {
+            return nil
+        }
+        return rest.split(separator: " ").map(String.init)
+    }
+
+    /// Whether running it asks for a phrase, a PIN or a touch, so it opens
+    /// Terminal; the rest run in the app.
+    public var interactive: Bool {
+        guard let first = args?.first else { return true }
+        return !["daemon", "projects", "verify", "sync"].contains(first)
     }
 }

@@ -10,6 +10,8 @@ public struct CLI: Sendable {
     public struct Failure: Error, LocalizedError, Sendable {
         public let command: String
         public let output: String
+        /// Standard output alone, for a command that failed but printed JSON.
+        public let stdout: Data
         public let code: Int32
         public var errorDescription: String? {
             let last = output.split(separator: "\n").last.map(String.init) ?? "exit \(code)"
@@ -75,7 +77,7 @@ public struct CLI: Sendable {
             p.waitUntilExit()
             if p.terminationStatus == 0 { return data }
             let text = String(decoding: data + errBox.data, as: UTF8.self)
-            throw Failure(command: "esec-vault " + args.prefix(2).joined(separator: " "), output: text, code: p.terminationStatus)
+            throw Failure(command: "esec-vault " + args.prefix(2).joined(separator: " "), output: text, stdout: data, code: p.terminationStatus)
     }
 
     /// Runs a command that prints JSON and decodes it. A command that fails
@@ -85,6 +87,9 @@ public struct CLI: Sendable {
             let data = try await run(args)
             return try JSON.decoder.decode(T.self, from: data)
         } catch let f as Failure {
+            if let value = try? JSON.decoder.decode(T.self, from: f.stdout) {
+                return value
+            }
             if let start = f.output.firstIndex(where: { $0 == "{" || $0 == "[" }),
                let value = try? JSON.decoder.decode(T.self, from: Data(f.output[start...].utf8)) {
                 return value
@@ -98,6 +103,7 @@ public struct CLI: Sendable {
     public func guardStatus() async throws -> GuardStatus { try await json(GuardStatus.self, ["guard", "--json"]) }
     public func lastVerify() async throws -> VerifySaved { try await json(VerifySaved.self, ["verify", "--last", "--json"]) }
     public func verifyNow() async throws -> VerifyReport { try await json(VerifyReport.self, ["verify", "--json"]) }
+    public func setup() async throws -> [SetupItem] { try await json([SetupItem].self, ["setup", "--check", "--json"]) }
     public func status() async throws -> Status { try await json(Status.self, ["status", "--json"]) }
     public func activity(project: String? = nil, limit: Int = 200) async throws -> [ActivityEntry] {
         var args = ["activity", "--json", "--limit", String(limit)]

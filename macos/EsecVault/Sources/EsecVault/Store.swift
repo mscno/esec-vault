@@ -31,10 +31,11 @@ final class Store {
 
     var health: Health { verify?.health ?? .unknown("Keys not checked yet") }
 
-    var setup: [SetupItem] { Setup.items(status: status, guardStatus: guardStatus, verify: verify) }
+    /// What esec-vault setup --check reports.
+    var setup: [SetupItem] = []
 
     /// Setup steps still to do, for the sidebar badge.
-    var setupTodo: Int { setup.filter { $0.state != .done }.count }
+    var setupTodo: Int { setup.filter { $0.state == .todo || $0.state == .warning }.count }
 
     /// Projects grouped by namespace ("acme" of "acme/store"), filtered by search.
     var namespaces: [(name: String, projects: [Project])] {
@@ -87,6 +88,7 @@ final class Store {
         if full || Date().timeIntervalSince(lastStatus) > 300 {
             lastStatus = Date()
             status = try? await cli.status()
+            setup = (try? await cli.setup()) ?? setup
         }
     }
 
@@ -189,11 +191,14 @@ final class Store {
 
     /// Does a setup step: in the app when it asks nothing, else in Terminal.
     func doSetup(_ item: SetupItem) async {
-        guard let command = item.command else { return }
+        guard let args = item.args else {
+            runInTerminal(["setup"])
+            return
+        }
         if item.interactive {
-            runInTerminal(command)
+            runInTerminal(args)
         } else {
-            await perform(item.title + "…", command)
+            await perform(item.title + "…", args)
         }
     }
 

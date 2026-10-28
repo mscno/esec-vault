@@ -52,15 +52,16 @@ import Testing
 }
 
 @Test func setupChecklist() throws {
-    let status = try JSON.decoder.decode(Status.self, from: Data(#"{"identity":"3e8c","recoverable":true,"push_pending":false}"#.utf8))
-    let guardOne = try JSON.decoder.decode(GuardStatus.self, from: Data(#"{"set_up":true,"holders":["age1yubikey1q","age1rec"],"projects":[]}"#.utf8))
-    let items = Setup.items(status: status, guardStatus: guardOne, verify: nil)
-    let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
-    #expect(byID["identity"]?.state == .done)
-    #expect(byID["daemon"]?.command == ["daemon", "install"])
-    #expect(byID["second-place"]?.state == .todo)
-    #expect(byID["guard"]?.state == .warning)
-    #expect(byID["drill"]?.command == ["drill"])
+    let items = try JSON.decoder.decode([SetupItem].self, from: Data(#"""
+    [{"step":"identity","status":"ok","detail":"fingerprint 3e8c…"},
+     {"step":"background service","status":"todo","detail":"…","command":"esec vault daemon install --start"},
+     {"step":"identity2","status":"todo","detail":"none","command":"esec vault login SERVER (joining your account), or esec vault init"},
+     {"step":"guard","status":"failed","detail":"x","command":"esec vault guard enable --project acme/store"}]
+    """#.utf8))
+    #expect(items[0].state == .done && items[0].args == nil)
+    #expect(items[1].args == ["daemon", "install", "--start"] && !items[1].interactive)
+    #expect(items[2].args == nil && items[2].interactive)
+    #expect(items[3].state == .warning && items[3].args == ["guard", "enable", "--project", "acme/store"] && items[3].interactive)
 }
 
 @Test func quotesShellArguments() {

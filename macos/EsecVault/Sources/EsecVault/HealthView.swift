@@ -111,10 +111,12 @@ struct SetupRow: View {
                 Text(item.detail).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if let command = item.command {
-                Button(item.interactive ? "Open in Terminal" : "Do It") { Task { await store.doSetup(item) } }
-                    .disabled(store.busy != nil)
-                    .help("esec vault " + command.joined(separator: " "))
+            if item.state == .todo || item.state == .warning, let command = item.command {
+                Button(item.args == nil ? "Set Up in Terminal" : item.interactive ? "Open in Terminal" : "Do It") {
+                    Task { await store.doSetup(item) }
+                }
+                .disabled(store.busy != nil)
+                .help(command)
             }
         }
     }
@@ -124,6 +126,7 @@ struct SetupRow: View {
         case .done: "checkmark.circle.fill"
         case .warning: "exclamationmark.circle.fill"
         case .todo: "circle"
+        case .skipped: "minus.circle"
         }
     }
 
@@ -131,7 +134,7 @@ struct SetupRow: View {
         switch item.state {
         case .done: .green
         case .warning: .orange
-        case .todo: .secondary
+        case .todo, .skipped: .secondary
         }
     }
 }
