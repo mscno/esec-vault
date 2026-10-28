@@ -3,18 +3,22 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"filippo.io/age"
 	"github.com/mscno/esec/pkg/projectfile"
+	"github.com/tyler-smith/go-bip39"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/caller"
 	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/identity"
@@ -29,6 +33,7 @@ type GuardCmd struct {
 	Init    GuardInitCmd    `cmd:"" help:"Set up the guard: your YubiKeys (age-plugin-yubikey) and your recovery phrase hold it."`
 	Enable  GuardEnableCmd  `cmd:"" help:"Guard environment keys: from now on every read needs a touch (or one per session)."`
 	Holders GuardHoldersCmd `cmd:"" help:"Add or remove a security key that holds the guard."`
+	Recover GuardRecoverCmd `cmd:"" help:"Lost your security keys? Open the guard with the recovery phrase and give it to new ones."`
 	Check   GuardCheckCmd   `cmd:"" help:"Open the guard once and check every guarded key opens and belongs to its public key."`
 	Export  GuardExportCmd  `cmd:"" help:"Write the guard and every guarded key as plain age files, to open with rage if esec is gone."`
 }
@@ -93,18 +98,21 @@ func readGuardStatus() (*guardStatus, error) {
 			return nil, err
 		}
 		gp := guardProject{Project: p, Envs: []string{}}
+		inClear := map[string]bool{}
 		for k, v := range entries {
 			switch {
 			case keystore.IsGuardEntry(k):
 				gp.Keys++
-				if _, isClear := entries[keystore.PubEntry(strings.TrimPrefix(k, "ESEC_GUARD_"))]; isClear {
-					gp.Clear = append(gp.Clear, strings.ToLower(strings.TrimPrefix(k, "ESEC_GUARD_"))[:12])
-				}
-			case strings.HasPrefix(k, "ESEC_GUARD_ENV_"):
+			case strings.HasPrefix(k, keystore.GuardEnvPrefix):
 				if env, ok := keystore.EnvName(k); ok {
 					gp.Envs = append(gp.Envs, env)
 				}
-				_ = v
+			default:
+				// Any entry holding a guarded key in the clear, by any name.
+				if pub, err := keystore.PublicHex(v); err == nil && entries[keystore.GuardEntry(pub)] != "" && !inClear[pub] {
+					inClear[pub] = true
+					gp.Clear = append(gp.Clear, pub[:12])
+				}
 			}
 		}
 		if gp.Keys > 0 {
@@ -134,7 +142,7 @@ func (c *GuardStatusCmd) Run(_ *cliCtx) error {
 		fmt.Println("  " + describeHolder(h))
 	}
 	if len(st.Holders) < 2 {
-		fmt.Println("  ! one holder: lose it and the guarded keys are gone. Add a second YubiKey: esec vault guard holders add age1yubikey1…")
+		fmt.Println("  ! one holder: lose it and the guarded keys are gone. Plug in a second YubiKey too and run: esec vault guard holders add")
 	}
 	if len(st.Projects) == 0 {
 		fmt.Println("No guarded keys yet: esec vault guard enable --env prod")
@@ -177,6 +185,9 @@ func (c *GuardInitCmd) Run(ctx *cliCtx) error {
 	} else if !errors.Is(err, guard.ErrNotSetUp) {
 		return err
 	}
+	if err := noGuardOnServer(ctx); err != nil {
+		return err
+	}
 	holders := c.Holder
 	if len(holders) == 0 {
 		found, notes, err := listYubiKeys()
@@ -216,9 +227,32 @@ func (c *GuardInitCmd) Run(ctx *cliCtx) error {
 		fmt.Println("  " + describeHolder(h))
 	}
 	if hardware < 2 {
-		fmt.Fprintln(os.Stderr, "! one security key: add your spare too (esec vault guard holders add age1yubikey1…)")
+		fmt.Fprintln(os.Stderr, "! one security key: plug in your spare too and run esec vault guard holders add")
 	}
 	fmt.Println("Guard an environment: esec vault guard enable --env prod")
+	return nil
+}
+
+// noGuardOnServer refuses a second guard: when this device is signed in to
+// a vault server whose vault has a guard already (set up on another
+// device), this one would replace it there, or conflict with it.
+func noGuardOnServer(ctx *cliCtx) error {
+	a, err := openAccount(ctx)
+	if errors.Is(err, account.ErrNotLoggedIn) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	bg, cancel := timeout(time.Minute)
+	defer cancel()
+	projects, err := a.ServerProjects(bg)
+	if err != nil {
+		return fmt.Errorf("check the vault server for a guard set up on another device: %w", err)
+	}
+	if projects["default"][guard.EntryIdentity] != "" {
+		return errors.New("another device set up the guard already: get it here with esec vault sync --server, then let this Mac's YubiKey open it with esec vault guard holders add")
+	}
 	return nil
 }
 
@@ -305,11 +339,16 @@ func (c *GuardEnableCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // which envi
 		}
 	}
 	ks := guardStore()
-	entries, err := ks.Read(project)
-	if err != nil {
+	if _, err := ks.Read(project); err != nil {
 		return fmt.Errorf("no keys of %s on this device: %w", project, err)
 	}
 	id, err := openGuard(fmt.Sprintf("Guard the keys of %s: %s", project, strings.Join(append(envs, retiredNote(c.Retired)...), ", ")))
+	if err != nil {
+		return err
+	}
+	// Read the keyring after the dialog and touch, which take a while: a
+	// sync in between must not be undone.
+	entries, err := ks.Read(project)
 	if err != nil {
 		return err
 	}
@@ -433,8 +472,26 @@ func guardKey(entries map[string]string, id *age.X25519Identity, project, env, l
 		}
 		entries[keystore.GuardEntry(pub)] = v
 	}
-	delete(entries, keystore.PubEntry(pub))
+	// Every clear copy goes, whatever its name: the public-key entry, the
+	// environment's name, and any other name pointing at the same key.
+	for k, v := range entries {
+		if keystore.IsGuardEntry(k) || strings.HasPrefix(k, keystore.GuardEnvPrefix) || !strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(priv)) {
+			continue
+		}
+		delete(entries, k)
+		if other, ok := keystore.EnvName(k); ok && other != env && !isHex64(other) && entries[keystore.GuardEnvEntry(other)] == "" {
+			entries[keystore.GuardEnvEntry(other)] = pub
+		}
+	}
 	return nil
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 // projectAndFile resolves the project and, where there is one, its
@@ -473,19 +530,44 @@ type GuardHoldersCmd struct {
 
 // GuardHolderAddCmd adds a holder.
 type GuardHolderAddCmd struct {
-	Recipient string `arg:"" help:"The holder's recipient, such as age1yubikey1…"`
+	Recipient string `arg:"" optional:"" help:"The holder's recipient, such as age1yubikey1… (default: every plugged-in YubiKey that does not hold it yet)"`
 }
 
 // Run implements guard holders add.
 func (c *GuardHolderAddCmd) Run(ctx *cliCtx) error {
-	return changeHolders(ctx, "Let "+c.Recipient+" open the guard", func(h []string) ([]string, error) {
-		for _, x := range h {
-			if x == c.Recipient {
-				return nil, errors.New("it holds the guard already")
+	var add []string
+	if c.Recipient != "" {
+		add = []string{c.Recipient}
+	}
+	return changeHolders(ctx, "Let another security key open the guard", func(h []string) ([]string, error) {
+		if add == nil {
+			found, _, err := listYubiKeys()
+			if err != nil {
+				return nil, err
+			}
+			add = newHolders(h, found)
+			if len(add) == 0 {
+				return nil, errors.New("every plugged-in YubiKey holds the guard already: plug in the spare as well (set up with age-plugin-yubikey --generate --touch-policy always), or pass its recipient")
 			}
 		}
-		return append(h, c.Recipient), nil
+		for _, r := range add {
+			if slices.Contains(h, r) {
+				return nil, fmt.Errorf("%s holds the guard already", describeHolder(r))
+			}
+		}
+		return append(h, add...), nil
 	})
+}
+
+// newHolders is the recipients in found that are not in holders.
+func newHolders(holders, found []string) []string {
+	var out []string
+	for _, r := range found {
+		if !slices.Contains(holders, r) && !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // GuardHolderRemoveCmd removes a holder.
@@ -533,6 +615,23 @@ func changeHolders(ctx *cliCtx, what string, change func([]string) ([]string, er
 	if err != nil {
 		return err
 	}
+	return saveHolders(ctx, g, id, holders)
+}
+
+// saveHolders rewraps the opened guard to holders and stores it, unless
+// the guard changed while the person was asked (a sync in between).
+func saveHolders(ctx *cliCtx, before *guard.Guard, id *age.X25519Identity, holders []string) error {
+	ks := guardStore()
+	now, err := guard.Load(ks)
+	if err != nil {
+		return err
+	}
+	if now.Recipient != before.Recipient || !slices.Equal(now.Holders, before.Holders) {
+		return errors.New("the guard changed on this device meanwhile (a sync?): run the command again")
+	}
+	if id.Recipient().String() != now.Recipient {
+		return errors.New("the opened guard identity is not the stored guard's")
+	}
 	next, err := guard.Rewrap(id, holders)
 	if err != nil {
 		return err
@@ -545,6 +644,81 @@ func changeHolders(ctx *cliCtx, what string, change func([]string) ([]string, er
 	fmt.Printf("The guard is held by %d:\n", len(next.Holders))
 	for _, h := range next.Holders {
 		fmt.Println("  " + describeHolder(h))
+	}
+	return nil
+}
+
+// ---- recover ----
+
+// GuardRecoverCmd opens the guard with the recovery phrase, as when every
+// security key is lost, and rewraps it to the security keys plugged in now.
+type GuardRecoverCmd struct {
+	Holder []string `name:"holder" sep:"," help:"New holders (age1yubikey1…); default: every plugged-in YubiKey that does not hold it yet"`
+	Remove []string `name:"remove" sep:"," help:"Holders to drop, such as the lost YubiKeys"`
+}
+
+// Run implements guard recover.
+func (c *GuardRecoverCmd) Run(ctx *cliCtx) error {
+	g, err := guard.Load(guardStore())
+	if err != nil {
+		return err
+	}
+	add := c.Holder
+	if len(add) == 0 {
+		found, notes, err := listYubiKeys()
+		if err != nil {
+			return err
+		}
+		for _, n := range notes {
+			fmt.Fprintln(os.Stderr, "! "+n)
+		}
+		add = newHolders(g.Holders, found)
+	}
+	var holders []string
+	for _, h := range g.Holders {
+		if !slices.Contains(c.Remove, h) {
+			holders = append(holders, h)
+		}
+	}
+	holders = append(holders, newHolders(holders, add)...)
+	if len(add) == 0 && len(c.Remove) == 0 {
+		return errors.New("nothing to change: plug in the new YubiKey (age-plugin-yubikey --generate --touch-policy always), or pass --holder or --remove")
+	}
+	if _, err := guard.ParseRecipients(holders); err != nil {
+		return err
+	}
+	mnemonic, err := promptMnemonic("Paste your 24-word recovery phrase: ")
+	if err != nil {
+		return err
+	}
+	if !bip39.IsMnemonicValid(mnemonic) {
+		return errors.New("that is not a valid 24-word recovery phrase")
+	}
+	passphrase, err := promptSecret("Passphrase (empty if none): ")
+	if err != nil {
+		return err
+	}
+	keys, err := identity.DeriveMasterKeys(mnemonic, passphrase)
+	if err != nil {
+		return err
+	}
+	s, err := guard.X25519IdentityString(keys.Private)
+	if err != nil {
+		return err
+	}
+	rec, err := age.ParseX25519Identity(s)
+	if err != nil {
+		return err
+	}
+	id, err := g.Open(rec)
+	if err != nil {
+		return fmt.Errorf("the phrase does not open the guard (was it set up with --no-recovery, or with another phrase?): %w", err)
+	}
+	if err := saveHolders(ctx, g, id, holders); err != nil {
+		return err
+	}
+	if len(c.Remove) > 0 {
+		fmt.Fprintln(os.Stderr, "A lost key with its PIN still opens older copies of the guard in backups: if the PIN may be known, rotate the guarded keys (esec vault env rotate ENV).")
 	}
 	return nil
 }

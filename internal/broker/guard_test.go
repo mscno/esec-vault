@@ -11,17 +11,19 @@ import (
 )
 
 type fakeGuard struct {
-	priv   string
-	allow  bool
-	asked  atomic.Int32
-	caller string
+	priv      string
+	allow     bool
+	asked     atomic.Int32
+	caller    string
+	forwarded bool
 }
 
-func (g *fakeGuard) Has(project, env, pub string) bool { return project == "acme/store" }
+func (g *fakeGuard) Has(project, env, pub string) (bool, error) { return project == "acme/store", nil }
 
 func (g *fakeGuard) Key(req GuardRequest) (string, string, error) {
 	g.asked.Add(1)
 	g.caller = req.Caller
+	g.forwarded = req.Forwarded
 	if !g.allow {
 		return "", "", errors.New("the guarded read was denied")
 	}
@@ -71,12 +73,17 @@ func TestForwardedBrokerServesGuardedOnly(t *testing.T) {
 	path, keys := encryptedFixture(t, t.TempDir())
 	client, _, srv := startTestBroker(t, map[string]map[string]string{"acme/other": keys}, &policy.Policy{Default: policy.Allow})
 	srv.Forwarded = true
-	srv.Guard = &fakeGuard{priv: keys["ESEC_PRIVATE_KEY_DEV"], allow: true}
+	g := &fakeGuard{priv: keys["ESEC_PRIVATE_KEY_DEV"], allow: true}
+	srv.Guard, srv.Chain = g, func(uint32) string { return "sshd" }
 	content := mustRead(t, path)
-	// The file comes in the request; the path is the other machine's.
-	got, err := client.GetSecretsRequest(&Request{Op: OpGetSecrets, Project: "acme/store", Env: "dev", Path: "/srv/app/.ejson.dev", Format: ".ejson", Content: content, Host: "web-1"})
+	// The file comes in the request; the path is the other machine's. An
+	// empty host does not make it look local.
+	got, err := client.GetSecretsRequest(&Request{Op: OpGetSecrets, Project: "acme/store", Env: "dev", Path: "/srv/app/.ejson.dev", Format: ".ejson", Content: content})
 	if err != nil || got["API_KEY"] != "s3cret" {
 		t.Fatalf("forwarded guarded read: %v %v", got, err)
+	}
+	if !g.forwarded || !strings.HasPrefix(g.caller, "forwarded") {
+		t.Fatalf("forwarded read not marked: %v %q", g.forwarded, g.caller)
 	}
 	if _, err := client.GetSecretsRequest(&Request{Op: OpGetSecrets, Project: "acme/other", Env: "dev", Path: "/srv/app/.ejson.dev", Format: ".ejson", Content: content}); err == nil || !strings.Contains(err.Error(), "not guarded") {
 		t.Fatalf("forwarded unguarded read: %v", err)

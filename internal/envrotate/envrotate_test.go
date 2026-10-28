@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"filippo.io/age"
 	"github.com/mscno/esec"
 
+	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/keystore"
 )
 
@@ -137,5 +139,44 @@ func TestRotateUnknownEnvironment(t *testing.T) {
 	ks, _, _ := setup(t)
 	if _, err := Rotate(ks, "acme/store", "prod", t.TempDir(), Options{}); err == nil {
 		t.Fatal("missing environment accepted")
+	}
+}
+
+// TestRotateGuardedWithClearCopy covers a device that still holds a clear
+// copy of a guarded environment's key: the rotation is a guarded one, the
+// new key is born guarded and the clear copies go.
+func TestRotateGuardedWithClearCopy(t *testing.T) {
+	ks, pub, priv := setup(t)
+	gid, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := guard.Wrap(gid.Recipient(), guard.Key{Project: "acme/store", Env: "dev", Level: "touch", Private: priv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := ks.Read("acme/store")
+	entries[keystore.GuardEntry(pub)], entries[keystore.GuardEnvEntry("dev")] = wrapped, pub
+	if err := ks.Write("acme/store", entries, true); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	write(t, filepath.Join(repo, ".env.dev"), "ESEC_PUBLIC_KEY="+pub+"\nTOKEN=s3cret\n")
+
+	if _, err := Rotate(ks, "acme/store", "dev", repo, Options{}); err != ErrGuarded {
+		t.Fatalf("a guarded environment rotated without the guard: %v", err)
+	}
+	res, err := Rotate(ks, "acme/store", "dev", repo, Options{Guard: &Guard{ID: gid}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, _ = ks.Read("acme/store")
+	if !res.Guarded || entries[keystore.GuardEnvEntry("dev")] != res.NewPublic || entries[keystore.GuardEntry(res.NewPublic)] == "" {
+		t.Fatalf("not rotated guarded: %+v %v", res, entries)
+	}
+	for k, v := range entries {
+		if v == priv || k == EnvKey("dev") || k == pubKeyEntry(res.NewPublic) {
+			t.Fatalf("a clear copy is left: %s", k)
+		}
 	}
 }

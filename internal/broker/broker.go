@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/mscno/esec"
 
 	"github.com/mscno/esec-vault/internal/policy"
+	"github.com/mscno/esec-vault/internal/safetext"
 )
 
 // Ops supported by the broker protocol.
@@ -53,9 +55,13 @@ type Request struct {
 // GuardRequest is a read of a guarded key, as the guard is asked for it.
 type GuardRequest struct {
 	Project, Env, PublicKey string
-	// Path is the secrets file to decrypt; Host is set for a forwarded one.
+	// Path is the secrets file to decrypt; Host is the name a forwarded
+	// request claims for its machine.
 	Path, Host string
-	UID, PID   uint32
+	// Forwarded is set by the broker that received the request (the
+	// forward socket), never by the request.
+	Forwarded bool
+	UID, PID  uint32
 	// Caller is the asking program and its parents.
 	Caller  string
 	Session string
@@ -64,8 +70,9 @@ type GuardRequest struct {
 // Guarder opens guarded keys: it asks the person, then waits for the
 // hardware touch.
 type Guarder interface {
-	// Has reports whether project holds a guarded key for env or pub.
-	Has(project, env, pub string) bool
+	// Has reports whether project holds a guarded key for env or pub. An
+	// error means it could not tell: the broker then serves nothing.
+	Has(project, env, pub string) (bool, error)
 	// Key returns the private key, after the person allowed it.
 	Key(req GuardRequest) (priv string, how string, err error)
 }
@@ -375,7 +382,11 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 	}
 
 	var key string
-	if s.Guard != nil && s.Guard.Has(req.Project, req.Env, pubHex) {
+	guarded, denied := s.isGuarded(uid, pid, req, pubHex)
+	if denied != nil {
+		return denied
+	}
+	if guarded {
 		k, denied := s.guardedKey(uid, pid, req, pubHex)
 		if denied != nil {
 			return denied
@@ -415,6 +426,20 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 	return &Response{OK: true, Secrets: secrets}
 }
 
+// isGuarded asks the guard whether the read is of a guarded key. When it
+// cannot tell, nothing is served: not even a clear key loaded earlier.
+func (s *Server) isGuarded(uid, pid uint32, req *Request, pub string) (bool, *Response) {
+	if s.Guard == nil {
+		return false, nil
+	}
+	guarded, err := s.Guard.Has(req.Project, req.Env, pub)
+	if err != nil {
+		_ = s.auditEntry(AuditEntry{UID: uid, PID: pid, Op: req.Op, Project: req.Project, Env: req.Env, Decision: "deny", Detail: "guard: " + err.Error(), Session: req.Session})
+		return false, &Response{OK: false, Error: err.Error()}
+	}
+	return guarded, nil
+}
+
 // guardedKey asks the guard for a guarded key. A policy rule that denies
 // the environment still denies; otherwise the guard's own dialog and touch
 // are the approval, in place of an "ask" rule.
@@ -426,8 +451,10 @@ func (s *Server) guardedKey(uid, pid uint32, req *Request, pub string) (string, 
 	if s.Chain != nil {
 		chain = s.Chain(pid)
 	}
-	if req.Host != "" {
-		chain = req.Host + ": " + chain
+	if s.Forwarded {
+		// The host name is the other machine's claim; the local chain is
+		// the ssh session carrying it.
+		chain = "forwarded (says " + strconv.Quote(safetext.CleanN(req.Host, 60)) + ") via " + chain
 	}
 	entry := AuditEntry{UID: uid, PID: pid, Op: req.Op, Project: req.Project, Env: req.Env, Caller: chain, Session: req.Session}
 	if matched && action == policy.Deny {
@@ -439,7 +466,7 @@ func (s *Server) guardedKey(uid, pid uint32, req *Request, pub string) (string, 
 	if err := s.auditEntry(entry); err != nil {
 		return "", auditFailed()
 	}
-	key, how, err := s.Guard.Key(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Host: req.Host, UID: uid, PID: pid, Caller: chain, Session: req.Session})
+	key, how, err := s.Guard.Key(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Host: req.Host, Forwarded: s.Forwarded, UID: uid, PID: pid, Caller: chain, Session: req.Session})
 	if err != nil {
 		entry.Decision, entry.Detail = "deny", "guard: "+err.Error()
 		_ = s.auditEntry(entry)

@@ -132,16 +132,27 @@ recovery key (phrase)    ─┘                        │
 key the broker skips the policy file's default (a rule that denies still
 denies), records `ask` in the audit log, and the daemon's guarder:
 
-1. shows a dialog with the project, environment, file, the asking programs
-   (`zsh ▸ claude ▸ esec-vault`, from the peer pid), the agent session label
-   and, when forwarded, the machine;
+1. shows a dialog: first the asking programs (`zsh ▸ claude ▸ esec-vault`,
+   from the peer pid) and, when forwarded, that it comes from another
+   machine; then the agent session label, the project, the environment the
+   key belongs to (not the one asked for; "a retired key …" when none names
+   it) and the file. Every value from the request is one cleaned, quoted
+   line, so none can forge or push away another;
 2. only after **Allow** asks the plugin, and the YubiKey blinks for a touch;
-3. opens the key, and for `session` keeps it in memory until the broker locks
-   or its session ends; a `touch` key is dropped after the read.
+3. opens the key, checks it belongs to the project and environment asked
+   for, and for `session` keeps it in memory until the broker locks or its
+   session ends; a `touch` key is dropped after the read.
 
-One dialog and one touch at a time. The dialog is the defence against a
-confused deputy: a YubiKey blinking with no esec dialog is not to be touched.
-It is not the boundary; the touch is.
+One dialog and one touch at a time; a duplicate of a waiting read is
+refused, at most three wait, and one that gets no answer gives up after
+three minutes. The dialog is the defence against a confused deputy: a
+YubiKey blinking with no esec dialog is not to be touched. It is not the
+boundary; the touch is.
+
+The daemon finds plugins by name on its PATH. At start it puts the
+directories of the installed plugins first, after checking that no other
+user can replace them (the program and its directory, after symlinks, are
+neither group- nor world-writable).
 
 With only software identities (`ESEC_VAULT_GUARD_IDENTITIES` naming
 `AGE-SECRET-KEY-1` lines, used in tests) there is no dialog: whoever can read
@@ -152,13 +163,31 @@ that file opens the guard without esec anyway.
 `esec vault forward HOST` runs ssh with `-R` from a random socket on the
 remote machine to `run/forward.sock`, a second broker that:
 
-- serves guarded keys only (each read is then one the person sees and
-  touches), refusing unguarded ones: a machine should have its own key;
-- takes the encrypted file in the request (the path is the remote's) and the
-  host name, shown in the dialog.
+- serves guarded keys only, never from the session cache (each read is then
+  one the person sees and touches), refusing unguarded ones: a machine should
+  have its own key;
+- takes the encrypted file in the request (the path is the remote's). That
+  the read is forwarded comes from the socket it arrived on; the host name
+  is the other machine's claim, and the dialog says so.
+
+### Recovery
+
+Losing every YubiKey: `guard recover` reads the 24-word phrase, opens the
+guard with the recovery key, and rewraps it to the YubiKeys plugged in now
+(`--remove` drops the lost ones). Two devices that each ran `guard init`
+have two guards; sync keeps each device's own and reports the conflict, and
+`guard init` refuses when the vault server already holds one.
 
 ### What it does not protect
 
+- A program running as the person can always get a touch for its own ends:
+  it can show a dialog that looks like esec's, run `esec-vault` with its own
+  PATH (a plugin in front of the real one sees the guard's file key), or
+  replace the binaries and the service definition it can write. With two
+  levels, one such touch gives up the guard identity and so every guarded
+  key, not one. The dialog makes that a mistake the person must make; the
+  hard boundary is running agents as another macOS user, in a VM or a
+  container, reaching this Mac only through the forward socket.
 - Values of a run the person allowed: the command gets them.
 - Keys guarded after the fact are as safe as the oldest backup holding them
   in software form. Rotate once for full protection.
@@ -171,9 +200,12 @@ remote machine to `run/forward.sock`, a second broker that:
 Devices (the person's Macs) hold the user key and sign. Agent hosts are
 machines in a group that reads dev (`group token`), never devices. Agents
 get values only as a running command's environment, masked in its output
-(`run --mask`, `ESEC_VAULT_MASK`); make values with `secrets set --generate`
-or ask a person for them (`secrets request`, a desktop dialog); and label
-their reads (`ESEC_VAULT_SESSION`) for the audit log and the dialog.
+(`run --mask`, `ESEC_VAULT_MASK`); make values with `secrets set
+--generate` or ask a person for them (`secrets request`, a desktop dialog);
+and label their reads (`ESEC_VAULT_SESSION`) for the audit log and the
+dialog. Masking keeps values out of logs and transcripts by accident; it is
+no boundary, since the command has the values and can print them in any
+form.
 
 ## The checkout registry
 

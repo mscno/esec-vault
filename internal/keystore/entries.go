@@ -25,9 +25,14 @@ import (
 // The default keyring also holds the guard itself: ESEC_GUARD_IDENTITY,
 // ESEC_GUARD_RECIPIENT and ESEC_GUARD_HOLDERS.
 const (
-	privatePrefix  = esec.EsecPrivateKey + "_"
-	guardPrefix    = "ESEC_GUARD_"
-	guardEnvPrefix = "ESEC_GUARD_ENV_"
+	privatePrefix = esec.EsecPrivateKey + "_"
+	guardPrefix   = "ESEC_GUARD_"
+	// GuardEnvPrefix starts the entries naming a guarded environment's key.
+	GuardEnvPrefix = "ESEC_GUARD_ENV_"
+
+	// The guard's own entries in the default keyring (package guard).
+	guardIdentity  = "ESEC_GUARD_IDENTITY"
+	guardRecipient = "ESEC_GUARD_RECIPIENT"
 )
 
 var (
@@ -48,7 +53,7 @@ func GuardEntry(pub string) string { return guardPrefix + strings.ToUpper(pub) }
 
 // GuardEnvEntry is the entry naming a guarded environment's public key.
 func GuardEnvEntry(env string) string {
-	return guardEnvPrefix + strings.ToUpper(strings.ReplaceAll(env, ".", "_"))
+	return GuardEnvPrefix + strings.ToUpper(strings.ReplaceAll(env, ".", "_"))
 }
 
 // IsPubEntry reports whether name files a key under its public key.
@@ -60,7 +65,7 @@ func IsGuardEntry(name string) bool { return guardEntryRe.MatchString(name) }
 // EnvName turns an ESEC_PRIVATE_KEY_<ENV> or ESEC_GUARD_ENV_<ENV> entry
 // into the environment's name ("api.dev"); ok is false for other entries.
 func EnvName(name string) (env string, ok bool) {
-	rest, isGuard := strings.CutPrefix(name, guardEnvPrefix)
+	rest, isGuard := strings.CutPrefix(name, GuardEnvPrefix)
 	if !isGuard {
 		var isKey bool
 		rest, isKey = strings.CutPrefix(name, privatePrefix)
@@ -118,6 +123,10 @@ func fileKeys(entries map[string]string) []string {
 // checkKept refuses a write that would lose a key: every public-key or
 // guarded entry of old must stay in next unchanged. With guarding set, a
 // public-key entry may give way to the guarded entry of the same key.
+//
+// The guard itself is kept too: once set, its recipient never changes and
+// its identity is never removed, since every guarded key is wrapped to it.
+// Its identity may be rewrapped (new holders) under the same recipient.
 func checkKept(project string, old, next map[string]string, guarding bool) error {
 	for name, v := range old {
 		switch {
@@ -126,13 +135,21 @@ func checkKept(project string, old, next map[string]string, guarding bool) error
 				continue
 			}
 			pub := strings.TrimPrefix(name, privatePrefix)
-			if _, gone := next[name]; !gone && guarding && next[guardPrefix+pub] != "" {
+			if _, present := next[name]; !present && guarding && next[guardPrefix+pub] != "" {
 				continue
 			}
 			return fmt.Errorf("refusing to change or remove key %s… in %s: keys are only ever added", strings.ToLower(pub[:12]), project)
 		case IsGuardEntry(name):
 			if next[name] != v {
 				return fmt.Errorf("refusing to change or remove guarded key %s… in %s: keys are only ever added", strings.ToLower(strings.TrimPrefix(name, guardPrefix)[:12]), project)
+			}
+		case name == guardRecipient && v != "":
+			if next[name] != v {
+				return fmt.Errorf("refusing to replace the guard in %s: every guarded key is wrapped to it (a different guard was set up elsewhere? see esec vault guard)", project)
+			}
+		case name == guardIdentity && v != "":
+			if next[name] == "" {
+				return fmt.Errorf("refusing to remove the guard in %s: every guarded key is wrapped to it", project)
 			}
 		}
 	}

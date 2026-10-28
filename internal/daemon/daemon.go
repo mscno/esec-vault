@@ -19,6 +19,7 @@ import (
 
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/caller"
+	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
@@ -129,6 +130,8 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	b := broker.NewServer(nil, p, audit, logger)
 	b.ControlOnlyApproval = true
 	b.Lock()
+	// Plugins are found by name on PATH: put the checked ones first.
+	guard.PinPlugins()
 	g := newGuarder(keystore.New(), b.Session)
 	b.Guard, b.Chain = g, describePID
 	fwd := broker.NewServer(nil, p, audit, logger)

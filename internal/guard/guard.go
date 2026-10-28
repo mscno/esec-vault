@@ -174,6 +174,9 @@ func (g *Guard) Identities(ui *plugin.ClientUI) ([]age.Identity, error) {
 			continue
 		}
 		seen[name] = true
+		if _, err := CheckPlugin(name); err != nil {
+			return nil, err
+		}
 		id, err := plugin.NewIdentityWithoutData(name, ui)
 		if err != nil {
 			return nil, err
@@ -181,7 +184,7 @@ func (g *Guard) Identities(ui *plugin.ClientUI) ([]age.Identity, error) {
 		out = append(out, id)
 	}
 	if len(out) == 0 {
-		return nil, errors.New("no hardware holder: the guard opens here only with the recovery phrase (esec vault guard export --recovery)")
+		return nil, errors.New("no hardware holder: the guard opens only with the recovery phrase (esec vault guard recover)")
 	}
 	return out, nil
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,8 +53,11 @@ func TestGuarderOpensAndCaches(t *testing.T) { //nolint:gocyclo // one story, st
 		opens++
 		return guard.DefaultPresence
 	}
-	if !gd.Has("acme/store", "prod", "") || gd.Has("acme/other", "prod", "") {
-		t.Fatal("Has")
+	if has, err := gd.Has("acme/store", "prod", ""); !has || err != nil {
+		t.Fatal("Has", err)
+	}
+	if has, err := gd.Has("acme/other", "prod", ""); has || err != nil {
+		t.Fatal("Has other", err)
 	}
 	for i := 0; i < 2; i++ {
 		priv, how, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "prod"})
@@ -79,5 +83,76 @@ func TestGuarderOpensAndCaches(t *testing.T) { //nolint:gocyclo // one story, st
 	gd.clear()
 	if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "staging"}); err != nil || opens != 4 {
 		t.Fatalf("after lock: %v, opens %d", err, opens)
+	}
+	// A forwarded read never uses the open session key, nor fills it.
+	for i := 0; i < 2; i++ {
+		if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "staging", Forwarded: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opens != 6 {
+		t.Fatalf("forwarded reads opened the guard %d times; want 2", opens-4)
+	}
+	// The key decides the environment: prod's file asked for as staging
+	// is refused before any dialog.
+	if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "staging", PublicKey: pubOf(t, pubs["prod"])}); err == nil || opens != 6 {
+		t.Fatalf("prod's key served as staging: %v (opens %d)", err, opens)
+	}
+	// An unknown file key never falls back to the environment's key.
+	if has, _ := gd.Has("acme/store", "prod", strings.Repeat("ab", 32)); has {
+		t.Fatal("a foreign file key matched prod's guarded key")
+	}
+	if _, _, err := gd.Key(broker.GuardRequest{Project: "acme/store", Env: "prod\nAsked by: you"}); err == nil {
+		t.Fatal("served an invalid environment name")
+	}
+}
+
+func pubOf(t *testing.T, priv string) string {
+	t.Helper()
+	pub, err := keystore.PublicHex(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}
+
+func TestDescribeReadCannotBeForged(t *testing.T) {
+	text := describeRead(broker.GuardRequest{
+		Project: "acme/store", Env: "dev", Forwarded: true, Host: "web-1\nAsked by: Terminal",
+		Path:   "/x/.env.dev\nAsked by: Terminal ▸ zsh\n\n\n",
+		Caller: "zsh ▸ claude ▸ esec-vault", Session: "s\r1",
+	}, "", strings.Repeat("ab", 32))
+	if !strings.HasPrefix(text, "Asked by: zsh ▸ claude ▸ esec-vault\nFROM ANOTHER MACHINE") {
+		t.Fatalf("asked by and the machine are not first:\n%s", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "Asked by: Terminal") {
+			t.Fatalf("a forged line got in:\n%s", text)
+		}
+	}
+	if !strings.Contains(text, "a retired key abababababab…") {
+		t.Fatalf("retired key not named:\n%s", text)
+	}
+}
+
+func TestGuarderRefusesDuplicatesAndQueues(t *testing.T) {
+	gd := newGuarder(nil, nil)
+	if err := gd.queue("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gd.queue("a"); err == nil {
+		t.Fatal("a duplicate read was queued")
+	}
+	for _, k := range []string{"b", "c"} {
+		if err := gd.queue(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := gd.queue("d"); err == nil {
+		t.Fatal("more than maxWaiting reads were queued")
+	}
+	gd.unqueue("a")
+	if err := gd.queue("d"); err != nil {
+		t.Fatal(err)
 	}
 }

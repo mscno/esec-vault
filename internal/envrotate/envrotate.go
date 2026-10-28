@@ -130,11 +130,9 @@ func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result
 	oldPriv, ok := entries[name]
 	guarded := false
 	level := ""
-	if !ok {
-		pub := entries[keystore.GuardEnvEntry(env)]
-		if pub == "" {
-			return nil, fmt.Errorf("environment %s has no stored key in project %s", env, project)
-		}
+	// A guarded environment rotates guarded, even on a device that still
+	// holds a clear copy of its key: the new key must not be born clear.
+	if pub := entries[keystore.GuardEnvEntry(env)]; pub != "" {
 		if opt.Guard == nil {
 			return nil, ErrGuarded
 		}
@@ -143,6 +141,13 @@ func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result
 			return nil, err
 		}
 		oldPriv, guarded, level = k.Private, true, k.Level
+		// The clear copies go; the guarded entry keeps the old key.
+		delete(entries, name)
+		if v := entries[pubKeyEntry(pub)]; strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(k.Private)) {
+			delete(entries, pubKeyEntry(pub))
+		}
+	} else if !ok {
+		return nil, fmt.Errorf("environment %s has no stored key in project %s", env, project)
 	}
 	oldKey, err := parsePriv(oldPriv)
 	if err != nil {
@@ -193,8 +198,14 @@ func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result
 		entries[pubKeyEntry(newPubHex)] = newPrivHex
 		entries[pubKeyEntry(oldPubHex)] = oldPriv
 	}
+	write := func() error {
+		if guarded {
+			return ks.WriteGuarded(project, entries)
+		}
+		return ks.Write(project, entries, true)
+	}
 	point(newPubHex, newPrivHex)
-	if err := ks.Write(project, entries, true); err != nil {
+	if err := write(); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("update keyring: %w (nothing was changed)", err)
 	}
@@ -202,7 +213,7 @@ func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result
 		if err := opt.Store(); err != nil {
 			cleanup()
 			point(oldPubHex, oldPriv)
-			if werr := ks.Write(project, entries, true); werr != nil {
+			if werr := write(); werr != nil {
 				return nil, fmt.Errorf("the new key could not be stored elsewhere (%w), and pointing %s back at its old key failed: %w", err, env, werr)
 			}
 			return nil, fmt.Errorf("the new key could not be stored elsewhere, so no file was re-encrypted and %s still uses its old key: %w", env, err)

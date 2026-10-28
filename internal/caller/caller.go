@@ -46,7 +46,7 @@ func Describe(chain []string) string {
 func parent(pid int) (ppid int, name string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-o", "ppid=", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-o", "ppid=", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return 0, "", false
 	}

@@ -43,15 +43,18 @@ func Save(ks *keystore.Store, g *Guard) error {
 	return ks.Write("default", entries, true)
 }
 
-// Lookup finds a guarded key in a project's keyring entries: the one the
-// environment names, or else the one filed under pub (a file's own public
-// key, which also finds keys rotated away from). It returns the keyring
+// Lookup finds a guarded key in a project's keyring entries: the one filed
+// under pub (a file's own public key, which also finds keys rotated away
+// from), or, when the file's key is not known, the one the environment
+// names. A known pub never falls back to the environment: a file encrypted
+// to another key must not open the environment's. It returns the keyring
 // value and the key's public key.
 func Lookup(entries map[string]string, env, pub string) (value, pubHex string, ok bool) {
 	if pub != "" {
 		if v := entries[keystore.GuardEntry(pub)]; v != "" {
 			return v, strings.ToLower(pub), true
 		}
+		return "", "", false
 	}
 	if env != "" {
 		if p := entries[keystore.GuardEnvEntry(env)]; p != "" {
@@ -61,6 +64,21 @@ func Lookup(entries map[string]string, env, pub string) (value, pubHex string, o
 		}
 	}
 	return "", "", false
+}
+
+// EnvOf returns the environment whose current guarded key is pub, or ""
+// for a retired key no environment names any more.
+func EnvOf(entries map[string]string, pub string) string {
+	var envs []string
+	for k, v := range entries {
+		if strings.HasPrefix(k, keystore.GuardEnvPrefix) && strings.EqualFold(v, pub) {
+			envs = append(envs, strings.ToLower(strings.TrimPrefix(k, keystore.GuardEnvPrefix)))
+		}
+	}
+	if len(envs) != 1 {
+		return ""
+	}
+	return envs[0]
 }
 
 // ErrDenied is returned when the person turned a guarded read down.

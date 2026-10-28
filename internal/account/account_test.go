@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mscno/esec"
 	"github.com/mscno/esec/pkg/secretstore"
 
 	"github.com/mscno/esec-vault/internal/account"
@@ -359,5 +360,54 @@ func TestActiveDeviceRecoversWithPhrase(t *testing.T) {
 	}
 	if again.State.Chain.Root == "" {
 		t.Fatal("the account was not pinned")
+	}
+}
+
+// TestSyncKeepsGuard covers the guard across devices: another device's
+// different guard never replaces this one's, and a key guarded elsewhere
+// arrives guarded only, even when an older device still sent it clear.
+func TestSyncKeepsGuard(t *testing.T) {
+	h, a := setup(t)
+	ctx := context.Background()
+	ks := keystore.New()
+	mine := map[string]string{"ESEC_GUARD_IDENTITY": "bWluZQ", "ESEC_GUARD_RECIPIENT": "age1mine", "ESEC_GUARD_HOLDERS": "age1yubikey1a"}
+	if err := ks.Write("default", mine, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sync(ctx, account.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := identity.Load(a.KR)
+	wrapped, _ := identity.WrappedFile()
+	hdr, _ := identity.ReadHeader(wrapped)
+	var latest uint64
+	_ = h.DB.SQL().QueryRow(`SELECT MAX(version) FROM vault_versions WHERE user_id = ?`, a.State.User).Scan(&latest)
+	pub, priv, _ := esec.GenerateKeypair()
+	projects := map[string]map[string]string{
+		"default": {"ESEC_GUARD_IDENTITY": "b3RoZXI", "ESEC_GUARD_RECIPIENT": "age1other", "ESEC_GUARD_HOLDERS": "age1yubikey1b"},
+		"acme/new": {
+			keystore.PubEntry(pub): priv, "ESEC_PRIVATE_KEY_PROD": priv,
+			keystore.GuardEntry(pub): "wrapped", keystore.GuardEnvEntry("prod"): pub,
+		},
+	}
+	blob, err := vaultfile.Seal(&vaultfile.Vault{Projects: projects, Identity: wrapped, Generation: latest + 1}, &id.Public, &hdr.MasterPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(t, h, `INSERT INTO vault_versions (user_id, version, blob, sig, sha256, pushed_by, created_at) VALUES (?, ?, ?, ?, 'x', 'd_other', 0)`, a.State.User, latest+1, blob, ed25519.Sign(id.Sign, wire.VaultMessage(a.State.User, blob)))
+
+	res, err := a.Sync(ctx, account.SyncOptions{})
+	if !errors.Is(err, account.ErrConflicts) {
+		t.Fatalf("a different guard was not reported: %v (%+v)", err, res)
+	}
+	if e, _ := ks.Read("default"); e["ESEC_GUARD_RECIPIENT"] != "age1mine" || e["ESEC_GUARD_IDENTITY"] != "bWluZQ" {
+		t.Fatalf("this device's guard was replaced: %v", e)
+	}
+	e, err := ks.Read("acme/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e[keystore.GuardEntry(pub)] == "" || e["ESEC_PRIVATE_KEY_PROD"] != "" || e[keystore.PubEntry(pub)] != "" {
+		t.Fatalf("a guarded key arrived in the clear: %v", e)
 	}
 }

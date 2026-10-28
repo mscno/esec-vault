@@ -357,7 +357,15 @@ func (a *Account) merge(remote, base map[string]map[string]string, interactive b
 		}
 		local, err := a.KS.Read(project)
 		if errors.Is(err, os.ErrNotExist) {
-			if err := a.KS.Write(project, entries, false); err != nil {
+			// A key guarded on another device comes guarded only, even
+			// where a device that has not guarded it yet sent it clear.
+			fresh := map[string]string{}
+			for k, v := range entries {
+				if !guardedHere(entries, v) {
+					fresh[k] = v
+				}
+			}
+			if err := a.KS.Write(project, fresh, false); err != nil {
 				return nil, nil, fmt.Errorf("write %s: %w", project, err)
 			}
 			added = append(added, project)
@@ -367,15 +375,22 @@ func (a *Account) merge(remote, base map[string]map[string]string, interactive b
 			return nil, nil, err
 		}
 		changed := false
+		guardChanged, guardConflict := a.mergeGuard(project, local, entries, base[project], interactive)
+		changed = changed || guardChanged
+		if guardConflict != "" {
+			conflicts = append(conflicts, guardConflict)
+		}
 		keys := make([]string, 0, len(entries))
 		for k := range entries {
-			keys = append(keys, k)
+			if !guardUnit[k] {
+				keys = append(keys, k)
+			}
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
 			rv := entries[k]
 			lv, ok := local[k]
-			if !ok && guardedHere(local, rv) {
+			if !ok && (guardedHere(local, rv) || guardedHere(entries, rv)) {
 				continue
 			}
 			if !ok {
@@ -411,6 +426,51 @@ func (a *Account) merge(remote, base map[string]map[string]string, interactive b
 		}
 	}
 	return added, conflicts, nil
+}
+
+// guardUnit are the guard's own entries (package guard), merged together:
+// the identity and its holders only make sense with their recipient.
+var guardUnit = map[string]bool{"ESEC_GUARD_IDENTITY": true, "ESEC_GUARD_RECIPIENT": true, "ESEC_GUARD_HOLDERS": true}
+
+// mergeGuard merges the guard entries as one unit into local. A guard with
+// another recipient is never taken over this machine's: every guarded key
+// here is wrapped to it. That is a conflict to resolve by hand. Under the
+// same recipient, a rewrap (new holders) is merged like any entry.
+func (a *Account) mergeGuard(project string, local, remote, base map[string]string, interactive bool) (changed bool, conflict string) {
+	const id, rcpt, holders = "ESEC_GUARD_IDENTITY", "ESEC_GUARD_RECIPIENT", "ESEC_GUARD_HOLDERS"
+	if remote[id] == "" {
+		return false, ""
+	}
+	take := func() bool {
+		for k := range guardUnit {
+			local[k] = remote[k]
+		}
+		return true
+	}
+	switch {
+	case local[id] == "":
+		return take(), ""
+	case local[rcpt] != remote[rcpt]:
+		return false, project + " guard: another device set up a different guard (" + short(remote[rcpt]) + "); this one (" + short(local[rcpt]) + ") is kept, and keys guarded there open only with that guard"
+	case local[id] == remote[id] && local[holders] == remote[holders]:
+		return false, ""
+	case local[id] == base[id] && local[holders] == base[holders]:
+		return take(), ""
+	case remote[id] == base[id] && remote[holders] == base[holders]:
+		return false, ""
+	case interactive && a.UI.Confirm(project+" guard holders were changed both here and on another device. Take the vault's holders?"):
+		return take(), ""
+	case interactive:
+		return false, ""
+	}
+	return false, project + " guard holders"
+}
+
+func short(s string) string {
+	if len(s) > 16 {
+		return s[:16] + "…"
+	}
+	return s
 }
 
 // guardedHere reports whether value is a private key this keyring holds
