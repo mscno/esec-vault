@@ -270,6 +270,6 @@ func (r *MoveResult) Lines(from string) []string {
 	if len(r.Machines) > 0 {
 		out = append(out, "Create these machines again for "+r.Project+" (esec vault machine create): "+strings.Join(r.Machines, ", ")+".")
 	}
-	out = append(out, "In the repository, set ESEC_PROJECT="+r.Project+" in .esec-project and commit it.")
+	out = append(out, "In the repository, set project = \""+r.Project+"\" in esec.toml and commit it.")
 	return out
 }

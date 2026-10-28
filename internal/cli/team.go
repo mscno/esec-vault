@@ -100,7 +100,7 @@ func joinOr(list []string, empty string) string {
 	return strings.Join(list, ", ")
 }
 
-// projectFlag resolves --project or the nearest .esec-project.
+// projectFlag resolves --project or the nearest esec.toml.
 func projectFlag(p string) (string, error) {
 	id, err := resolveProject(p)
 	if err != nil {
@@ -136,7 +136,7 @@ func (c *TeamListCmd) rotations(a *account.Account) error {
 
 // TeamShowCmd shows one shared project.
 type TeamShowCmd struct {
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	JSON    bool   `help:"Print JSON, for scripts and agents"`
 }
 
@@ -272,7 +272,7 @@ func keyStates(m map[string]string) string {
 
 // TeamCreateCmd creates a shared project.
 type TeamCreateCmd struct {
-	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Project string   `help:"Project id (default: nearest esec.toml)"`
 	Env     []string `name:"env" sep:"," help:"Environments to share (default: every environment in your keyring for the project)"`
 }
 
@@ -310,7 +310,7 @@ type TeamAddCmd struct {
 	Env        []string `name:"env" sep:"," help:"Environments they may read"`
 	Admin      bool     `help:"Make them an admin: they read every environment and manage the project"`
 	AccountKey string   `help:"Their account key words, read to you over another channel, instead of their GitHub SSH proof"`
-	Project    string   `help:"Project id (default: nearest .esec-project)"`
+	Project    string   `help:"Project id (default: nearest esec.toml)"`
 }
 
 // Run implements team add.
@@ -352,7 +352,7 @@ type TeamSetCmd struct {
 	Env     []string `name:"env" sep:"," help:"Every environment they may read from now on"`
 	Admin   bool     `help:"Make them an admin" xor:"role"`
 	NoAdmin bool     `help:"Make them a member who reads only --env" xor:"role"`
-	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Project string   `help:"Project id (default: nearest esec.toml)"`
 	Yes     bool     `help:"Do not ask for confirmation when they lose access"`
 }
 
@@ -413,7 +413,7 @@ func printRotations(envs []string, why string) {
 type TeamRemoveCmd struct {
 	Login   string `arg:"" help:"GitHub login of the member"`
 	Reason  string `help:"Reason recorded in the project chain"`
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	Yes     bool   `help:"Do not ask for confirmation"`
 }
 
@@ -443,7 +443,7 @@ func (c *TeamRemoveCmd) Run(ctx *cliCtx) error {
 
 // TeamLeaveCmd leaves a project.
 type TeamLeaveCmd struct {
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	Yes     bool   `help:"Do not ask for confirmation"`
 }
 
@@ -569,7 +569,7 @@ func printTeamSync(res *account.TeamSyncResult) {
 // TeamPublishCmd publishes an environment key.
 type TeamPublishCmd struct {
 	Env     string `arg:"" help:"Environment name"`
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 }
 
 // Run implements team publish.

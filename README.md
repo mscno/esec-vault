@@ -12,7 +12,7 @@ Both forms run the same program.
 - [Quick recipes: people, CI, servers, Fly.io apps, fleets](#quick-recipes).
 - [Set up your personal vault](#first-setup).
 - [Sync keys between machines with a vault server](#sync-keys-with-a-vault-server).
-- [Set up a project and its marker](#set-up-a-project).
+- [Set up a project and its project file](#set-up-a-project).
 - [Add environments and keys](#add-environments-and-keys).
 - [Use keys in subfolders](#use-keys-in-subfolders).
 - [Import existing project keys](#import-existing-project-keys).
@@ -21,6 +21,10 @@ Both forms run the same program.
 - [Run a fleet of machines in groups](#run-a-fleet-of-machines-in-groups).
 - [Share keys with a teammate without a server](#share-project-keys-with-a-teammate).
 - [Run an application through the broker](#run-applications-through-the-broker).
+- [Guard prod keys with a YubiKey: every read needs your touch](#guard-prod-keys-with-a-yubikey).
+- [Work with agents and many machines safely](#work-with-agents-and-many-machines).
+- [Keep track of every project, and make sure no key is lost](#every-project-on-this-machine).
+- [The Mac app](#the-mac-app).
 - [Set up a remote backup](#remote-configuration-file--wizard).
 - [Operate the daemon](#automatic-backups).
 - [Recover your keys](#recovery).
@@ -95,7 +99,7 @@ esec vault access handover alice --step-down
 esec vault access leave
 ```
 
-After a move, set `ESEC_PROJECT` in the repository's `.esec-project` to the
+After a move, set `project` in the repository's `esec.toml` to the
 new id and commit it; machines bound to the old project are listed to create
 again. On the web, the project's page › **Settings** proposes each of these
 for a passkey or device to sign (moving and handing over admin need a
@@ -224,7 +228,7 @@ RUN apk add --no-cache curl \
 
 FROM your-app-image
 COPY --from=esec /usr/local/bin/esec /usr/local/bin/esec-vault /usr/local/bin/
-# The image holds the repository's .esec-project and encrypted .env.prod.
+# The image holds the repository's esec.toml and encrypted .env.prod.
 CMD ["esec-vault", "machine", "run", "--", "esec", "run", "prod", "--", "/app/server"]
 ```
 
@@ -345,18 +349,55 @@ esec vault access revoke alice --yes   # commands that ask take --yes (or --forc
 `--json` works on `status`, `access list`, `access show`, `access grant`,
 `access revoke`, `access offboard`, `group list`,
 `group show`, `machine list`, `machine whoami`, `devices list`, `env list`,
-`keyring list`, `delegate list` and `changes`. It shows names, public keys
+`keyring list`, `delegate list`, `changes`, `projects`, `projects show`,
+`projects scan`, `guard`, `guard check`, `verify` and `verify --last`. It shows names, public keys
 and fingerprints, never a private key.
 
 A command that would ask a question with no terminal attached, and no
 answer on stdin, stops and names the flag that answers it. `changes` never
 signs anything that gives access unasked: with no answer it signs nothing
 and fails, saying so. Errors end with a `hint:` line when there is a next
-step, such as a missing `.esec-project`.
+step, such as a missing `esec.toml`.
 
 Exit codes: `0` done, `1` failed, `80` bad usage (unknown command or flag).
 `run` and `machine run` return their command's code. Data goes to stdout,
 messages to stderr.
+
+### Start a project whose prod key is guarded from day one
+
+```sh
+esec vault guard init                     # once: your YubiKeys and recovery phrase hold the guard
+esec vault project init acme/api --env dev,staging,prod --guard prod
+esec vault secrets set STRIPE_KEY --env prod --create   # writing needs no touch
+esec vault run prod -- ./deploy           # a dialog, then a touch of the YubiKey
+```
+
+The prod key exists in the clear on no disk: an agent running as you can
+read every file and still not get it. Details in
+[Guard prod keys with a YubiKey](#guard-prod-keys-with-a-yubikey).
+
+### Let an agent work in a repository
+
+```sh
+export ESEC_VAULT_SESSION=claude-api ESEC_VAULT_MASK=1   # in the agent's shell
+esec vault run dev -- npm test                           # values injected, masked in output
+esec vault secrets set SESSION_SECRET --env dev --generate 32
+esec vault secrets request STRIPE_KEY --env prod --reason "new integration"   # you paste it in a dialog
+```
+
+The agent never sees a value: generated ones go straight into the file,
+requested ones are pasted by you into a desktop dialog, and run output is
+masked. Guarded environments need your touch. See
+[Work with agents and many machines](#work-with-agents-and-many-machines).
+
+### Keep track of every project, and check no key can be lost
+
+```sh
+esec vault projects scan ~/src      # remember every checkout, like a git client
+esec vault projects                 # every project: checkouts, environments, keys here
+esec vault verify                   # every key in two places, none shared between projects
+esec vault drill                    # the newest backup opens with your phrase alone
+```
 
 ## Install both tools
 
@@ -623,7 +664,7 @@ It does not require a GitHub login or a matching local folder name.
 Two clones with the same ID use the same global keyring on this computer.
 Two different IDs use different project keyrings.
 
-### Step 2: Create the marker, keys, and files
+### Step 2: Create the project file, keys, and files
 
 Run this command from your application directory:
 
@@ -636,21 +677,42 @@ The command creates:
 
 ```text
 store/
-  .esec-project
+  esec.toml
   .env.dev
   .env.staging
   .env.prod
 ```
 
-The marker contains:
+The project file `esec.toml` contains:
 
-```dotenv
-ESEC_PROJECT=acme/store
+```toml
+# esec project file: commit it. It holds no secret.
+project = "acme/store"
+
+[files]
+format = "env"
+
+[env.dev]
+key = "1f0c…"        # the environment's current public key
+
+[env.prod]
+key = "9a2e…"
 ```
 
-Commit this marker to Git. It contains no private key.
-It selects the project only. It does not select an active environment, file
-format, remote, or access policy.
+Commit it to Git. It contains no private key. It names the project, how its
+secrets files are named, and each environment with its current public key
+and guard (see [Guard prod keys with a YubiKey](#guard-prod-keys-with-a-yubikey)).
+`env add`, `env rotate` and `guard enable` keep it up to date; `secrets lint`
+and `verify` check files against it. Optional settings:
+
+```toml
+[files]
+format = "etoml"
+name = "secrets/{env}.etoml"   # every machine names and finds files this way
+
+[env.prod]
+guard = "touch"                # none, session or touch
+```
 
 The default global keyring path is:
 
@@ -709,13 +771,13 @@ access through `esec vault run`.
 
 ### Step 4: Save the encrypted files and back up the keys
 
-Encrypt each file after you add its values. Then commit the marker and encrypted
+Encrypt each file after you add its values. Then commit the project file and encrypted
 files to Git. Keep private keyring files out of Git.
 
 ```sh
 esec encrypt staging -f env
 esec encrypt prod -f env
-git add .esec-project .gitignore .env.dev .env.staging .env.prod
+git add esec.toml .gitignore .env.dev .env.staging .env.prod
 ```
 
 If your repository ignores `.env.*`, add exceptions for the specific encrypted
@@ -763,7 +825,7 @@ git clone git@github.com:acme/store.git
 cd store
 ```
 
-The clone contains the project marker and encrypted files. It does not contain
+The clone contains the project file and encrypted files. It does not contain
 your private keys. If your global keyring already has `acme/store`, use esec
 immediately. Otherwise, restore your own backup or import a teammate's share
 with `esec vault sync`.
@@ -825,7 +887,7 @@ From the project directory or one of its subfolders:
 esec vault env show-key dev
 ```
 
-The command finds the nearest `.esec-project` marker and asks for confirmation.
+The command finds the nearest `esec.toml` and asks for confirmation.
 Enter `y` to print the private key as a plain hex string on stdout. Any other
 answer, or no input, cancels without printing the key. Confirmation is always
 required, including with `--quiet`.
@@ -897,7 +959,7 @@ file trees and commands for all three layouts. The following rules are important
 
 ### Project lookup and file lookup are separate
 
-- Commands inside a folder use its nearest `.esec-project` marker.
+- Commands inside a folder use its nearest `esec.toml`.
 - Marker lookup searches parent folders, but stops at the Git root.
 - Environment-name commands read a secrets file in the current directory.
 - Secrets file lookup does not search parent folders or combine several files.
@@ -915,7 +977,7 @@ cp .env.dev services/worker/.env.dev
 ```
 
 These commands copy the new empty template. Both files use the same public key.
-Keep only the root marker. Edit and encrypt each file from its own directory:
+Keep only the root esec.toml. Edit and encrypt each file from its own directory:
 
 ```sh
 cd services/api
@@ -939,7 +1001,7 @@ mv .env.api.dev services/api/
 mv .env.worker.dev services/worker/
 ```
 
-Keep the root marker. Do not shorten `.env.api.dev` to `.env.dev` in this layout.
+Keep the root esec.toml. Do not shorten `.env.api.dev` to `.env.dev` in this layout.
 From `services/api`, use:
 
 ```sh
@@ -956,7 +1018,7 @@ esec vault project init acme/platform --env api.prod --format env
 mv .env.api.prod services/api/
 ```
 
-This keeps one root marker. `project init --dir` also writes a marker in the
+This keeps one root esec.toml. `project init --dir` also writes an esec.toml in the
 target directory. Use that behavior for the separate projects in the next example.
 
 ### Give each component a separate project
@@ -970,8 +1032,8 @@ esec vault project init acme/mono/services/worker \
   --dir services/worker --env dev,prod --format env
 ```
 
-Each folder now has its own marker and its own `.env.dev` and `.env.prod` files.
-The nested marker selects that component's keyring. It does not merge the parent
+Each folder now has its own esec.toml and its own `.env.dev` and `.env.prod` files.
+The nested esec.toml selects that component's keyring. It does not merge the parent
 project's keys into it.
 
 Use a subshell to run from a component without changing your current directory:
@@ -998,24 +1060,24 @@ project_root=$(git rev-parse --show-toplevel)
 esec run "$project_root/.env.dev" --key-dir "$project_root" -- npm run dev
 ```
 
-This requires a root `.env.dev` and a root project marker for that file's key.
+This requires a root `.env.dev` and a root project file for that file's key.
 The command reads one file. It does not merge it with the component's file.
 Use an absolute path for this key-directory override. The current CLI rejects
 `..` in `--key-dir`.
 
 ## Import existing project keys
 
-### Step 1: Add the project marker
+### Step 1: Add the project file
 
 In the repository that contains the existing `.esec-keyring`, create
-`.esec-project` with this content:
+`esec.toml` with this content:
 
-```dotenv
-ESEC_PROJECT=acme/legacyapp
+```toml
+project = "acme/legacyapp"
 ```
 
-Use your editor if a marker already exists. Keep the project ID that owns the
-existing keys. Adding a marker does not generate or import a private key.
+Use your editor if an esec.toml already exists. Keep the project ID that owns the
+existing keys. Adding the project file does not generate or import a private key.
 
 ### Step 2: Copy the keys into the global store
 
@@ -1050,7 +1112,7 @@ esec vault unlock --ttl 4h
 ```
 
 You can scan several repositories with `keyring migrate --dir /path/to/repos`.
-Each local keyring needs a project marker. Local keyrings with the same project
+Each local keyring needs a project file. Local keyrings with the same project
 ID target the same global file; resolve that conflict before removing any copy.
 
 Backups include the global project keyrings and `default.keyring`. A key that
@@ -1285,7 +1347,7 @@ esec-vault machine whoami      # which machine, which group, what it reads
 
 Every key is set by public key, so esec finds the right one for any
 project's file. The keys of the project in the current directory (its
-`.esec-project`, or `--project`) are also set by environment name.
+`esec.toml`, or `--project`) are also set by environment name.
 
 ### Watch and change the fleet
 
@@ -1319,7 +1381,7 @@ A share gives another person's vault identity a copy of selected project keys.
 
 In this example, Alice receives `dev` and `staging` for `acme/store`.
 Each person needs their own personal vault identity.
-Run the commands in the directory that contains this project's `.esec-project`.
+Run the commands in the directory that contains this project's `esec.toml`.
 
 ### Step 1: Alice publishes her identity proof
 
@@ -1406,7 +1468,7 @@ directory. Its proof and share files are local to that directory:
 
 ```text
 services/api/
-  .esec-project
+  esec.toml
   .esec/members/alice.proof
   .esec/vault/alice.esec
 ```
@@ -1473,7 +1535,7 @@ action = "allow"
 
 The first matching rule wins. Environment names match exactly.
 An `env = ["dev"]` rule does not match `api.dev`.
-Use the nested project's full ID when it has its own marker.
+Use the nested project's full ID when it has its own esec.toml.
 
 ### Step 2: Start, reload, and unlock
 
@@ -1526,6 +1588,191 @@ esec vault lock
 
 Locking ends broker access. It does not stop backups or revoke direct access
 to plaintext working keyring files on your computer.
+
+## Guard prod keys with a YubiKey
+
+A guarded environment key opens only after you allow it in a dialog and
+touch your security key. No program can make that touch, so an agent (or
+anything else) running as you can read every file on the machine and still
+not read prod. The guard is built on [age](https://age-encryption.org) and
+`age-plugin-yubikey`, so the same YubiKeys you use with rage hold it.
+
+### Set the guard up once
+
+Make a YubiKey slot with touch policy **always** (a **cached** touch lets
+other programs in for 15 seconds after yours), and the same on a spare key:
+
+```sh
+brew install age-plugin-yubikey
+age-plugin-yubikey --generate --touch-policy always --pin-policy once   # on each YubiKey
+esec vault guard init        # every YubiKey age-plugin-yubikey lists, plus your recovery phrase
+esec vault guard             # who holds it, and what it guards
+```
+
+The guard is one age identity, wrapped to its holders: each YubiKey and the
+recovery key your 24-word phrase derives (its private half is stored
+nowhere). Environment keys are wrapped to the guard. Adding or removing a
+YubiKey rewraps only the guard:
+
+```sh
+esec vault guard holders add age1yubikey1…      # one touch of a current key
+esec vault guard holders remove age1yubikey1…   # a lost key
+```
+
+The wrapped guard and keys are ciphertext, so they sync to your other
+devices through the vault server and go into every backup like any key. Plug
+the YubiKey into any of your Macs and prod works there.
+
+### Guard environments
+
+```sh
+esec vault project init acme/api --env dev,prod --guard prod   # born guarded
+esec vault guard enable --env prod                             # an existing one
+esec vault guard enable --env staging --level session          # one touch per broker session
+esec vault env add preview --guard touch
+```
+
+`esec.toml` records each environment's guard (`guard = "touch"`). The level
+is also inside the encryption, so editing a keyring cannot lower it.
+
+Guarding an existing key removes its clear copy from this device's keyring.
+Older backups still hold it in software form: for full protection, rotate
+the key and its values once (`esec vault env rotate prod`). On your other
+devices, `esec vault guard` lists keys still in the clear there; run `guard
+enable` on each (it checks the guarded copy opens to the same key first).
+
+### Use a guarded key
+
+```sh
+esec vault run prod -- ./deploy          # dialog: what, which file, which programs asked
+esec vault env rotate prod               # one touch: opens the old key, guards the new one
+esec vault secrets set API_KEY --env prod   # writing needs only the public key: no touch
+```
+
+Reads go through the background service. Its dialog names the project,
+environment and file, and the programs that asked (`zsh ▸ claude ▸
+esec-vault`); only then does the YubiKey blink. **A blinking key with no
+esec dialog on screen is one not to touch.** Plain `esec run prod` reports
+that the key is guarded. `env show-key` never prints a guarded key.
+
+A `session` key stays open in the service's memory until `esec vault lock`
+or the broker session ends; a `touch` key is opened, used and dropped for
+each read. Every read is in `~/.config/esec/audit.log` with its caller.
+
+### Check and recover
+
+```sh
+esec vault guard check                   # one touch: every guarded key opens
+esec vault drill                         # the recovery phrase opens the guard and every guarded key
+esec vault guard export --out ~/esec-age # plain age files, for rage if esec is ever gone
+```
+
+With the export, `rage -d -j yubikey guard.age` opens the guard identity and
+`rage -d -i guard.key acme_api.prod.….age` a key, without this program.
+
+## Work with agents and many machines
+
+The rule: **only your devices hold keys; agents and other machines get
+values for one run, or keys of their own that read dev.**
+
+| Where | Identity | Reads |
+|---|---|---|
+| Your Macs | a device: your user key, signs changes | everything you are granted; guarded envs after a touch |
+| A dev VM or box where agents run | a machine in a group, such as `acme/agents-dev` | the dev environments the group reads |
+| A cloud agent sandbox | a short-lived group token (`--expires 24h`) | dev |
+| CI | a machine bound to the repository (GitHub OIDC) | what the workflow needs |
+| Fly.io apps | a KMS workload, no secret | its environment |
+
+Never `esec vault login` on a box agents use: a device reads everything
+you do. Give it a machine key instead:
+
+```sh
+esec vault group create acme/agents-dev
+esec vault access grant acme/agents-dev --env dev --project 'acme/*' --skip-missing-env
+esec vault group token acme/agents-dev devbox --expires 90d --out -   # ESEC_VAULT_MACHINE_KEY there
+```
+
+For the odd staging or prod need on a remote box, forward your Mac's
+guard over SSH, like `ssh -A` forwards an SSH agent:
+
+```sh
+esec vault forward devbox.example.com
+# on devbox:
+esec vault run prod -- ./migrate
+```
+
+Each read shows a dialog on your Mac, naming the machine, and waits for your
+touch there. Only the values of that run cross; the keys never leave the
+Mac. A forwarded connection reads guarded keys only.
+
+In an agent's shell:
+
+- `ESEC_VAULT_SESSION=name` labels its reads in the audit log and dialogs.
+- `ESEC_VAULT_MASK=1` (or `run --mask`) replaces values with `***` in the
+  output of what it runs.
+- `secrets set --generate 32` makes a value no one sees; `secrets request
+  KEY --env prod` asks you for one in a dialog, and the agent learns only
+  that it was set.
+- Changes to access an agent makes on the web wait for your device to
+  sign them (`esec vault changes`).
+- CI should run `esec vault secrets lint`, since a pre-commit hook can be
+  skipped.
+
+## Every project on this machine
+
+esec-vault remembers where each project is checked out, the way a git client
+keeps its list of repositories: the project's global id (`acme/store`) and
+its directories on this machine, several for clones and worktrees. Commands
+that find an `esec.toml` add its checkout by themselves.
+
+```sh
+esec vault projects                       # checkouts, environments, keys here
+esec vault projects show acme/store       # with its secrets files
+esec vault projects scan ~/src            # find and remember every checkout
+esec vault projects add .  |  remove DIR  |  prune
+```
+
+The list is this machine's own, in `~/.config/esec/projects.toml`, and
+holds no secret.
+
+### Make sure no key is ever lost
+
+Keys are only ever added: a key is filed under its public key, and no
+command, sync or merge removes or changes it (guarding replaces the clear
+copy by the guarded one). A key is stored on the vault server (or your
+backup destination) before any file is encrypted to it: `project init`,
+`env add` and `env rotate` wait for that, and stop before writing files when
+it fails (`--offline` skips it on purpose).
+
+```sh
+esec vault verify            # checkouts, git history, this device, the server, the newest backup
+esec vault verify --last     # what the background service found (it checks daily)
+esec vault drill             # the phrase alone opens the newest backup, and it holds every key
+esec vault keyring repair    # file keys from older keyrings under their public key
+```
+
+`verify` reads every secrets file in every checkout and every one in their
+git history, and reports each key that is not on this device, held in only
+one place, held nowhere (lost), or used by two projects. The background
+service runs it daily and notifies only when something is wrong; `doctor`
+reports it, and a drill older than six months.
+
+## The Mac app
+
+`macos/EsecVault` is a menu bar app with a window: every project grouped by
+namespace, its checkouts (open in Finder or Terminal), environments with
+their guard and whether this Mac holds the key, secrets files with values
+left in the clear, and key health from `verify`. It guards an environment
+from a context menu (esec's dialog and your touch, as in Terminal). It reads
+metadata only and never asks for a value; every action is an `esec-vault`
+command you could type.
+
+```sh
+cd macos/EsecVault && ./bundle.sh install   # ~/Applications/esec Vault.app
+```
+
+It finds `esec-vault` in `~/go/bin`, Homebrew or `PATH` (or
+`ESEC_VAULT_BIN`).
 
 ## Remote configuration: file + wizard
 
@@ -1820,6 +2067,11 @@ Migration is explicit; installing the binary does not alter live keys.
 |---|---|
 | Check identity, backup, and daemon state | `esec vault status` |
 | Check setup and repository coverage | `esec vault doctor --dir ~/projects` |
+| Every project on this machine | `esec vault projects` |
+| Check no key can be lost | `esec vault verify` |
+| Prove the backup restores with the phrase | `esec vault drill` |
+| Guard an environment with your YubiKey | `esec vault guard enable --env prod` |
+| Use guarded keys from another machine | `esec vault forward HOST` |
 | List stored projects | `esec vault keyring list` |
 | List this project's named keys and public keys | `esec vault env list` |
 | List another project's named keys | `esec vault env list --project acme/store` |
@@ -1864,7 +2116,7 @@ same socket as an active managed daemon.
 | A machine says the group key or a project's keys were not sent yet | An admin's device seals them on its next sync: `esec vault group sync`. `esec vault group show` says what is missing. |
 | A machine says it reads nothing of a project | The group and the project both have to agree: `esec vault group grant GROUP --project ORG/REPO --env ENV`, by an admin of each. |
 | `dev` cannot find a file | Check the current directory. Use `-f env` for `.env.dev`. Secrets files are not searched for in parent folders. |
-| No project marker is found | Add `.esec-project` with `ESEC_PROJECT=org/repo`. Use no quotes. The search stops at the Git root. |
+| No project file is found | Add `esec.toml` with `project = "org/repo"`, or run `esec vault project init org/repo`. The search stops at the Git root. |
 | A child file uses the wrong project | For core esec, pass `--key-dir services/api` from the root. For broker commands, change into the component directory. |
 | `--key-dir ../..` is rejected | Set `project_root=$(git rev-parse --show-toplevel)` and use `--key-dir "$project_root"`. |
 | A correct public key still fails to decrypt | Check named key entries and `ESEC_*` overrides. Named environment entries have priority over public-key entries. |
@@ -1873,12 +2125,12 @@ same socket as an active managed daemon.
 | Migration says the target keyring exists | Migration does not overwrite or merge that target. Keep both copies until you reconcile their keys. |
 | The broker reports a missing key after an import | Run `esec vault unlock --ttl 4h` again to reload its key cache. |
 | The broker reports `denied by policy` | Check the exact project ID and environment name. Run `daemon reload` after a policy edit. |
-| `share` or `members` cannot find files | Run the command in the directory that contains this project's marker and `.esec` directory. Sharing commands do not search parents. |
+| `share` or `members` cannot find files | Run the command in the directory that contains this project's esec.toml and `.esec` directory. Sharing commands do not search parents. |
 | A filtered share omits an unnamed key | `share --env` selects named entries. Use named environment keys for selective sharing. |
 | `sync` cannot open a share | Pull the latest share and check the current directory. If your identity changed, ask the owner to verify the new proof and share again. |
 | A backup does not contain a repo-local key | Import the `.esec-keyring` first. Backups collect keys from the global store. |
 | An upload is pending | Check `remote list` and `daemon logs`. Use `backup --push` to request an immediate upload. |
-| A new clone has encrypted files but cannot decrypt | Restore your personal backup or use `sync` to import a share. The marker alone does not provide private keys. |
+| A new clone has encrypted files but cannot decrypt | Restore your personal backup or use `sync` to import a share. The project file alone does not provide private keys. |
 
 ### Check key lookup without changing the shell
 
@@ -1925,3 +2177,47 @@ locks. The kernel releases locks on process exit/crash; reusable `.mutation-lock
 files persist with vault data and are removed by purge. Do not unlink lock files
 while writers are running.
 
+
+## Shared file preferences and encrypted example templates
+
+esec and esec-vault share `~/.config/esec/config.toml` (honoring
+`XDG_CONFIG_HOME`, `ESEC_VAULT_HOME`, or an explicit `ESEC_CONFIG` file).
+For example:
+
+```toml
+default_format = "etoml"
+[files]
+patterns = [".{format}.{env}", "{env}.{format}"]
+create = "{env}.{format}"
+templates = ["example.{format}", ".{format}.example"]
+[aliases]
+prod = "production"
+```
+
+Put public defaults and dummy placeholders in `example.etoml`, `example.ejson`
+or `.env.example`. Omit the public key. `esec vault project init` and
+`esec vault env add prod` insert the new public key and encrypt defaults in
+memory before creating the file. The configured `default_format` applies to
+both commands; `-f` or `ESEC_FORMAT` overrides it. Filenames use the literal
+environment argument: the config above creates `prod.etoml`. Templates are
+parsed and re-serialized, so comments and formatting are not preserved.
+Ambiguous templates and existing mismatched files fail without overwriting.
+
+```sh
+esec vault env add prod -f etoml
+esec run prod -- ./server
+esec vault run prod -- ./server
+```
+
+Both core `run` and broker-based `vault run` support TOML scalar values and
+nested tables, using `DATABASE__HOST` for `database.host`. Discovery fails on
+zero or multiple matches; use a filename or `--format` to narrow it. Files are
+not searched recursively except through explicitly configured relative paths.
+Use `--no-template` for key-only environment creation. If `env add --project`
+runs outside that project's repository without `--dir`, it creates only the
+key and explains how to specify a destination.
+
+Development note: the local, ignored `go.work` links this checkout to the
+sibling `../esec` module for the new shared config/discovery API. Release that
+core API and update the required esec version in `go.mod` before publishing
+vault; standalone builds need the released dependency.

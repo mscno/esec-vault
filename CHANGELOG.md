@@ -1,3 +1,44 @@
+# Unreleased
+
+Many independent projects, keys that cannot be lost, and prod keys only a
+touch of your YubiKey opens, so agents can work beside them.
+
+- **`esec.toml` replaces `.esec-project`** (no compatibility): the project
+  id, how its files are named (`[files] format`, `name`, applied on every
+  machine over `config.toml`), and each environment's current public key
+  and guard. `project init`, `env add`, `env rotate` and `guard enable` keep
+  it up to date. Needs esec with the same change.
+- **Keys are only ever added**: every key is filed under its public key, and
+  no write, sync or merge may change or drop one. `keyring repair` files
+  keys of older keyrings.
+- **Stored twice before use**: `project init`, `env add` and `env rotate`
+  wait for a new key to reach the vault server (or the backup destination)
+  before encrypting anything to it; a failed upload stops them, and a
+  rotation points back at the old key. `--offline` skips it.
+- **`esec vault guard`**: environment keys wrapped (with age) to your
+  YubiKeys (age-plugin-yubikey) and your recovery key. Every read shows a
+  dialog naming the file and the programs that asked, then waits for a
+  touch; `session` keys stay open until lock. `guard init`, `enable`,
+  `holders add/remove`, `check`, `export` (plain age files for rage).
+  `project init --guard prod`, `env add --guard touch`; `env rotate` keeps
+  guarded keys guarded. Plain `esec run` says when a key is guarded.
+- **`esec vault forward HOST`**: an SSH session whose machine may ask this
+  one for guarded keys, each read after a dialog and a touch here.
+- **For agents**: `run --mask` / `ESEC_VAULT_MASK` hides values in a
+  command's output; `ESEC_VAULT_SESSION` labels reads in the audit log and
+  dialogs, which now record the asking programs; `secrets request KEY`
+  asks a person for a value in a desktop dialog.
+- **`esec vault projects`**: every project on this machine and where it is
+  checked out, like a git client's repository list; `show`, `scan`, `add`,
+  `remove`, `prune`, with `--json`.
+- **`esec vault verify`**: every key used by a checkout or its git history
+  is on this device and in a second place, held somewhere at all, and used
+  by one project only. The background service runs it daily and notifies
+  on problems; `doctor` reports it. **`esec vault drill`** proves the newest
+  backup opens with the phrase alone and holds every key.
+- **Mac app** (`macos/EsecVault`): a menu bar app and window over the
+  above; metadata only, never values.
+
 # v0.21.0
 
 Rotating credentials and keys, and setting up apps, with checks that

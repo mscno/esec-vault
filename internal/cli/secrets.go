@@ -16,8 +16,10 @@ import (
 	"github.com/mscno/esec/pkg/projectfile"
 
 	"github.com/mscno/esec-vault/internal/account"
+	"github.com/mscno/esec-vault/internal/caller"
 	"github.com/mscno/esec-vault/internal/envrotate"
 	"github.com/mscno/esec-vault/internal/keystore"
+	"github.com/mscno/esec-vault/internal/notify"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/secretfile"
 	"github.com/mscno/esec-vault/internal/storage"
@@ -25,11 +27,12 @@ import (
 
 // SecretsCmd finds, changes and checks the values in secrets files.
 type SecretsCmd struct {
-	List   SecretsListCmd   `cmd:"" default:"withargs" help:"List the secrets files under a directory: environment, project, keys, values in the clear (default)."`
-	Where  SecretsWhereCmd  `cmd:"" help:"Find every secrets file that holds a key, across repositories."`
-	Set    SecretsSetCmd    `cmd:"" help:"Set one value in a project's secrets files, encrypted, leaving the others as they are."`
-	Rotate SecretsRotateCmd `cmd:"" help:"Give a credential a new value everywhere it is used, across repositories."`
-	Lint   SecretsLintCmd   `cmd:"" help:"Check secrets files: no value in the clear, each encrypted to its environment's current key."`
+	List    SecretsListCmd    `cmd:"" default:"withargs" help:"List the secrets files under a directory: environment, project, keys, values in the clear (default)."`
+	Where   SecretsWhereCmd   `cmd:"" help:"Find every secrets file that holds a key, across repositories."`
+	Set     SecretsSetCmd     `cmd:"" help:"Set one value in a project's secrets files, encrypted, leaving the others as they are."`
+	Request SecretsRequestCmd `cmd:"" help:"Ask a person for a value in a desktop dialog and encrypt it in: the agent that asks never sees it."`
+	Rotate  SecretsRotateCmd  `cmd:"" help:"Give a credential a new value everywhere it is used, across repositories."`
+	Lint    SecretsLintCmd    `cmd:"" help:"Check secrets files: no value in the clear, each encrypted to its environment's current key."`
 }
 
 // secretsRoot returns where to look: --root, else the current project's
@@ -222,6 +225,9 @@ type SecretsSetCmd struct {
 	File     string `type:"existingfile" help:"The secrets file (default: the project's files of --env that hold the key)"`
 	Create   bool   `help:"Add the key where it is missing (dotenv and YAML files)"`
 	Generate int    `help:"Generate a random value of this many bytes (base64url) instead of reading one"`
+
+	// ask, when set, gets the value instead of the terminal (secrets request).
+	ask func() (string, error)
 }
 
 // Run implements secrets set.
@@ -272,7 +278,13 @@ func (c *SecretsSetCmd) Run(_ *cliCtx) error { //nolint:gocyclo // which files, 
 			files = ofEnv
 		}
 	}
-	value, err := newValue(c.Key, c.Generate)
+	var value string
+	var err error
+	if c.ask != nil {
+		value, err = c.ask()
+	} else {
+		value, err = newValue(c.Key, c.Generate)
+	}
 	if err != nil {
 		return err
 	}
@@ -288,6 +300,54 @@ func (c *SecretsSetCmd) Run(_ *cliCtx) error { //nolint:gocyclo // which files, 
 	}
 	printRolloutSteps(files)
 	return nil
+}
+
+// SecretsRequestCmd asks a person for a value in a desktop dialog and
+// encrypts it into the secrets files: the program that asked, such as an
+// agent, never sees it.
+type SecretsRequestCmd struct {
+	Key    string `arg:"" help:"The key, such as STRIPE_KEY"`
+	Env    string `help:"The environment, such as prod (with --file: taken from its name)"`
+	File   string `type:"existingfile" help:"The secrets file (default: the project's files of --env that hold the key)"`
+	Create bool   `help:"Add the key where it is missing (dotenv and YAML files)"`
+	Reason string `help:"Why the value is needed, shown in the dialog"`
+}
+
+// requestDialog is the dialog secrets request shows; tests replace it.
+var requestDialog = func(title, prompt string) (string, bool, error) {
+	return notify.Secret(title, prompt, 10*time.Minute)
+}
+
+// Run implements secrets request.
+func (c *SecretsRequestCmd) Run(ctx *cliCtx) error {
+	where := c.Env
+	if c.File != "" {
+		where = c.File
+	}
+	project := "this project"
+	if p, err := resolveProject(""); err == nil {
+		project = p
+	}
+	prompt := fmt.Sprintf("Paste the value of %s for %s %s.\n\nAsked by: %s", c.Key, project, where, caller.Describe(caller.Chain(os.Getpid())))
+	if c.Reason != "" {
+		prompt += "\nReason: " + c.Reason
+	}
+	prompt += "\n\nIt is encrypted into the secrets file; the program that asked never sees it."
+	set := &SecretsSetCmd{Key: c.Key, Env: c.Env, File: c.File, Create: c.Create, ask: func() (string, error) {
+		v, ok, err := requestDialog("esec: a secret value is requested", prompt)
+		switch {
+		case errors.Is(err, notify.ErrNoDialogs):
+			return "", errors.New("no desktop to ask in: run esec vault secrets set yourself")
+		case err != nil:
+			return "", err
+		case !ok:
+			return "", errors.New("the request was turned down")
+		case v == "":
+			return "", errors.New("no value given")
+		}
+		return v, nil
+	}}
+	return set.Run(ctx)
 }
 
 // printRolloutSteps says what to do after a value changed.
@@ -415,7 +475,7 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 			add(f.Path, account.CheckFail, "in the clear: "+strings.Join(f.Plain, ", "), "esec encrypt "+relTo(root, f.Path))
 		}
 		if f.Project == "" {
-			add(f.Path, account.CheckWarn, "no .esec-project above it, so no project's key to check it against", "esec vault project init ORG/REPO")
+			add(f.Path, account.CheckWarn, "no esec.toml above it, so no project's key to check it against", "esec vault project init ORG/REPO")
 			continue
 		}
 		if f.Env == "" || aerr != nil {
@@ -441,7 +501,7 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 		case slices.Contains(e.Retired, f.PublicKey):
 			add(f.Path, account.CheckFail, "encrypted to an earlier "+f.Env+" key of "+f.Project+": deployments cannot read it", "esec vault env rotate "+f.Env+" (in the repository)")
 		default:
-			add(f.Path, account.CheckFail, "encrypted to a key that is not "+f.Project+"'s "+f.Env+" key", "check the file name and .esec-project")
+			add(f.Path, account.CheckFail, "encrypted to a key that is not "+f.Project+"'s "+f.Env+" key", "check the file name and esec.toml")
 		}
 		if len(e.Exposed) > 0 {
 			add(f.Path, account.CheckWarn, "someone who lost access may still hold the "+f.Env+" key", "esec vault env rotate "+f.Env)
@@ -485,7 +545,7 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 // EnvStatusCmd shows what of an environment picked up a change.
 type EnvStatusCmd struct {
 	Env     string `arg:"" help:"Environment name, such as prod"`
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	Since   string `help:"Count starts after this time (RFC 3339, or a duration such as 30m or 2h ago); default: when its key last changed"`
 	JSON    bool   `help:"Print JSON, for scripts and agents"`
 }
@@ -594,7 +654,7 @@ func (c *EnvRotateExposedCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan,
 	if err != nil {
 		return err
 	}
-	// Checkouts by project: the directories of their .esec-project.
+	// Checkouts by project: the directories of their esec.toml.
 	dirs := map[string][]string{}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -648,12 +708,13 @@ func (c *EnvRotateExposedCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan,
 		return errors.New("nothing changed")
 	}
 	failed := 0
+	rot := &rotator{ctx: ctx}
 	for i := range plan {
 		r := &plan[i]
 		if r.Skipped != "" {
 			continue
 		}
-		res, err := envrotate.Rotate(keystore.New(), r.Project, r.Env, r.Dir)
+		res, err := rot.rotate(r.Project, r.Env, r.Dir)
 		if err != nil && res == nil {
 			r.Error, failed = err.Error(), failed+1
 			continue

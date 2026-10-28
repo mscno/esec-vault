@@ -22,6 +22,7 @@ import (
 	"github.com/mscno/esec-vault/internal/chain"
 	"github.com/mscno/esec-vault/internal/client"
 	"github.com/mscno/esec-vault/internal/identity"
+	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/storage"
 	"github.com/mscno/esec-vault/internal/vaultfile"
@@ -57,7 +58,7 @@ type SyncResult struct {
 var ErrConflicts = errors.New("vault sync found conflicting keyring entries; run 'esec vault sync --server' in a terminal to resolve them")
 
 // entryName limits what a vault may write into a keyring.
-var entryName = regexp.MustCompile(`^(ESEC_PRIVATE_KEY(_[A-Z0-9_]{1,128})?|ESEC_ACTIVE_KEY|ESEC_ACTIVE_ENVIRONMENT)$`)
+var entryName = regexp.MustCompile(`^(ESEC_PRIVATE_KEY(_[A-Z0-9_]{1,128})?|ESEC_GUARD_[A-Z0-9_]{1,128}|ESEC_ACTIVE_KEY|ESEC_ACTIVE_ENVIRONMENT)$`)
 
 // Sync verifies the chain, refreshes the user key if it rotated, pulls the
 // server vault and merges it into the local keyrings, then pushes the local
@@ -260,6 +261,16 @@ func BuildIndex(projects map[string]map[string]string, gen uint64) wire.VaultInd
 		namedPubs := map[string]bool{}
 		var byPubKey []string
 		for _, k := range names {
+			if env, ok := keystore.EnvName(k); ok && strings.HasPrefix(k, "ESEC_GUARD_ENV_") {
+				pub := strings.ToLower(projects[p][k])
+				namedPubs[pub] = true
+				ip.Environments = append(ip.Environments, wire.IndexEnv{Name: env, PublicKey: pub})
+				continue
+			}
+			if keystore.IsGuardEntry(k) {
+				byPubKey = append(byPubKey, strings.ToLower(strings.TrimPrefix(k, "ESEC_GUARD_")))
+				continue
+			}
 			suffix, named := strings.CutPrefix(k, esec.EsecPrivateKey+"_")
 			if k == esec.EsecPrivateKey {
 				suffix, named = "default", true
@@ -328,7 +339,9 @@ func (a *Account) localProjects() (map[string]map[string]string, error) {
 //   - an entry changed on both sides, or with no base to tell, is a conflict:
 //     asked about when interactive, otherwise reported and left alone.
 //
-// Entries missing here are added. Nothing local is ever deleted.
+// Entries missing here are added, except a key this machine keeps guarded:
+// another device that has not guarded it yet still sends it in the clear.
+// Nothing local is ever deleted.
 func (a *Account) merge(remote, base map[string]map[string]string, interactive bool) (added, conflicts []string, err error) { //nolint:gocyclo // the merge table is clearer in one place
 	names := make([]string, 0, len(remote))
 	for p := range remote {
@@ -362,6 +375,9 @@ func (a *Account) merge(remote, base map[string]map[string]string, interactive b
 		for _, k := range keys {
 			rv := entries[k]
 			lv, ok := local[k]
+			if !ok && guardedHere(local, rv) {
+				continue
+			}
 			if !ok {
 				local[k] = rv
 				changed = true
@@ -397,5 +413,38 @@ func (a *Account) merge(remote, base map[string]map[string]string, interactive b
 	return added, conflicts, nil
 }
 
+// guardedHere reports whether value is a private key this keyring holds
+// only in its guarded form.
+func guardedHere(local map[string]string, value string) bool {
+	pub, err := keystore.PublicHex(value)
+	return err == nil && local[keystore.GuardEntry(pub)] != ""
+}
+
 // LastSync reports when the vault last synced.
 func (a *Account) LastSync() time.Time { return a.State.Vault.SyncedAt }
+
+// ServerProjects downloads and opens the vault stored on the server,
+// without applying it, and returns its keyrings: what a new device would
+// get. It checks the vault's signature like a sync does.
+func (a *Account) ServerProjects(ctx context.Context) (map[string]map[string]string, error) {
+	st, err := a.VerifiedChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id, err := a.userKey(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	remote, err := a.Client.Vault(ctx)
+	if client.IsCode(err, wire.ErrNotFound) {
+		return map[string]map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	v, err := a.openRemote(st, id, remote)
+	if err != nil {
+		return nil, err
+	}
+	return v.Projects, nil
+}

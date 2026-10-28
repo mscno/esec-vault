@@ -70,3 +70,8 @@ func TrustedPath() string { return filepath.Join(Home(), "trusted.toml") }
 func EnsureHome() error {
 	return os.MkdirAll(Home(), 0700)
 }
+
+// ForwardSocket is the broker socket for other machines (esec vault
+// forward): it serves guarded keys only, each read after a dialog and a
+// touch on this machine.
+func ForwardSocket() string { return filepath.Join(RuntimeDir(), "forward.sock") }

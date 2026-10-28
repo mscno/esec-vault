@@ -266,7 +266,7 @@ func (c *GroupCreateCmd) Run(ctx *cliCtx) error {
 type GroupGrantCmd struct {
 	Group   string   `arg:"" help:"Group, such as acme/production"`
 	Env     []string `name:"env" sep:"," required:"" help:"Environments the group may read (replaces what it read before)"`
-	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Project string   `help:"Project id (default: nearest esec.toml)"`
 }
 
 // Run implements group grant.
@@ -281,7 +281,7 @@ func (c *GroupGrantCmd) Run(ctx *cliCtx) error {
 // GroupRevokeCmd stops a group reading a project.
 type GroupRevokeCmd struct {
 	Group   string `arg:"" help:"Group, such as acme/production"`
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 }
 
 // Run implements group revoke.

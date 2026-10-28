@@ -32,42 +32,29 @@ func resolveSecretsFile(dir, fileOrEnv, format string) (path string, fileFormat 
 	if fileOrEnv == "" {
 		return "", "", fmt.Errorf("no environment or file given")
 	}
-	// Explicit path containing a separator or a leading format prefix.
-	if strings.ContainsAny(fileOrEnv, `/\`) || strings.HasPrefix(fileOrEnv, ".") {
-		f, ferr := fileutils.ParseFormat(fileOrEnv)
-		if ferr != nil {
-			return "", "", ferr
-		}
-		abs, aerr := filepath.Abs(fileOrEnv)
-		return abs, string(f), aerr
+	p, f, err := fileutils.Resolve(dir, fileOrEnv, format)
+	if err != nil {
+		return "", "", err
 	}
-	env := fileOrEnv
-	if format != "" {
-		f, ferr := fileutils.ParseFormat(format)
-		if ferr != nil {
-			return "", "", ferr
-		}
-		name := fileutils.GenerateFilename(f, env)
-		if _, serr := os.Stat(filepath.Join(dir, name)); serr != nil {
-			return "", "", fmt.Errorf("secrets file %s does not exist", name)
-		}
-		abs, aerr := filepath.Abs(filepath.Join(dir, name))
-		return abs, string(f), aerr
-	}
-	// Auto-detect across formats.
-	for _, f := range fileutils.ValidFormats() {
-		name := fileutils.GenerateFilename(f, env)
-		if _, serr := os.Stat(filepath.Join(dir, name)); serr == nil {
-			abs, aerr := filepath.Abs(filepath.Join(dir, name))
-			return abs, string(f), aerr
-		}
-	}
-	return "", "", fmt.Errorf("no secrets file found for environment %q in %s", env, dir)
+	abs, err := filepath.Abs(p)
+	return abs, string(f), err
 }
 
-// Run resolves the project from .esec-project, fetches decrypted secrets from
+// Options are the optional parts of Run.
+type Options struct {
+	// Mask replaces the secrets' values in the command's output.
+	Mask bool
+	// Session labels the request in the audit log and the dialog.
+	Session string
+	// Forwarded sends the file itself, to a broker on another machine.
+	Forwarded bool
+	// Host names this machine to a forwarded broker.
+	Host string
+}
+
+// Run resolves the project from esec.toml, fetches decrypted secrets from
 // the broker, and runs command with them in the environment.
-func Run(client *broker.Client, env, format string, command []string) error {
+func Run(client *broker.Client, env, format string, command []string, opts Options) error {
 	if len(command) == 0 {
 		return errors.New("no command specified to run")
 	}
@@ -77,16 +64,23 @@ func Run(client *broker.Client, env, format string, command []string) error {
 	}
 	project, _, err := projectfile.FindProjectFile(cwd)
 	if err != nil {
-		return fmt.Errorf("no .esec-project found (needed to identify the project): %w", err)
+		return fmt.Errorf("no esec.toml found (needed to identify the project): %w", err)
 	}
 	secretPath, fileFormat, err := resolveSecretsFile(cwd, env, format)
 	if err != nil {
 		return err
 	}
+	req := &broker.Request{Op: broker.OpGetSecrets, Project: project, Env: env, Path: secretPath, Format: fileFormat, Session: opts.Session}
+	if opts.Forwarded {
+		if req.Content, err = os.ReadFile(secretPath); err != nil { //nolint:gosec // the secrets file this command resolved
+			return err
+		}
+		req.Host = opts.Host
+	}
 
 	// Approval may take a while; allow the server's approval window plus slack.
 	client.Timeout = 6 * time.Minute
-	secrets, err := client.GetSecrets(project, env, secretPath, fileFormat)
+	secrets, err := client.GetSecretsRequest(req)
 	if err != nil {
 		return err
 	}
@@ -104,6 +98,16 @@ func Run(client *broker.Client, env, format string, command []string) error {
 		}
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	var masks []*Masker
+	if opts.Mask {
+		values := make([]string, 0, len(secrets))
+		for _, v := range secrets {
+			values = append(values, v)
+		}
+		out, errOut := NewMasker(os.Stdout, values), NewMasker(os.Stderr, values)
+		masks = append(masks, out, errOut)
+		cmd.Stdout, cmd.Stderr = out, errOut
+	}
 	// Best-effort scrub of our own copy once spawned.
 	defer func() {
 		for k := range secrets {
@@ -111,7 +115,11 @@ func Run(client *broker.Client, env, format string, command []string) error {
 		}
 	}()
 
-	return wait(cmd)
+	err = wait(cmd)
+	for _, m := range masks {
+		_ = m.Flush()
+	}
+	return err
 }
 
 // Exec runs command with env and the terminal, forwarding signals, and
@@ -127,8 +135,12 @@ func Exec(command, env []string) error {
 
 func wait(cmd *exec.Cmd) error {
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if cmd.Stdout == nil {
+		cmd.Stdout = os.Stdout
+	}
+	if cmd.Stderr == nil {
+		cmd.Stderr = os.Stderr
+	}
 	setProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {

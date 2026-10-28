@@ -142,10 +142,10 @@ func TestHelpAndUsageStreams(t *testing.T) {
 	}
 
 	_, errOut, code = runIn(dir, "", "env", "list")
-	if code != 1 || !strings.Contains(errOut, "hint: no .esec-project") {
+	if code != 1 || !strings.Contains(errOut, "hint: no esec.toml") {
 		t.Fatalf("env list outside a project: exit %d\n%s", code, errOut)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".esec-project"), []byte("ESEC_PROJECT=acme/api\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "esec.toml"), []byte("project = \"acme/api\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, _, code = runIn(dir, "", "env", "list", "--json")

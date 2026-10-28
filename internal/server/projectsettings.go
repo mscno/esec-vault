@@ -53,7 +53,7 @@ func (s *Server) webTeamMove(w http.ResponseWriter, r *http.Request) {
 		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeProjectMove, Project: next}); err != nil {
 			return "", err
 		}
-		return "Proposed. A device makes the move (esec vault changes): it creates " + next + " with the same keys and people, and archives " + st.Project + " pointing there. Then change ESEC_PROJECT in the repository's .esec-project.", nil
+		return "Proposed. A device makes the move (esec vault changes): it creates " + next + " with the same keys and people, and archives " + st.Project + " pointing there. Then change project in the repository's esec.toml.", nil
 	})
 }
 

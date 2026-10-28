@@ -210,7 +210,7 @@ func policyText(p *wire.OrgPolicy) string {
 
 // AccessReviewCmd reviews who reads a project.
 type AccessReviewCmd struct {
-	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Project string   `help:"Project id (default: nearest esec.toml)"`
 	Remove  []string `sep:"," help:"Take access away from these (logins, groups, machine:NAME) and keep everyone else, without asking"`
 	KeepAll bool     `name:"keep-all" help:"Keep everyone, without asking, and record the review"`
 	Yes     bool     `help:"Do not ask before removing"`

@@ -17,6 +17,10 @@ type AuditEntry struct {
 	Env      string    `json:"env,omitempty"`
 	Decision string    `json:"decision"`
 	Detail   string    `json:"detail,omitempty"`
+	// Caller is the asking program and its parents ("zsh ▸ claude ▸ esec").
+	Caller string `json:"caller,omitempty"`
+	// Session is the label of the agent session the request came from.
+	Session string `json:"session,omitempty"`
 }
 
 // AuditLogger appends JSON-lines audit entries to a file (0600).

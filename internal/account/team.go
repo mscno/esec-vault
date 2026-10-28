@@ -1191,6 +1191,11 @@ func (a *Account) importKeys(st *team.State, keys map[string]string, pins *TeamP
 		priv := keys[n]
 		pub := st.Envs[n].PublicKey
 		entry := team.EnvKey(n)
+		if guardedHere(entries, priv) {
+			// This device keeps the key guarded; the clear copy stays out.
+			pins.hold(st.Project, n, pub)
+			continue
+		}
 		cur, ok := entries[entry]
 		switch {
 		case ok && cur == priv:

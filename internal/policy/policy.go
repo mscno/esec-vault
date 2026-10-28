@@ -68,6 +68,13 @@ func Load(path string) (*Policy, error) {
 
 // Decide applies the first matching rule, or the default action.
 func (p *Policy) Decide(project, env string, uid uint32) Action {
+	action, _ := p.DecideRule(project, env, uid)
+	return action
+}
+
+// DecideRule is Decide, also reporting whether a rule matched (false when
+// the default decided).
+func (p *Policy) DecideRule(project, env string, uid uint32) (Action, bool) {
 	for _, r := range p.Rules {
 		if !matchProject(r.Project, project) {
 			continue
@@ -78,12 +85,12 @@ func (p *Policy) Decide(project, env string, uid uint32) Action {
 		if r.UID != nil && *r.UID != uid {
 			continue
 		}
-		return r.Action
+		return r.Action, true
 	}
 	if p.Default == "" {
-		return Deny
+		return Deny, false
 	}
-	return p.Default
+	return p.Default, false
 }
 
 // matchProject supports "org/repo", "*" and "prefix/*" patterns.

@@ -29,12 +29,43 @@ type KeyringCmd struct {
 	Add     KeyringAddCmd     `cmd:"" help:"Generate a public-key-addressed project key."`
 	Seal    KeyringSealCmd    `cmd:"" help:"Encrypt keyring files with this machine's cache key."`
 	Unseal  KeyringUnsealCmd  `cmd:"" help:"Store keyring files as plain text again."`
+	Repair  KeyringRepairCmd  `cmd:"" help:"File every key also under its public key, so no later change can drop it."`
+}
+
+// KeyringRepairCmd files named keys under their public keys. Every write
+// does this by itself; repair brings keyrings written before up to date.
+type KeyringRepairCmd struct{}
+
+// Run implements keyring repair.
+func (c *KeyringRepairCmd) Run(_ *cliCtx) error {
+	ks := keystore.New()
+	projects, err := ks.List()
+	if err != nil {
+		return err
+	}
+	total := 0
+	for _, p := range projects {
+		added, err := ks.Repair(p)
+		if err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		if len(added) > 0 {
+			fmt.Printf("%s: filed %d key(s) under their public key\n", p, len(added))
+			total += len(added)
+		}
+	}
+	if total == 0 {
+		fmt.Println("Every key is filed under its public key.")
+		return nil
+	}
+	markDirty("keyring repair")
+	return nil
 }
 
 // KeyringSealCmd seals keyrings.
 type KeyringSealCmd struct {
 	All              bool   `help:"Seal every keyring and seal new keyrings by default"`
-	Project          string `help:"Seal one project (default: nearest .esec-project)"`
+	Project          string `help:"Seal one project (default: nearest esec.toml)"`
 	SkipVersionCheck bool   `help:"Seal even if the esec on PATH cannot read sealed keyrings"`
 }
 
@@ -59,7 +90,7 @@ func (c *KeyringSealCmd) Run(ctx *cliCtx) error {
 // KeyringUnsealCmd unseals keyrings.
 type KeyringUnsealCmd struct {
 	All     bool   `help:"Unseal every keyring and stop sealing new ones"`
-	Project string `help:"Unseal one project (default: nearest .esec-project)"`
+	Project string `help:"Unseal one project (default: nearest esec.toml)"`
 	Yes     bool   `help:"Do not ask for confirmation"`
 }
 
@@ -134,7 +165,7 @@ func (c *KeyringMigrateCmd) Run(ctx *cliCtx) error {
 
 // KeyringAddCmd generates one unnamed project key.
 type KeyringAddCmd struct {
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 }
 
 // Run generates and stores a key without printing its private half.

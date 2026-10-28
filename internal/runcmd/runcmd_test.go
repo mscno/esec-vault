@@ -105,7 +105,7 @@ func TestRunInjectsSecretsFromBroker(t *testing.T) {
 
 	marker := filepath.Join(t.TempDir(), "out")
 	cmd := []string{"sh", "-c", "printf '%s' \"$GREETING\" > " + marker}
-	if err := Run(client, "dev", "", cmd); err != nil {
+	if err := Run(client, "dev", "", cmd, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	out, err := os.ReadFile(marker) //nolint:gosec // test fixture path
@@ -117,7 +117,7 @@ func TestRunInjectsSecretsFromBroker(t *testing.T) {
 	}
 
 	// Denied environment must fail.
-	if err := Run(client, "prod", "", []string{"true"}); err == nil {
+	if err := Run(client, "prod", "", []string{"true"}, Options{}); err == nil {
 		t.Fatal("prod should be denied")
 	}
 }

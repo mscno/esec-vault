@@ -32,7 +32,7 @@ type MachineCreateCmd struct {
 
 	Name    string   `arg:"" help:"Machine name, e.g. deploy or ci"`
 	Env     []string `name:"env" sep:"," required:"" help:"Environments it may read"`
-	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Project string   `help:"Project id (default: nearest esec.toml)"`
 	Out     string   `help:"Write the machine key to this file (0600), or - for standard output only"`
 }
 
@@ -82,7 +82,7 @@ func (c *MachineCreateCmd) Run(ctx *cliCtx) error {
 
 // MachineListCmd lists machines.
 type MachineListCmd struct {
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	JSON    bool   `help:"Print JSON, for scripts and agents"`
 }
 
@@ -132,7 +132,7 @@ func (c *MachineListCmd) Run(ctx *cliCtx) error {
 type MachineRemoveCmd struct {
 	Machine string `arg:"" help:"Machine name or id"`
 	Reason  string `help:"Reason recorded in the project chain"`
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	Yes     bool   `help:"Do not ask for confirmation"`
 }
 
@@ -182,7 +182,7 @@ func fetchMachineKeys() (*machine.Keys, error) {
 	return keys, nil
 }
 
-// machineProject is --project, else the nearest .esec-project, else "".
+// machineProject is --project, else the nearest esec.toml, else "".
 func machineProject(flag string) string {
 	if flag != "" {
 		return flag
@@ -197,7 +197,7 @@ func machineProject(flag string) string {
 // MachineRunCmd runs a command with the machine's keys.
 type MachineRunCmd struct {
 	Env     []string `name:"env" sep:"," help:"Only these environments (default: every one the machine reads)"`
-	Project string   `help:"Project whose keys are also set by environment name (default: nearest .esec-project, or the only one)"`
+	Project string   `help:"Project whose keys are also set by environment name (default: nearest esec.toml, or the only one)"`
 	Command []string `arg:"" passthrough:"" help:"Command to run"`
 }
 
@@ -226,7 +226,7 @@ func (c *MachineRunCmd) Run(ctx *cliCtx) error {
 // MachineEnvCmd prints the machine's keys.
 type MachineEnvCmd struct {
 	Env     []string `name:"env" sep:"," help:"Only these environments (default: every one the machine reads)"`
-	Project string   `help:"Project whose keys are also set by environment name (default: nearest .esec-project, or the only one)"`
+	Project string   `help:"Project whose keys are also set by environment name (default: nearest esec.toml, or the only one)"`
 	Format  string   `default:"env" enum:"env,github" help:"env: NAME=value lines; github: append to $GITHUB_ENV and mask the values"`
 }
 

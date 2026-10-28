@@ -122,7 +122,7 @@ func TestRefusals(t *testing.T) {
 func TestScanAndPlain(t *testing.T) {
 	pub, _, _ := esec.GenerateKeypair()
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".esec-project"), []byte("ESEC_PROJECT=acme/api\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "esec.toml"), []byte("project = \"acme/api\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".env.prod"), encrypted(t, fileutils.Env, "ESEC_PUBLIC_KEY="+pub+"\nDB=x\n"), 0o600); err != nil {

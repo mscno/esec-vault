@@ -8,7 +8,7 @@ backed by a cloud KMS. Replace `acme`, `acme/api` and the names with yours.
 
 | Where | Holds | Unlocked by |
 |---|---|---|
-| Git repository | encrypted secrets files (`.env.prod`, `prod.etoml`, ...) and `.esec-project` | nothing: ciphertext only |
+| Git repository | encrypted secrets files (`.env.prod`, `prod.etoml`, ...) and `esec.toml` | nothing: ciphertext only |
 | Your laptop, your dev VMs | the environment keys you may read, in your keyring | your identity (recovery phrase) and device keys |
 | Vault server | signed chains (who belongs to the organisation, who reads what), keys sealed to people, groups and workloads | nothing: it cannot open any of them |
 | Cloud KMS (GCP) or OpenBao | RSA keys that wrap group keys, approved in the organisation's chain | only the workloads its IAM policy (or JWT role) names |
@@ -103,10 +103,10 @@ stricter of theirs and the organisation's applies.
 In the repository:
 
 ```sh
-esec vault project init acme/api --env dev,staging,prod   # .esec-project, keys, encrypted files
+esec vault project init acme/api --env dev,staging,prod   # esec.toml, keys, encrypted files
 $EDITOR .env.prod                                         # add values (plain)
 esec encrypt .env.prod                                    # encrypt them in place
-git add .esec-project .env.* && git commit -m "secrets"
+git add esec.toml .env.* && git commit -m "secrets"
 esec vault access create                                  # share it; you are its admin
 ```
 
@@ -182,7 +182,7 @@ Workloads page has a copy button for it):
 ```
 
 and start the app through esec-vault; the image holds `esec`, `esec-vault`,
-`.esec-project` and the encrypted files:
+`esec.toml` and the encrypted files:
 
 ```dockerfile
 CMD ["esec-vault", "machine", "run", "--", "esec", "run", ".env.prod", "--", "/app/server"]

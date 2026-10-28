@@ -41,6 +41,33 @@ type Request struct {
 	Path    string `json:"path,omitempty"`   // get_secrets: absolute path of the encrypted secrets file
 	Format  string `json:"format,omitempty"` // get_secrets: esec file format, e.g. ".ejson"
 	ID      string `json:"id,omitempty"`     // approve: pending request id
+	// Session labels the agent session a request comes from (ESEC_VAULT_SESSION).
+	Session string `json:"session,omitempty"`
+	// Content is the encrypted secrets file itself, for a request forwarded
+	// from another machine, where Path names a file on that machine.
+	Content []byte `json:"content,omitempty"`
+	// Host names the machine a forwarded request comes from.
+	Host string `json:"host,omitempty"`
+}
+
+// GuardRequest is a read of a guarded key, as the guard is asked for it.
+type GuardRequest struct {
+	Project, Env, PublicKey string
+	// Path is the secrets file to decrypt; Host is set for a forwarded one.
+	Path, Host string
+	UID, PID   uint32
+	// Caller is the asking program and its parents.
+	Caller  string
+	Session string
+}
+
+// Guarder opens guarded keys: it asks the person, then waits for the
+// hardware touch.
+type Guarder interface {
+	// Has reports whether project holds a guarded key for env or pub.
+	Has(project, env, pub string) bool
+	// Key returns the private key, after the person allowed it.
+	Key(req GuardRequest) (priv string, how string, err error)
 }
 
 // Response is a single JSON-lines protocol response.
@@ -74,6 +101,13 @@ type Server struct {
 	timer   *time.Timer
 	// ControlOnlyApproval reserves approvals for the daemon control socket.
 	ControlOnlyApproval bool
+	// Guard opens guarded keys; nil serves none.
+	Guard Guarder
+	// Forwarded marks a broker reached from other machines (esec vault
+	// forward): every read asks the person, and files come in requests.
+	Forwarded bool
+	// Chain describes the program behind a pid; tests replace it.
+	Chain func(pid uint32) string
 }
 
 // NewServer returns a broker server.
@@ -195,10 +229,23 @@ func (s *Server) handleConn(conn net.Conn) {
 // fail closed on error: serving a secret whose allow decision was never
 // written would leave no record of the disclosure.
 func (s *Server) audit(uid, pid uint32, op, project, env, decision, detail string) error {
+	return s.auditEntry(AuditEntry{UID: uid, PID: pid, Op: op, Project: project, Env: env, Decision: decision, Detail: detail})
+}
+
+// auditReq records a decision about a request, with its caller and session.
+func (s *Server) auditReq(uid, pid uint32, req *Request, decision, detail string) error {
+	chain := ""
+	if s.Chain != nil {
+		chain = s.Chain(pid)
+	}
+	return s.auditEntry(AuditEntry{UID: uid, PID: pid, Op: req.Op, Project: req.Project, Env: req.Env, Decision: decision, Detail: detail, Caller: chain, Session: req.Session})
+}
+
+func (s *Server) auditEntry(e AuditEntry) error {
 	if s.Audit == nil {
 		return nil
 	}
-	if err := s.Audit.Log(AuditEntry{UID: uid, PID: pid, Op: op, Project: project, Env: env, Decision: decision, Detail: detail}); err != nil {
+	if err := s.Audit.Log(e); err != nil {
 		s.Logger.Error("audit log write failed", "error", err)
 		return err
 	}
@@ -262,7 +309,7 @@ func auditFailed() *Response {
 // Serving secrets without a recorded decision would leave no trace of the
 // disclosure, so a failed write refuses the request.
 func (s *Server) recordAllow(uid, pid uint32, req *Request, detail string) error {
-	return s.audit(uid, pid, req.Op, req.Project, req.Env, "allow", detail)
+	return s.auditReq(uid, pid, req, "allow", detail)
 }
 
 // authorize applies policy and records the decision. It returns a non-nil
@@ -273,7 +320,7 @@ func (s *Server) authorize(uid, pid uint32, req *Request) *Response {
 	s.keysMu.RUnlock()
 	if action == policy.Deny {
 		// Denials serve nothing; the audit line is best effort here.
-		_ = s.audit(uid, pid, req.Op, req.Project, req.Env, "deny", "policy")
+		_ = s.auditReq(uid, pid, req, "deny", "policy")
 		return &Response{OK: false, Error: fmt.Sprintf("denied by policy: %s env %q", req.Project, req.Env)}
 	}
 	if action == policy.Ask {
@@ -281,11 +328,11 @@ func (s *Server) authorize(uid, pid uint32, req *Request) *Response {
 		if err != nil {
 			return &Response{OK: false, Error: err.Error()}
 		}
-		if err := s.audit(uid, pid, req.Op, req.Project, req.Env, "ask", id); err != nil {
+		if err := s.auditReq(uid, pid, req, "ask", id); err != nil {
 			return auditFailed()
 		}
 		if !s.waitPending(id) {
-			_ = s.audit(uid, pid, req.Op, req.Project, req.Env, "deny", "approval "+id+" timed out or rejected")
+			_ = s.auditReq(uid, pid, req, "deny", "approval "+id+" timed out or rejected")
 			return &Response{OK: false, Error: fmt.Sprintf("approval %s was not granted", id)}
 		}
 		if err := s.recordAllow(uid, pid, req, "approved "+id); err != nil {
@@ -306,26 +353,48 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 	if !filepath.IsAbs(req.Path) {
 		return &Response{OK: false, Error: "path must be absolute"}
 	}
-	if denied := s.authorize(uid, pid, req); denied != nil {
-		return denied
+	if s.Forwarded && len(req.Content) == 0 {
+		return &Response{OK: false, Error: "a forwarded request carries its file"}
 	}
-
-	data, err := os.ReadFile(req.Path)
-	if err != nil {
-		return &Response{OK: false, Error: fmt.Sprintf("failed to read secrets file: %v", err)}
+	data := req.Content
+	if !s.Forwarded {
+		var err error
+		if data, err = os.ReadFile(req.Path); err != nil {
+			return &Response{OK: false, Error: fmt.Sprintf("failed to read secrets file: %v", err)}
+		}
 	}
 
 	format := esec.FileFormat(req.Format)
 	// The file's embedded public key is the ground truth for key resolution
 	// (monorepo components, rotated keys).
 	var pubkey *[32]byte
+	pubHex := ""
 	if pub, err := esec.ExtractPublicKey(data, format); err == nil {
 		pubkey = &pub
+		pubHex = hex.EncodeToString(pub[:])
 	}
 
-	key, err := s.keyFor(req.Project, req.Env, pubkey)
-	if err != nil {
-		return &Response{OK: false, Error: err.Error()}
+	var key string
+	if s.Guard != nil && s.Guard.Has(req.Project, req.Env, pubHex) {
+		k, denied := s.guardedKey(uid, pid, req, pubHex)
+		if denied != nil {
+			return denied
+		}
+		key = k
+	} else {
+		if s.Forwarded {
+			// Only guarded keys are served to other machines: each read
+			// is then one the person sees and touches.
+			_ = s.auditEntry(AuditEntry{UID: uid, PID: pid, Op: req.Op, Project: req.Project, Env: req.Env, Decision: "deny", Detail: "forwarded read of an unguarded key", Session: req.Session})
+			return &Response{OK: false, Error: fmt.Sprintf("%s %s is not guarded: a forwarded broker serves guarded keys only; give the machine its own key (esec vault group token)", req.Project, req.Env)}
+		}
+		if denied := s.authorize(uid, pid, req); denied != nil {
+			return denied
+		}
+		var err error
+		if key, err = s.keyFor(req.Project, req.Env, pubkey); err != nil {
+			return &Response{OK: false, Error: err.Error()}
+		}
 	}
 
 	var plain bytes.Buffer
@@ -333,15 +402,7 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		return &Response{OK: false, Error: fmt.Sprintf("decryption failed: %v", err)}
 	}
 
-	var secrets map[string]string
-	switch format {
-	case esec.FileFormatEjson:
-		secrets, err = esec.EjsonToEnv(plain.Bytes())
-	case esec.FileFormatEnv:
-		secrets, err = esec.DotEnvToEnv(plain.Bytes())
-	default:
-		err = fmt.Errorf("format %s is not supported for secret injection", format)
-	}
+	secrets, err := esec.EnvVars(plain.Bytes(), format)
 	if err != nil {
 		return &Response{OK: false, Error: err.Error()}
 	}
@@ -352,6 +413,43 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response {
 		}
 	}
 	return &Response{OK: true, Secrets: secrets}
+}
+
+// guardedKey asks the guard for a guarded key. A policy rule that denies
+// the environment still denies; otherwise the guard's own dialog and touch
+// are the approval, in place of an "ask" rule.
+func (s *Server) guardedKey(uid, pid uint32, req *Request, pub string) (string, *Response) {
+	s.keysMu.RLock()
+	action, matched := s.Policy.DecideRule(req.Project, req.Env, uid)
+	s.keysMu.RUnlock()
+	chain := ""
+	if s.Chain != nil {
+		chain = s.Chain(pid)
+	}
+	if req.Host != "" {
+		chain = req.Host + ": " + chain
+	}
+	entry := AuditEntry{UID: uid, PID: pid, Op: req.Op, Project: req.Project, Env: req.Env, Caller: chain, Session: req.Session}
+	if matched && action == policy.Deny {
+		entry.Decision, entry.Detail = "deny", "policy"
+		_ = s.auditEntry(entry)
+		return "", &Response{OK: false, Error: fmt.Sprintf("denied by policy: %s env %q", req.Project, req.Env)}
+	}
+	entry.Decision, entry.Detail = "ask", "guard"
+	if err := s.auditEntry(entry); err != nil {
+		return "", auditFailed()
+	}
+	key, how, err := s.Guard.Key(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Host: req.Host, UID: uid, PID: pid, Caller: chain, Session: req.Session})
+	if err != nil {
+		entry.Decision, entry.Detail = "deny", "guard: "+err.Error()
+		_ = s.auditEntry(entry)
+		return "", &Response{OK: false, Error: err.Error()}
+	}
+	entry.Decision, entry.Detail = "allow", "guard "+how
+	if err := s.auditEntry(entry); err != nil {
+		return "", auditFailed()
+	}
+	return key, nil
 }
 
 func (s *Server) newPending() (string, error) {

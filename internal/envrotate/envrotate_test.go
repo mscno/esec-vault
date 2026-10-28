@@ -57,7 +57,7 @@ func TestRotateReencryptsAllFormatsAndKeepsOldKey(t *testing.T) {
 	ignored := filepath.Join(repo, ".git", ".env.dev")
 	write(t, ignored, "ESEC_PUBLIC_KEY="+pub+"\nTOKEN=x\n")
 
-	res, err := Rotate(ks, "acme/store", "dev", repo)
+	res, err := Rotate(ks, "acme/store", "dev", repo, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestRotateAbortsWithoutChangesOnAmbiguousFile(t *testing.T) {
 	write(t, bad, "ESEC_PUBLIC_KEY="+pub+"\nCOPY="+pub+"\n")
 	before, _ := os.ReadFile(good) //nolint:gosec // test temp dir
 
-	if _, err := Rotate(ks, "acme/store", "dev", repo); err == nil {
+	if _, err := Rotate(ks, "acme/store", "dev", repo, Options{}); err == nil {
 		t.Fatal("ambiguous file accepted")
 	}
 	after, _ := os.ReadFile(good) //nolint:gosec // test temp dir
@@ -135,7 +135,7 @@ func TestRotateAbortsWithoutChangesOnAmbiguousFile(t *testing.T) {
 
 func TestRotateUnknownEnvironment(t *testing.T) {
 	ks, _, _ := setup(t)
-	if _, err := Rotate(ks, "acme/store", "prod", t.TempDir()); err == nil {
+	if _, err := Rotate(ks, "acme/store", "prod", t.TempDir(), Options{}); err == nil {
 		t.Fatal("missing environment accepted")
 	}
 }

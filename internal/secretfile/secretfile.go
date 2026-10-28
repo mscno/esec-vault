@@ -50,7 +50,7 @@ type File struct {
 	Format string `json:"format"`
 	// Env is the environment its name gives ("" for the default one).
 	Env string `json:"env"`
-	// Project is the project of the nearest .esec-project, Root the
+	// Project is the project of the nearest esec.toml, Root the
 	// directory it is in ("" when there is none).
 	Project string `json:"project,omitempty"`
 	Root    string `json:"root,omitempty"`

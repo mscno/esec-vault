@@ -37,12 +37,16 @@ type cli struct {
 	Logout LogoutCmd `cmd:"" group:"start" help:"End this machine's vault server session."`
 	Status StatusCmd `cmd:"" group:"start" help:"Show identity, vault and backup status."`
 	Doctor DoctorCmd `cmd:"" group:"start" help:"Diagnose setup problems (unmigrated keyrings, loose permissions)."`
+	Verify VerifyCmd `cmd:"" group:"start" help:"Check no key can be lost: every key your checkouts and their git history use is here and in a second place, and none serves two projects."`
 
-	Project ProjectCmd `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
-	Env     EnvCmd     `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate, and what picked a change up."`
-	Secrets SecretsCmd `cmd:"" group:"secrets" help:"Find, set and rotate values in secrets files; check them before a commit."`
-	Run     RunCmd     `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
-	Keyring KeyringCmd `cmd:"" group:"secrets" help:"Manage the global keyring store."`
+	Project  ProjectCmd  `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
+	Projects ProjectsCmd `cmd:"" group:"secrets" help:"Every project on this machine: where it is checked out, its environments, its keys here."`
+	Env      EnvCmd      `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate, and what picked a change up."`
+	Secrets  SecretsCmd  `cmd:"" group:"secrets" help:"Find, set and rotate values in secrets files; check them before a commit."`
+	Run      RunCmd      `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
+	Forward  ForwardCmd  `cmd:"" group:"secrets" help:"SSH to a machine that may then ask this one for guarded keys, each read after your touch here."`
+	Keyring  KeyringCmd  `cmd:"" group:"secrets" help:"Manage the global keyring store."`
+	Guard    GuardCmd    `cmd:"" group:"secrets" help:"Guard prod keys with your YubiKeys: every read needs your touch, which no agent can make."`
 
 	Access      TeamCmd        `cmd:"" name:"access" aliases:"team" group:"team" help:"Who reads which environments of a shared project: share it, grant, revoke, offboard."`
 	Group       GroupCmd       `cmd:"" group:"team" help:"Groups of people or machines that read the same environments (acme/backend, acme/production)."`
@@ -61,6 +65,7 @@ type cli struct {
 	Backup   BackupCmd   `cmd:"" group:"backup" help:"Seal all keyrings and your identity into the vault blob."`
 	Restore  RestoreCmd  `cmd:"" group:"backup" help:"Restore keyrings from the vault blob."`
 	Recover  RecoverCmd  `cmd:"" group:"backup" help:"Full cold recovery: phrase + backup -> identity -> keyrings."`
+	Drill    DrillCmd    `cmd:"" group:"backup" help:"Prove a cold recovery works: the newest backup opens with the phrase alone and holds every key."`
 	Remote   RemoteCmd   `cmd:"" group:"backup" help:"Manage cloud backup destinations."`
 	Identity IdentityCmd `cmd:"" group:"backup" help:"Manage your identity keypair (mnemonic-backed)."`
 

@@ -50,7 +50,7 @@ func readAppRepo(dir string) (*appRepo, error) {
 	}
 	project, marker, err := projectfile.FindProjectFile(abs)
 	if err != nil {
-		return nil, fmt.Errorf("no .esec-project in %s or above: run esec vault project init ORG/REPO", abs)
+		return nil, fmt.Errorf("no esec.toml in %s or above: run esec vault project init ORG/REPO", abs)
 	}
 	r := &appRepo{Dir: filepath.Dir(marker), Project: project}
 	if r.Files, err = secretfile.Scan(r.Dir); err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/service"
 	"github.com/mscno/esec-vault/internal/vaultfile"
+	"github.com/mscno/esec-vault/internal/verify"
 	"github.com/mscno/esec/pkg/projectfile"
 )
 
@@ -172,6 +173,7 @@ func (c *DoctorCmd) Run(ctx *cliCtx) error {
 	}
 	issues = append(issues, permissionIssues()...)
 	issues = append(issues, daemonVersionIssues(ctx)...)
+	issues = append(issues, keySafetyIssues()...)
 	dirs := c.Dirs
 	if len(dirs) == 0 {
 		dirs = []string{"."}
@@ -189,6 +191,38 @@ func (c *DoctorCmd) Run(ctx *cliCtx) error {
 	// The findings above are the report; the message only prevents a silent
 	// exit for anyone invoking this programmatically.
 	return &exitCodeError{code: 1, msg: fmt.Sprintf("%d problem(s) found", len(issues))}
+}
+
+// keySafetyIssues reports what verify and the guard last found: keys in one
+// place, lost or shared between projects, a drill long ago, and guarded keys
+// still in the clear on this device.
+func keySafetyIssues() []string {
+	var out []string
+	last, err := verify.LoadLast()
+	switch {
+	case err != nil:
+		out = append(out, "last key check unreadable: "+err.Error())
+	case last.At.IsZero():
+		out = append(out, "keys never checked: esec vault verify --root ~/src")
+	case time.Since(last.At) > 7*24*time.Hour:
+		out = append(out, fmt.Sprintf("keys last checked %s ago: esec vault verify", time.Since(last.At).Round(time.Hour)))
+	case last.Report != nil && !last.Report.OK():
+		out = append(out, fmt.Sprintf("%d key(s) need attention (%d lost): esec vault verify", last.Report.Problems, last.Report.Lost))
+	}
+	if last != nil && !last.At.IsZero() && (last.Drill.IsZero() || time.Since(last.Drill) > 180*24*time.Hour) {
+		out = append(out, "no recovery drill in six months: esec vault drill")
+	}
+	if st, err := readGuardStatus(); err == nil {
+		for _, p := range st.Projects {
+			if len(p.Clear) > 0 {
+				out = append(out, fmt.Sprintf("%s: %d guarded key(s) still in the clear here: esec vault guard enable --project %s", p.Project, len(p.Clear), p.Project))
+			}
+		}
+		if st.SetUp && len(st.Holders) < 2 {
+			out = append(out, "the guard has one holder: add a spare YubiKey (esec vault guard holders add)")
+		}
+	}
+	return out
 }
 
 // daemonVersionIssues reports a managed daemon that is not running this build.

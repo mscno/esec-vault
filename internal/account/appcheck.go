@@ -73,7 +73,7 @@ func (a *Account) CheckApp(ctx context.Context, in AppCheckInput) ([]Check, erro
 			case slices.Contains(e.Retired, pub):
 				add("secrets file", CheckFail, file+" is encrypted to an earlier "+in.Env+" key, which deployments no longer get", "esec vault env rotate "+in.Env+" (re-encrypts it), or re-encrypt it with the current key")
 			default:
-				add("secrets file", CheckFail, file+" is encrypted to a key that is not "+in.Project+"'s "+in.Env+" key", "check .esec-project and the file name; esec vault access show")
+				add("secrets file", CheckFail, file+" is encrypted to a key that is not "+in.Project+"'s "+in.Env+" key", "check esec.toml and the file name; esec vault access show")
 			}
 		}
 		if exposed := len(e.Exposed); exposed > 0 {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mscno/esec-vault/internal/broker"
+	"github.com/mscno/esec-vault/internal/caller"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
@@ -82,13 +83,16 @@ type Server struct {
 	Interval time.Duration
 	mu       sync.Mutex
 	// dialogs asks whether to sign changes made on the web pages.
-	dialogs    changeDialogs
-	jobs       map[string]Job
-	sequence   uint64
-	queue      chan queued
-	wake       chan struct{}
-	cancel     context.CancelFunc
-	boot       string
+	dialogs  changeDialogs
+	jobs     map[string]Job
+	sequence uint64
+	queue    chan queued
+	wake     chan struct{}
+	cancel   context.CancelFunc
+	boot     string
+	// Forward is the broker for forwarded requests from other machines.
+	Forward    *broker.Server
+	guard      *guarder
 	watchReady chan struct{}
 	// serverWake asks the vault-server loop to sync now.
 	serverWake chan struct{}
@@ -107,6 +111,8 @@ type Server struct {
 	teamSeen map[string]time.Time
 }
 
+func describePID(pid uint32) string { return caller.Describe(caller.Chain(int(pid))) }
+
 // New constructs a locked daemon. Tests inject an in-memory keyring.
 func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	if err := paths.EnsureHome(); err != nil {
@@ -123,6 +129,11 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	b := broker.NewServer(nil, p, audit, logger)
 	b.ControlOnlyApproval = true
 	b.Lock()
+	g := newGuarder(keystore.New(), b.Session)
+	b.Guard, b.Chain = g, describePID
+	fwd := broker.NewServer(nil, p, audit, logger)
+	fwd.ControlOnlyApproval, fwd.Forwarded = true, true
+	fwd.Guard, fwd.Chain = g, describePID
 	cfg, err := remote.Load()
 	if err != nil {
 		return nil, err
@@ -131,7 +142,7 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	if interval <= 0 {
 		return nil, fmt.Errorf("daemon requires a positive policy.interval")
 	}
-	return &Server{Keyring: kr, Logger: logger, Broker: b, UID: uint32(os.Getuid()), Interval: interval, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{}), serverWake: make(chan struct{}, 1)}, nil //nolint:gosec // supported platforms have a nonnegative uid
+	return &Server{Keyring: kr, Logger: logger, Broker: b, Forward: fwd, guard: g, UID: uint32(os.Getuid()), Interval: interval, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{}), serverWake: make(chan struct{}, 1)}, nil //nolint:gosec // supported platforms have a nonnegative uid
 }
 
 // Serve runs both endpoints and the scheduler until cancellation. The OS user
@@ -158,8 +169,18 @@ func (s *Server) Serve(parent context.Context) error {
 	<-s.watchReady
 	workers.Go(func() { s.work(ctx) })
 	workers.Go(func() { s.serverLoop(ctx) })
+	workers.Go(func() { s.verifyLoop(ctx) })
 	brokerDone := make(chan error, 1)
 	workers.Go(func() { brokerDone <- s.Broker.Serve(ctx, paths.SocketPath()); cancel() })
+	if s.Forward != nil && ManagedSocket() {
+		// Other machines reach it only through an SSH forward the person
+		// sets up (esec vault forward); it serves guarded keys alone.
+		workers.Go(func() {
+			if err := s.Forward.Serve(ctx, paths.ForwardSocket()); err != nil {
+				s.Logger.Warn("forward socket", "error", err)
+			}
+		})
+	}
 	workers.Go(func() { <-ctx.Done(); ln.Close() })
 	var clients sync.WaitGroup
 	defer func() { cancel(); ln.Close(); s.Broker.Lock(); clients.Wait(); workers.Wait() }()
@@ -242,6 +263,7 @@ func (s *Server) dispatch(ctx context.Context, uid, pid uint32, r Request) Respo
 		return Response{OK: true, PID: os.Getpid(), Unlocked: unlocked, Expires: expires, Version: BuildVersion}
 	case "lock":
 		s.Broker.Lock()
+		s.guard.clear()
 		return Response{OK: true}
 	case "shutdown":
 		if s.cancel != nil {

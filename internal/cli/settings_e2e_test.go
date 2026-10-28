@@ -91,7 +91,7 @@ func TestSettingsEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential sto
 	owner.run("", "access", "archive", "--undo", p)
 
 	// --- Move it to a new id; alice's device follows without asking. ---
-	if out := owner.run("", "access", "move", "acme/shop", "--yes", p); !strings.Contains(out, "Moved acme/store to acme/shop, with 1 member(s)") || !strings.Contains(out, "ESEC_PROJECT=acme/shop") {
+	if out := owner.run("", "access", "move", "acme/shop", "--yes", p); !strings.Contains(out, "Moved acme/store to acme/shop, with 1 member(s)") || !strings.Contains(out, `project = "acme/shop"`) {
 		t.Fatalf("access move:\n%s", out)
 	}
 	if out := alice.run("", "access", "sync"); !strings.Contains(out, "+ acme/shop dev") {

@@ -54,7 +54,13 @@ func (c *Client) Ping() error {
 // the resulting environment map. Callers waiting on approvals should set a
 // generous Timeout.
 func (c *Client) GetSecrets(project, env, path, format string) (map[string]string, error) {
-	resp, err := c.Call(&Request{Op: OpGetSecrets, Project: project, Env: env, Path: path, Format: format})
+	return c.GetSecretsRequest(&Request{Op: OpGetSecrets, Project: project, Env: env, Path: path, Format: format})
+}
+
+// GetSecretsRequest is GetSecrets with a whole request: a session label, or
+// the file itself for a forwarded broker.
+func (c *Client) GetSecretsRequest(req *Request) (map[string]string, error) {
+	resp, err := c.Call(req)
 	if err != nil {
 		return nil, err
 	}

@@ -26,7 +26,7 @@ var commandDetails = map[string]string{
 		"esec vault status",
 		"esec vault status --json          # for scripts and agents",
 	),
-	"project init": `Writes .esec-project, creates a key per environment in your global keyring, and secrets files encrypted to them. Commit the project file and the secrets files; the keys never enter the repository.
+	"project init": `Writes esec.toml, creates a key per environment in your global keyring, and secrets files encrypted to them. Commit the project file and the secrets files; the keys never enter the repository.
 
 ` + examples(
 		"esec vault project init acme/api                    # .env.dev with a dev key",
@@ -104,7 +104,7 @@ var commandDetails = map[string]string{
 		"esec vault env status prod --since 30m --json",
 		"esec vault env status prod --project acme/api --since 2026-10-25T10:00:00Z",
 	),
-	"env rotate-exposed": `Finds the checkouts under --root by their .esec-project, and rotates each environment someone who lost access may still hold, re-encrypting its files and sending the new key to everyone who reads it. Then commit and deploy each.
+	"env rotate-exposed": `Finds the checkouts under --root by their esec.toml, and rotates each environment someone who lost access may still hold, re-encrypting its files and sending the new key to everyone who reads it. Then commit and deploy each.
 
 ` + examples(
 		"esec vault env rotate-exposed --root ~/src --dry-run",
@@ -257,7 +257,7 @@ var commandDetails = map[string]string{
 		"esec vault access handover alice",
 		"esec vault access handover alice --step-down     # then you are a member who reads everything",
 	),
-	"access move": `Renames a project: a new chain under the new id, with the same environment keys (the encrypted files stay as they are) and people, who get the keys again; the old project is archived, naming the new one, and members' devices follow it. Groups you administer move too; machines, and other admins' groups, are listed to add again. Then set ESEC_PROJECT in the repository's .esec-project.
+	"access move": `Renames a project: a new chain under the new id, with the same environment keys (the encrypted files stay as they are) and people, who get the keys again; the old project is archived, naming the new one, and members' devices follow it. Groups you administer move too; machines, and other admins' groups, are listed to add again. Then set project in the repository's esec.toml (esec vault project init NEW --force does it).
 
 ` + examples(
 		"esec vault access move acme/shop",
@@ -400,6 +400,78 @@ var commandDetails = map[string]string{
 ` + examples(
 		"esec vault recover",
 		"esec vault recover --file vault-backup.esec",
+	),
+	"guard": `The guard keeps environment keys that open only after you allow it in a dialog and touch your security key. It is one age identity wrapped to your YubiKeys (age-plugin-yubikey) and to the recovery key your phrase derives; guarded keys are wrapped to it and sync and back up as ciphertext.
+
+` + examples(
+		"esec vault guard                           # holders, guarded keys, any still in the clear here",
+		"esec vault guard --json",
+	),
+	"guard init": `Use YubiKey slots with touch policy always: a cached touch also lets other programs in for 15 seconds. Without --holder, every YubiKey age-plugin-yubikey lists holds the guard. The recovery key is added unless --no-recovery, so losing every YubiKey does not lose the guarded keys.
+
+` + examples(
+		"age-plugin-yubikey --generate --touch-policy always --pin-policy once   # on each YubiKey",
+		"esec vault guard init",
+		"esec vault guard init --holder age1yubikey1…,age1yubikey1…",
+	),
+	"guard enable": `Wraps the environment's key to the guard and removes its clear copy from this device's keyring; esec.toml records the guard. Reads then go through esec vault run, which asks and waits for a touch. Older backups still hold the key in software form: rotate it once for full protection.
+
+` + examples(
+		"esec vault guard enable --env prod                  # every read needs a touch",
+		"esec vault guard enable --env staging --level session",
+		"esec vault guard enable --env prod --retired        # also old keys, which open git history",
+		"esec vault guard enable --project acme/api          # on another device: drop the clear copies",
+	),
+	"guard check": examples(
+		"esec vault guard check            # one touch; nothing is read out",
+	),
+	"guard export": `Everything written is ciphertext. With it, rage and age-plugin-yubikey open the keys without esec: rage -d -j yubikey -o guard.key guard.age, then rage -d -i guard.key FILE.age.
+
+` + examples(
+		"esec vault guard export --out ~/esec-age",
+	),
+	"guard holders add": examples(
+		"esec vault guard holders add age1yubikey1…     # the spare YubiKey",
+	),
+	"guard holders remove": examples(
+		"esec vault guard holders remove age1yubikey1…  # a lost one; rotate guarded keys if its PIN may be known",
+	),
+	"projects": `Like a git client's list of repositories: each project's global id (acme/store) and where it is checked out on this machine. Commands that find an esec.toml remember its checkout by themselves.
+
+` + examples(
+		"esec vault projects",
+		"esec vault projects --json        # for scripts, agents and the Mac app",
+		"esec vault projects show acme/store",
+		"esec vault projects scan ~/src",
+	),
+	"verify": `Reads every secrets file in every checkout this machine knows, and in their git history, and checks each key: on this device, held in a second place (the vault server, the newest backup), held somewhere at all, and used by one project only. The background service runs it daily.
+
+` + examples(
+		"esec vault verify",
+		"esec vault verify --root ~/src     # also find checkouts there",
+		"esec vault verify --last --json    # the last check, without checking",
+		"esec vault verify --no-history --no-backup",
+	),
+	"drill": `Downloads the newest backup and opens it in memory with the recovery phrase alone, as a new machine would; checks it holds every key your checkouts use, and that the recovery key opens the guard and every guarded key. Nothing is written.
+
+` + examples(
+		"esec vault drill",
+		"esec vault drill --remote usb",
+	),
+	"forward": `Like ssh -A for an SSH agent: the remote machine may ask this one for guarded keys while the session lasts. Each read shows a dialog here naming the machine and waits for your touch; only that run's values go back. Unguarded keys are not served: give the machine its own (esec vault group token).
+
+` + examples(
+		"esec vault forward devbox.example.com",
+		"esec vault forward me@devbox -o Port=2222",
+	),
+	"secrets request": `For agents: the value is pasted by a person in a desktop dialog and encrypted into the file. The program that asked never sees it.
+
+` + examples(
+		"esec vault secrets request STRIPE_KEY --env prod --reason \"new checkout flow\"",
+		"esec vault secrets request DATABASE_URL --env staging --create",
+	),
+	"keyring repair": examples(
+		"esec vault keyring repair         # file older keys under their public key",
 	),
 }
 

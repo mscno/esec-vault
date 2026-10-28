@@ -10,6 +10,7 @@ package envrotate
 
 import (
 	"bytes"
+
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,10 +21,13 @@ import (
 	"sort"
 	"strings"
 
+	"filippo.io/age"
+
 	"github.com/mscno/esec"
 	"github.com/mscno/esec/pkg/crypto"
 	"github.com/mscno/esec/pkg/fileutils"
 
+	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/keystore"
 )
 
@@ -38,6 +42,8 @@ type Result struct {
 	OldPublic string
 	NewPublic string
 	Files     []string
+	// Guarded is set when the environment's keys are guarded.
+	Guarded bool
 }
 
 // EnvKey returns the keyring entry name of an environment.
@@ -94,16 +100,49 @@ type staged struct {
 	tmp  string
 }
 
+// ErrGuarded is returned when the environment is guarded and Options has
+// no opened guard.
+var ErrGuarded = errors.New("the environment is guarded: its key opens only with a touch")
+
+// Guard wraps and unwraps guarded keys with an opened guard identity.
+type Guard struct {
+	ID *age.X25519Identity
+}
+
+// Options are the optional parts of a rotation.
+type Options struct {
+	// Guard opens a guarded environment's key and guards the new one.
+	Guard *Guard
+	// Store puts the new key in a second place (the vault server, a
+	// backup) before any file is encrypted to it. When it fails the
+	// rotation is undone: the environment points at its old key again and
+	// no file changes; the new key stays filed.
+	Store func() error
+}
+
 // Rotate rotates env of project, re-encrypting matching files under root.
-func Rotate(ks *keystore.Store, project, env, root string) (*Result, error) {
+func Rotate(ks *keystore.Store, project, env, root string, opt Options) (*Result, error) { //nolint:gocyclo // staged: old key, files, keyring, store, rename
 	entries, err := ks.Read(project)
 	if err != nil {
 		return nil, err
 	}
 	name := EnvKey(env)
 	oldPriv, ok := entries[name]
+	guarded := false
+	level := ""
 	if !ok {
-		return nil, fmt.Errorf("environment %s has no stored key in project %s", env, project)
+		pub := entries[keystore.GuardEnvEntry(env)]
+		if pub == "" {
+			return nil, fmt.Errorf("environment %s has no stored key in project %s", env, project)
+		}
+		if opt.Guard == nil {
+			return nil, ErrGuarded
+		}
+		k, err := guard.Unwrap(opt.Guard.ID, entries[keystore.GuardEntry(pub)], pub, keystore.PublicHex)
+		if err != nil {
+			return nil, err
+		}
+		oldPriv, guarded, level = k.Private, true, k.Level
 	}
 	oldKey, err := parsePriv(oldPriv)
 	if err != nil {
@@ -136,12 +175,38 @@ func Rotate(ks *keystore.Store, project, env, root string) (*Result, error) {
 		}
 		stagedFiles = append(stagedFiles, staged{path: f, tmp: tmp})
 	}
-	entries[name] = newPrivHex
-	entries[pubKeyEntry(newPubHex)] = newPrivHex
-	entries[pubKeyEntry(oldPubHex)] = oldPriv
+	point := func(pub, priv string) {
+		if guarded {
+			entries[keystore.GuardEnvEntry(env)] = pub
+		} else {
+			entries[name] = priv
+		}
+	}
+	if guarded {
+		wrapped, err := guard.Wrap(opt.Guard.ID.Recipient(), guard.Key{Project: project, Env: env, Level: level, Private: newPrivHex})
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		entries[keystore.GuardEntry(newPubHex)] = wrapped
+	} else {
+		entries[pubKeyEntry(newPubHex)] = newPrivHex
+		entries[pubKeyEntry(oldPubHex)] = oldPriv
+	}
+	point(newPubHex, newPrivHex)
 	if err := ks.Write(project, entries, true); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("update keyring: %w (nothing was changed)", err)
+	}
+	if opt.Store != nil {
+		if err := opt.Store(); err != nil {
+			cleanup()
+			point(oldPubHex, oldPriv)
+			if werr := ks.Write(project, entries, true); werr != nil {
+				return nil, fmt.Errorf("the new key could not be stored elsewhere (%w), and pointing %s back at its old key failed: %w", err, env, werr)
+			}
+			return nil, fmt.Errorf("the new key could not be stored elsewhere, so no file was re-encrypted and %s still uses its old key: %w", env, err)
+		}
 	}
 	var errs []error
 	for _, s := range stagedFiles {
@@ -149,7 +214,7 @@ func Rotate(ks *keystore.Store, project, env, root string) (*Result, error) {
 			errs = append(errs, fmt.Errorf("%s: %w (the keyring keeps both keys, so the file still decrypts)", s.path, err))
 		}
 	}
-	return &Result{OldPublic: oldPubHex, NewPublic: newPubHex, Files: files}, errors.Join(errs...)
+	return &Result{OldPublic: oldPubHex, NewPublic: newPubHex, Files: files, Guarded: guarded}, errors.Join(errs...)
 }
 
 var hexKey = regexp.MustCompile(`(?i)[0-9a-f]{64}`)

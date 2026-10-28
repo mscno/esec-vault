@@ -26,7 +26,7 @@ type AccessGrantCmd struct {
 	Admin          bool     `help:"Make the person an admin: they read every environment and manage the project"`
 	AccountKey     string   `help:"A new person's account key words, read to you over another channel, instead of their GitHub SSH proof"`
 	For            string   `name:"for" help:"Take the --env environments away again after this long, such as 8h or 3d (the server signs or proposes the removal)"`
-	Project        string   `help:"Project id (default: nearest .esec-project); several, comma-separated, or a pattern of the projects you administer, such as 'acme/*'"`
+	Project        string   `help:"Project id (default: nearest esec.toml); several, comma-separated, or a pattern of the projects you administer, such as 'acme/*'"`
 	SkipMissingEnv bool     `name:"skip-missing-env" help:"With several projects: skip the --env environments a project does not have"`
 	JSON           bool     `help:"Print JSON, for scripts and agents (a list, with several projects)"`
 }
@@ -36,7 +36,7 @@ type AccessRevokeCmd struct {
 	Who     string   `arg:"" help:"A GitHub login, or a group such as acme/backend"`
 	Env     []string `name:"env" sep:"," help:"Environments to take away (default: all of them: the person or group leaves the project)"`
 	Reason  string   `help:"Reason recorded in the project chain"`
-	Project string   `help:"Project id (default: nearest .esec-project); several, comma-separated, or a pattern of the projects you administer, such as 'acme/*'"`
+	Project string   `help:"Project id (default: nearest esec.toml); several, comma-separated, or a pattern of the projects you administer, such as 'acme/*'"`
 	Yes     bool     `help:"Do not ask for confirmation"`
 	JSON    bool     `help:"Print JSON, for scripts and agents (a list, with several projects)"`
 }
@@ -639,7 +639,7 @@ func printOffboard(out *offboardResult) {
 type AccessRequestCmd struct {
 	Env     []string `name:"env" sep:"," required:"" help:"Environments you need"`
 	Reason  string   `help:"Why, for the admins"`
-	Project string   `help:"Project id (default: nearest .esec-project)"`
+	Project string   `help:"Project id (default: nearest esec.toml)"`
 	JSON    bool     `help:"Print JSON, for scripts and agents"`
 }
 
@@ -774,7 +774,7 @@ func (c *AccessRequestsCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // list, o
 
 // AccessArchiveCmd archives a project.
 type AccessArchiveCmd struct {
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	Reason  string `help:"Reason recorded in the project chain"`
 	Undo    bool   `help:"Unarchive it instead"`
 }
@@ -807,7 +807,7 @@ func (c *AccessArchiveCmd) Run(ctx *cliCtx) error {
 
 // AccessDeleteCmd deletes an archived project from the server.
 type AccessDeleteCmd struct {
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	Yes     bool   `help:"Do not ask for confirmation"`
 }
 
@@ -836,7 +836,7 @@ func (c *AccessDeleteCmd) Run(ctx *cliCtx) error {
 // AccessMoveCmd moves a project to a new id.
 type AccessMoveCmd struct {
 	To      string `arg:"" help:"New project id, org/repo"`
-	Project string `help:"Project id (default: nearest .esec-project)"`
+	Project string `help:"Project id (default: nearest esec.toml)"`
 	Yes     bool   `help:"Do not ask for confirmation"`
 }
 
@@ -873,7 +873,7 @@ func (c *AccessMoveCmd) Run(ctx *cliCtx) error {
 type AccessHandoverCmd struct {
 	Login    string `arg:"" help:"GitHub login of the member who becomes an admin"`
 	StepDown bool   `name:"step-down" help:"Then make yourself a member who reads every environment"`
-	Project  string `help:"Project id (default: nearest .esec-project)"`
+	Project  string `help:"Project id (default: nearest esec.toml)"`
 }
 
 // Run implements access handover.

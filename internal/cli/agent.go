@@ -187,6 +187,9 @@ type RunCmd struct {
 	Env     string   `arg:"" help:"Environment to decrypt (e.g. dev)"`
 	Format  string   `help:"File format (e.g. .ejson); default: auto-detect" short:"f" env:"ESEC_FORMAT"`
 	Sock    string   `help:"Broker socket path" default:"" env:"ESEC_VAULT_SOCK"`
+	Mask    bool     `help:"Replace the secrets' values with *** in the command's output, so logs and agents never see them" env:"ESEC_VAULT_MASK"`
+	Session string   `help:"Label this request for the audit log and the dialog, such as the agent's name" env:"ESEC_VAULT_SESSION"`
+	Forward string   `help:"Socket of a forwarded broker on another machine (set by esec vault forward)" env:"ESEC_VAULT_FORWARD"`
 	Command []string `arg:"" optional:"" name:"command" help:"Command to run"`
 }
 
@@ -196,7 +199,12 @@ func (c *RunCmd) Run(ctx *cliCtx) error {
 	if sock == "" {
 		sock = paths.SocketPath()
 	}
-	err := runcmd.Run(broker.NewClient(sock), c.Env, c.Format, c.Command)
+	opts := runcmd.Options{Mask: c.Mask, Session: c.Session}
+	if c.Forward != "" {
+		sock, opts.Forwarded = c.Forward, true
+		opts.Host, _ = os.Hostname()
+	}
+	err := runcmd.Run(broker.NewClient(sock), c.Env, c.Format, c.Command, opts)
 	var ee *runcmd.ExitError
 	if errors.As(err, &ee) {
 		// The child already wrote its own stderr; forward only the code.

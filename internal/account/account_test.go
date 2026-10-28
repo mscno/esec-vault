@@ -199,17 +199,26 @@ func TestThreeWayMerge(t *testing.T) {
 	}
 	// Both sides change DEV: a non-interactive sync reports a conflict and
 	// pushes nothing.
-	if err := ks.Write("acme/store", map[string]string{"ESEC_PRIVATE_KEY_DEV": strings.Repeat("aa", 32)}, true); err != nil {
+	cur, err := ks.Read("acme/store")
+	if err != nil {
 		t.Fatal(err)
 	}
-	push(3, 3, map[string]map[string]string{"acme/store": {"ESEC_PRIVATE_KEY_DEV": strings.Repeat("bb", 32)}})
-	_, err := a.Sync(ctx, account.SyncOptions{})
+	cur["ESEC_PRIVATE_KEY_DEV"] = strings.Repeat("aa", 32)
+	if err := ks.Write("acme/store", cur, true); err != nil {
+		t.Fatal(err)
+	}
+	// Taking the change in filed the new key under its public key too, and
+	// that sync pushed it: the next version is after that one.
+	var latest uint64
+	_ = h.DB.SQL().QueryRow(`SELECT MAX(version) FROM vault_versions WHERE user_id = ?`, a.State.User).Scan(&latest)
+	push(latest+1, latest+1, map[string]map[string]string{"acme/store": {"ESEC_PRIVATE_KEY_DEV": strings.Repeat("bb", 32)}})
+	_, err = a.Sync(ctx, account.SyncOptions{})
 	if !errors.Is(err, account.ErrConflicts) {
 		t.Fatalf("conflict not reported: %v", err)
 	}
-	var n int
+	var n uint64
 	_ = h.DB.SQL().QueryRow(`SELECT COUNT(*) FROM vault_versions WHERE user_id = ?`, a.State.User).Scan(&n)
-	if n != 3 {
+	if n != latest+1 {
 		t.Fatalf("a conflicting sync pushed a version (%d versions)", n)
 	}
 }
