@@ -297,8 +297,8 @@ esec vault secrets rotate DATABASE_URL --env prod --root ~/src   # one new value
 esec vault env status prod --since 15m                       # which deployments still run the old one
 ```
 
-Revoke the old value only when every deployment shows ✓. `esec vault
-secrets lint` in a pre-commit hook stops values committed in the clear.
+Revoke the old value only when every deployment shows ✓. `esec vault hook
+install` adds a pre-commit hook that stops values committed in the clear.
 
 ### Add a new app, safely
 
@@ -346,7 +346,7 @@ esec vault changes --list          # look at web changes without signing them
 esec vault access revoke alice --yes   # commands that ask take --yes (or --force)
 ```
 
-`--json` works on `status`, `access list`, `access show`, `access grant`,
+`--json` works on `setup --check`, `project init`, `status`, `access list`, `access show`, `access grant`,
 `access revoke`, `access offboard`, `group list`,
 `group show`, `machine list`, `machine whoami`, `devices list`, `env list`,
 `keyring list`, `delegate list`, `changes`, `projects`, `projects show`,
@@ -421,15 +421,29 @@ Set up your personal identity once. Use it for all your projects.
 Your personal identity opens vault backups and shares sent to you.
 Project environment keys encrypt and decrypt the files in your projects.
 
-For a new vault, run guided setup:
+On every machine, your first or your fifth, run:
 
 ```sh
-esec vault setup
+esec vault setup                                      # does what it can, says what is left
+esec vault setup --server https://vault.example.com   # a machine joining your account
+esec vault setup --check                              # only report; --json for scripts and agents
 ```
 
-Setup can create an identity, configure a remote, and install the daemon.
-Write down the generated 24-word recovery phrase. Confirm the phrase when asked.
-You can also set a recovery passphrase.
+It goes through each step and skips what is done, so run it again any time:
+
+| Step | What it does |
+|---|---|
+| identity | signs in to your vault server (a machine joining your account), recovers from a backup and your phrase, or creates your first; never a second one unasked, which would split your keys |
+| vault server | syncs your keys |
+| second place | offers a backup destination when keys would be on this machine only |
+| background service | installs it, or upgrades an old one |
+| checkouts | finds your projects in `~/src`, `~/code`, `~/projects`, `~/dev`, `~/Developer`, `~/work`, `~/repos` (or `--root`) |
+| keys here | lists environments of your checkouts whose key is not here |
+| guard | guards here the keys you guard elsewhere (a touch each); suggests a spare YubiKey |
+| keys safe | runs `verify`, and reminds you of a recovery drill |
+
+On your first machine, write down the 24-word recovery phrase and confirm it
+when asked. You can also set a recovery passphrase.
 
 For an existing vault, check its state first:
 
@@ -1720,8 +1734,13 @@ In an agent's shell:
   that it was set.
 - Changes to access an agent makes on the web wait for your device to
   sign them (`esec vault changes`).
-- CI should run `esec vault secrets lint`, since a pre-commit hook can be
-  skipped.
+- `esec vault hook install` refuses commits with a value in the clear, a
+  plain `.env.prod` for a declared environment, or a file encrypted to
+  another key than esec.toml names; it checks what is staged and needs no
+  network (`secrets lint --staged --offline`). CI should still run `esec
+  vault secrets lint`, since a hook can be skipped.
+- `esec vault project init --json` says what it set up (environments, keys,
+  files created, next steps) and is safe to run again.
 
 ## Every project on this machine
 

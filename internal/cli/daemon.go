@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/mscno/esec-vault/internal/daemon"
-	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/service"
 )
@@ -364,37 +363,6 @@ func (c *DaemonLogsCmd) Run(app *cliCtx) error {
 		lines = lines[len(lines)-c.Lines:]
 	}
 	fmt.Println(strings.Join(lines, "\n"))
-	return nil
-}
-
-// SetupCmd guides identity, destination and managed-service setup.
-type SetupCmd struct {
-	NoDaemon bool `help:"Skip managed service installation"`
-}
-
-// Run preserves existing identity and settings while filling missing setup steps.
-func (c *SetupCmd) Run(app *cliCtx) error {
-	if _, err := identity.Load(app.Keyring); errors.Is(err, identity.ErrNotFound) {
-		if err := (&InitCmd{}).Run(app); err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
-	}
-	if confirm("Configure a backup destination?") {
-		if err := (&RemoteAddCmd{Prefix: "personal/v2"}).Run(app); err != nil {
-			return err
-		}
-		if err := (&RemoteTestCmd{}).Run(app); err != nil {
-			return err
-		}
-		if err := (&BackupCmd{Verify: true, Push: true}).Run(app); err != nil {
-			return err
-		}
-	}
-	if !c.NoDaemon && confirm("Install and start the per-user background service?") {
-		return (&DaemonInstallCmd{Start: true}).Run(app)
-	}
 	return nil
 }
 

@@ -49,8 +49,17 @@ touch of your YubiKey opens, so agents can work beside them.
 - **`projects`** says what to fix per environment (`action` in JSON);
   `project init` can be run again safely and prints next steps;
   `guard holders add` with no argument adds every plugged-in YubiKey.
+- **`esec vault setup`** onboards a machine in one go: joins your account
+  (or recovers from a backup, or creates your first identity, never a
+  second one unasked), syncs keys, a second place, the background service,
+  your checkouts, guards here what you guard elsewhere, and verifies.
+  `--check` only reports; `--json` for scripts and the Mac app.
+- **`esec vault hook install`**: a pre-commit hook running `secrets lint
+  --staged --offline`, which checks what a commit holds (including a plain
+  secrets file for a declared environment) without the network.
+- **`project init --json`**: what was set up, and next steps.
 - **Mac app** (`macos/EsecVault`): a menu bar app and window over the
-  above: a setup checklist, activity, projects with actions (new project,
+  above: a setup checklist (from `setup --check`), activity, projects with actions (new project,
   add environment, rotate, guard), live updates, open at login. Metadata
   only, never values.
 
@@ -60,7 +69,8 @@ command already held the keyring lock); a monorepo's subprojects were
 reported as sharing keys; keys of other people's projects were reported as
 lost; `verify` read every object of every repository once per worktree;
 `env rotate-exposed` left esec.toml naming the old key and skipped projects
-with worktrees.
+with worktrees; `guard enable` left a clear copy of a key another device had
+guarded already; test rigs could reach the real keychain.
 
 # v0.21.0
 

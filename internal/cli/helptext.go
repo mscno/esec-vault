@@ -10,9 +10,25 @@ import (
 // --help" shows below a command's one-line help, by command path. Kept
 // apart from the commands so they read as one place to look things up.
 var commandDetails = map[string]string{
-	"setup": examples(
-		"esec vault setup                  # identity, recovery phrase, backup destination, background service",
-		"esec vault setup --no-daemon      # without the background service",
+	"setup": `Sets this machine up, or says what is left. Each step is skipped when done, so run it again any time:
+
+  identity            sign in to your vault server (a machine joining your account), recover from a backup, or create your first
+  vault server        sync your keys
+  second place        a backup destination when keys would be on this machine only
+  background service  install or upgrade it
+  checkouts           find your projects in ~/src, ~/code, ~/projects… (or --root)
+  keys here           environments of your checkouts whose key is not here
+  guard               keys you guard elsewhere are guarded here too (a touch each); a spare YubiKey
+  keys safe           verify, and when you last drilled a recovery
+
+It never creates a second identity unasked: that would split your keys.
+
+` + examples(
+		"esec vault setup                                      # a new machine, in one go",
+		"esec vault setup --server https://vault.example.com   # a machine joining your account",
+		"esec vault setup --check                              # what is left, changing nothing",
+		"esec vault setup --check --json                       # for scripts, agents and the Mac app",
+		"esec vault setup --root ~/work --no-daemon",
 	),
 	"login": `Signs in with GitHub in the browser. A new device then waits for one of your devices to approve it (esec vault devices approve), or unlocks itself with --recover or --ssh-agent.
 
@@ -31,6 +47,8 @@ var commandDetails = map[string]string{
 ` + examples(
 		"esec vault project init acme/api                    # .env.dev with a dev key",
 		"esec vault project init acme/api --env dev,prod -f ejson",
+		"esec vault project init acme/api --env dev,prod --guard prod   # prod born behind your YubiKey",
+		"esec vault project init --json                                 # what was set up, for agents (safe to run again)",
 	),
 	"env add": `Prints the key's public half (ESEC_PUBLIC_KEY=...) for the new secrets file. In a shared project it also becomes the project's key, sent to those who read it.
 
@@ -86,16 +104,22 @@ var commandDetails = map[string]string{
 		"esec vault secrets rotate DATABASE_URL --env prod --root ~/src",
 		"esec vault secrets rotate SESSION_SECRET --env prod --generate 32 --yes",
 	),
-	"secrets lint": `Fails on a value in the clear (pasted in after encrypting), and on a file encrypted to a key that is not its environment's current one. Run it before each commit, with lefthook:
-
-    pre-commit:
-      commands:
-        secrets:
-          run: esec vault secrets lint
+	"secrets lint": `Fails on a value in the clear (pasted in after encrypting), on a file encrypted to another key than esec.toml names, and, signed in, to a key that is not its environment's current one. --staged checks what the next commit holds, including a secrets file with no key at all; esec vault hook install runs that before each commit.
 
 ` + examples(
 		"esec vault secrets lint",
+		"esec vault secrets lint --staged --offline   # what the pre-commit hook runs",
 		"esec vault secrets lint --root ~/src --json",
+	),
+	"hook install": `Installs a git pre-commit hook that runs esec vault secrets lint --staged --offline: a commit with a secret in the clear, or a secrets file encrypted to another key than esec.toml names, is refused. It needs no network. Machines without esec vault installed skip the check with a note.
+
+` + examples(
+		"esec vault hook install",
+		"esec vault hook install --append   # add it to a hook another tool installed",
+		"esec vault hook install --print    # the lines, and lefthook / pre-commit snippets",
+	),
+	"hook uninstall": examples(
+		"esec vault hook uninstall",
 	),
 	"env status": `Deployments fetch their keys when they start, so one that has not started since a change still runs with what it had. --since counts from when you changed a value (a commit, a deploy); by default from when the environment's key last changed.
 

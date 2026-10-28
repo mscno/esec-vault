@@ -37,7 +37,9 @@ func newGuardRig(t *testing.T) *guardRig {
 	}
 	r := &guardRig{t: t, bin: buildCLI(t), home: home, env: append(os.Environ(),
 		"ESEC_VAULT_HOME="+home, "ESEC_KEYRING_DIR=", "ESEC_CONFIG=", "ESEC_VAULT_DIALOGS=off",
-		"ESEC_VAULT_GUARD_IDENTITIES="+idFile, "ESEC_VAULT_SERVER=", "XDG_CONFIG_HOME=")}
+		"ESEC_VAULT_GUARD_IDENTITIES="+idFile, "ESEC_VAULT_SERVER=", "XDG_CONFIG_HOME=",
+		// Never the person's keychain: a 0600 file in the test's home.
+		"ESEC_SECRET_STORE=file")}
 	r.must("", "", "guard", "init", "--holder", yubi.Recipient().String(), "--no-recovery")
 	return r
 }

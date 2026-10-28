@@ -439,10 +439,20 @@ func guardEnv(entries map[string]string, id *age.X25519Identity, project, env, l
 	named := keystore.EnvEntry(env)
 	priv, ok := entries[named]
 	if !ok {
-		if entries[keystore.GuardEnvEntry(env)] != "" {
+		pub := strings.ToLower(entries[keystore.GuardEnvEntry(env)])
+		if pub == "" {
+			return "", fmt.Errorf("no %s key of %s on this device", env, project)
+		}
+		// Guarded already, maybe on another device: a clear copy synced
+		// here before still goes.
+		clearCopy, isClear := entries[keystore.PubEntry(pub)]
+		if !isClear {
 			return "", nil
 		}
-		return "", fmt.Errorf("no %s key of %s on this device", env, project)
+		if err := guardKey(entries, id, project, env, level, pub, clearCopy); err != nil {
+			return "", err
+		}
+		return "removed the clear copy", nil
 	}
 	pub, err := keystore.PublicHex(priv)
 	if err != nil {

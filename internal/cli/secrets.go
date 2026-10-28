@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -439,8 +441,10 @@ func (c *SecretsRotateCmd) Run(_ *cliCtx) error {
 
 // SecretsLintCmd checks secrets files.
 type SecretsLintCmd struct {
-	Root string `type:"path" help:"Where to look (default: the current repository)"`
-	JSON bool   `help:"Print JSON, for scripts and agents"`
+	Root    string `type:"path" help:"Where to look (default: the current repository)"`
+	Staged  bool   `help:"Check what is staged for the next commit, not the files on disk (the pre-commit hook)"`
+	Offline bool   `help:"Do not ask the vault server; check values in the clear and esec.toml only"`
+	JSON    bool   `help:"Print JSON, for scripts and agents"`
 }
 
 // lintFinding is a problem with a secrets file.
@@ -458,17 +462,25 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 	if err != nil {
 		return err
 	}
-	files, err := secretfile.Scan(root)
-	if err != nil {
-		return err
-	}
 	var out []lintFinding
 	add := func(path, level, detail, fix string) {
 		out = append(out, lintFinding{Path: relTo(root, path), Level: level, Detail: detail, Fix: fix})
 	}
+	var files []secretfile.File
+	if c.Staged {
+		files, err = stagedSecrets(root, add)
+	} else {
+		files, err = secretfile.Scan(root)
+	}
+	if err != nil {
+		return err
+	}
 	views := map[string]*account.TeamView{}
 	projectFiles := map[string]*projectfile.File{}
 	a, aerr := openAccount(ctx)
+	if c.Offline {
+		a, aerr = nil, errors.New("offline")
+	}
 	bg, cancel := timeout(5 * time.Minute)
 	defer cancel()
 	for _, f := range files {
@@ -546,7 +558,7 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 		if len(out) == 0 {
 			fmt.Printf("✓ %d secrets file(s): every value encrypted, each to its environment's current key.\n", len(files))
 		}
-		if aerr != nil {
+		if aerr != nil && !c.Offline {
 			fmt.Println("  (not signed in: checked for values in the clear and against esec.toml)")
 		}
 	}
@@ -554,6 +566,60 @@ func (c *SecretsLintCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // each kind 
 		return fmt.Errorf("%d problem(s) in secrets files", failed)
 	}
 	return nil
+}
+
+// stagedSecrets reads the staged version of every secrets file staged for
+// the next commit in the repository holding root. A staged file named for
+// one of its project's environments that has no public key is a secrets
+// file in the clear: it is reported through add.
+func stagedSecrets(root string, add func(path, level, detail, fix string)) ([]secretfile.File, error) {
+	top, err := gitOutput(root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fmt.Errorf("--staged needs a git repository: %w", err)
+	}
+	top = strings.TrimSpace(top)
+	names, err := gitOutput(top, "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var out []secretfile.File
+	for _, name := range strings.Split(names, "\x00") {
+		if name == "" {
+			continue
+		}
+		env, _, err := secretfile.EnvOf(name)
+		if err != nil {
+			continue // not a secrets file name
+		}
+		path := filepath.Join(top, filepath.FromSlash(name))
+		data, err := gitOutput(top, "show", ":"+name)
+		if err != nil {
+			return nil, err
+		}
+		f, err := secretfile.Parse(path, []byte(data))
+		if err != nil {
+			// No public key: harmless (a template), unless its project has
+			// an environment of this name.
+			if pf, _, ferr := projectfile.Find(filepath.Dir(path)); ferr == nil && env != "" && pf.Env[env].Key != "" {
+				add(path, account.CheckFail, "a "+env+" secrets file with no public key: its values are in the clear",
+					"git restore --staged "+name+"; put the values in with esec vault secrets set NAME --env "+env)
+			}
+			continue
+		}
+		out = append(out, *f)
+	}
+	return out, nil
+}
+
+func gitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+	}
+	return string(out), nil
 }
 
 // EnvStatusCmd shows what of an environment picked up a change.

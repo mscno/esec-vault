@@ -32,7 +32,7 @@ type cliCtx struct {
 }
 
 type cli struct {
-	Setup    SetupCmd    `cmd:"" group:"start" help:"Guided identity, remote and background-service setup."`
+	Setup    SetupCmd    `cmd:"" group:"start" help:"Set this machine up in one go (identity, keys, backup, service, checkouts, guard), or --check what is left."`
 	Init     InitCmd     `cmd:"" group:"start" help:"Set up an identity and first backup in one go."`
 	Login    LoginCmd    `cmd:"" group:"start" help:"Sign in to a vault server and get your keys on this machine."`
 	Logout   LogoutCmd   `cmd:"" group:"start" help:"End this machine's vault server session."`
@@ -44,6 +44,7 @@ type cli struct {
 	Project  ProjectCmd  `cmd:"" group:"secrets" help:"Scaffold projects and environments."`
 	Projects ProjectsCmd `cmd:"" group:"secrets" help:"Every project on this machine: where it is checked out, its environments, its keys here."`
 	Env      EnvCmd      `cmd:"" group:"secrets" help:"Manage environment keys: add, list, rotate, and what picked a change up."`
+	Hook     HookCmd     `cmd:"" group:"secrets" help:"A git pre-commit hook that refuses secrets in the clear and files encrypted to the wrong key."`
 	Secrets  SecretsCmd  `cmd:"" group:"secrets" help:"Find, set and rotate values in secrets files; check them before a commit."`
 	Run      RunCmd      `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
 	Forward  ForwardCmd  `cmd:"" group:"secrets" help:"SSH to a machine that may then ask this one for guarded keys, each read after your touch here."`

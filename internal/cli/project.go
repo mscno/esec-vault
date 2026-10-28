@@ -39,8 +39,30 @@ type ProjectInitCmd struct {
 	Force    bool     `help:"Replace a different existing project id in esec.toml"`
 	Guard    []string `name:"guard" sep:"," help:"Environments whose keys are born guarded (every read needs a touch), such as prod"`
 	Offline  bool     `help:"Do not wait for the new keys to reach the vault server or backup before writing files"`
+	JSON     bool     `help:"Print what was set up as JSON (the project, its environments and keys, files created, next steps), for scripts and agents"`
 
-	ctx *cliCtx
+	ctx     *cliCtx
+	created []string
+}
+
+// initResult is project init's JSON.
+type initResult struct {
+	Project string `json:"project"`
+	Dir     string `json:"dir"`
+	// IDFrom says where the project id came from: argument, flag or git.
+	IDFrom string    `json:"id_from"`
+	Format string    `json:"format"`
+	Envs   []initEnv `json:"envs"`
+	// Created are the secrets files this run wrote; those that existed are
+	// kept as they were.
+	Created []string `json:"created"`
+	Next    []string `json:"next"`
+}
+
+type initEnv struct {
+	Name  string `json:"name"`
+	Key   string `json:"public_key"`
+	Guard string `json:"guard"`
 }
 
 // Run validates all requested files before storing keys, then publishes templates.
@@ -63,38 +85,63 @@ func (c *ProjectInitCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	registerCheckout(dir)
-	source := "Git origin"
+	source, from := "Git origin", "git"
 	if c.Project != "" {
-		source = "--project flag"
+		source, from = "--project flag", "flag"
 	} else if c.ID != "" {
-		source = "project ID argument"
+		source, from = "project ID argument", "argument"
+	}
+	next := c.nextSteps()
+	if c.JSON {
+		return c.printJSON(project, dir, from, next)
 	}
 	fmt.Fprintf(os.Stderr, "Project %s ready in %s (project ID from %s). Keys stored outside the repository.\n", project, dir, source)
-	c.nextSteps()
+	if !ctx.Quiet {
+		fmt.Fprintln(os.Stderr, "Next:")
+		for _, s := range next {
+			fmt.Fprintln(os.Stderr, "  "+s)
+		}
+	}
 	return nil
+}
+
+func (c *ProjectInitCmd) printJSON(project, dir, from string, next []string) error {
+	pf, err := projectfile.Load(dir)
+	if err != nil {
+		return err
+	}
+	res := initResult{Project: project, Dir: dir, IDFrom: from, Format: pf.FilesFormat(), Envs: []initEnv{}, Created: []string{}, Next: next}
+	for _, env := range c.Env {
+		e := pf.Env[env]
+		res.Envs = append(res.Envs, initEnv{Name: env, Key: e.Key, Guard: e.GuardLevel()})
+	}
+	for _, f := range c.created {
+		res.Created = append(res.Created, relTo(dir, f))
+	}
+	sort.Strings(res.Created)
+	return printJSON(res)
 }
 
 // nextSteps says what to do now. Running init again is safe: it keeps
 // existing keys and files.
-func (c *ProjectInitCmd) nextSteps() {
-	if c.ctx != nil && c.ctx.Quiet {
-		return
-	}
+func (c *ProjectInitCmd) nextSteps() []string {
 	env := c.Env[0]
 	steps := []string{
 		"git add esec.toml and the secrets files (they hold no secret in the clear)",
 		"esec vault secrets set NAME --env " + env + " --create   # add a value (--generate makes one)",
 		"esec vault run " + env + " -- COMMAND                      # run with the values",
 	}
+	if path, err := preCommitPath(c.Dir); err == nil {
+		if data, err := os.ReadFile(path); err != nil || !strings.Contains(string(data), hookBegin) { //nolint:gosec // the repository's own hook
+			steps = append(steps, "esec vault hook install                           # refuse commits with secrets in the clear")
+		}
+	}
 	if slices.Contains(c.Env, "prod") && !slices.Contains(c.Guard, "prod") {
 		if st, err := readGuardStatus(); err == nil && st.SetUp {
 			steps = append(steps, "esec vault guard enable --env prod                 # every prod read needs your touch")
 		}
 	}
-	fmt.Fprintln(os.Stderr, "Next:")
-	for _, s := range steps {
-		fmt.Fprintln(os.Stderr, "  "+s)
-	}
+	return steps
 }
 
 func (c *ProjectInitCmd) projectID() (string, error) {
@@ -152,6 +199,7 @@ func (c *ProjectInitCmd) create(project string) error {
 		if err := writeNewTemplate(file, []byte(content)); err != nil {
 			return err
 		}
+		c.created = append(c.created, file)
 	}
 	if err := ensureGitignoreEntry(c.Dir, esec.DefaultKeyringFilename); err != nil {
 		return err

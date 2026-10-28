@@ -116,6 +116,13 @@ func Read(path string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	return Parse(path, data)
+}
+
+// Parse describes a secrets file at path with content data, which need not
+// be what is on disk (a staged version, say). It fails for content without
+// a public key.
+func Parse(path string, data []byte) (*File, error) {
 	env, f, err := EnvOf(path)
 	if err != nil {
 		return nil, err
