@@ -87,13 +87,13 @@
   <p class="muted">Only a device signs who is an admin: <code>esec vault changes</code>.</p>
 </details>
 <details class="help">
-  <summary>Rename (move to a new id)</summary>
+  <summary>Rename or transfer to another tenant</summary>
   <form method="post" action="/teams/{{.Project}}/move" {{dsPost (printf "/teams/%s/move" .Project)}} class="grid-form" data-confirm="Propose moving the project?">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <label>New id <input name="project" required placeholder="acme/new-name" pattern="[A-Za-z0-9._-]+/[A-Za-z0-9._-]+" autocomplete="off" spellcheck="false"></label>
     <div><button type="submit">Propose</button></div>
   </form>
-  <p class="muted">A device makes the move: a new project with the same keys and people, and this one archived pointing there. Machines and groups are listed to add again. Then change <code>ESEC_PROJECT</code> in the repository's <code>.esec-project</code>. On a device: <code>esec vault access move acme/new-name</code>.</p>
+  <p class="muted">A device makes an atomic move: a new signed project with the same keys, and this one archived pointing there. Cross-tenant transfers require source-project admin rights and ownership of both tenants; source people, groups and machines are not copied. For a different receiving owner: <code>esec vault project transfer SOURCE --to DEST --recipient LOGIN</code>. Former readers may still hold keys: rotate them and re-encrypt files to revoke access. Then change <code>project</code> in the repository's <code>esec.toml</code>.</p>
 </details>
 <form method="post" action="/teams/{{.Project}}/archive" {{dsPost (printf "/teams/%s/archive" .Project)}} class="inline" data-confirm="Propose archiving {{.Project}}? No keys are sent for it once archived."><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Archive</button></form>
 {{end}}

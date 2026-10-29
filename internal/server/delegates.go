@@ -507,7 +507,7 @@ func (s *Server) commitDelegateLinks(ctx context.Context, user, ip string, links
 				if err != nil || l.Signer != user || l.SignerDelegate == "" {
 					return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "not a link of your delegate")
 				}
-				_, users, err := s.orgCommit(ctx, tx, l.Org, user, false, ip, []*envelope.Envelope{e})
+				_, users, err := s.orgCommit(ctx, tx, l.Org, user, ip, []*envelope.Envelope{e})
 				if err != nil {
 					return err
 				}

@@ -846,15 +846,27 @@ func (c *AccessMoveCmd) Run(ctx *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	if !c.Yes && !confirm(fmt.Sprintf("Move %s to %s? A new project with the same keys and people; %s is archived.", project, c.To, project)) {
-		return errors.New("cancelled")
-	}
 	a, err := openAccount(ctx)
 	if err != nil {
 		return err
 	}
 	bg, cancel := timeout(10 * time.Minute)
 	defer cancel()
+	from, err := a.Client.Namespace(bg, team.OrgOf(project))
+	if err != nil {
+		return err
+	}
+	to, err := a.Client.Namespace(bg, team.OrgOf(c.To))
+	if err != nil {
+		return err
+	}
+	detail := "same keys and people"
+	if from.TenantID != to.TenantID {
+		detail = "same keys, but no copied people, groups or machines; rotate keys afterwards to revoke former readers"
+	}
+	if !c.Yes && !confirm(fmt.Sprintf("Move %s to %s? A new project with %s; %s is archived.", project, c.To, detail, project)) {
+		return errors.New("cancelled")
+	}
 	res, err := a.MoveProject(bg, project, c.To)
 	if err != nil {
 		return err

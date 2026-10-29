@@ -54,16 +54,17 @@ func timeout(d time.Duration) (context.Context, context.CancelFunc) {
 
 // LoginCmd signs this machine in to a vault server.
 type LoginCmd struct {
-	Server          string `arg:"" optional:"" help:"Server origin, e.g. https://vault.example.com (default: the current server or ESEC_VAULT_SERVER)"`
-	SSHAgent        bool   `name:"ssh-agent" help:"Unlock with an SSH-agent unlock slot instead of waiting for approval"`
-	SSHKey          string `name:"ssh-key" help:"With --ssh-agent: use only this key (.pub file or SHA256 fingerprint); otherwise every agent key is tried"`
-	Recover         bool   `help:"Unlock with the recovery phrase instead of waiting for approval"`
-	Name            string `help:"Device name (default: hostname)"`
-	ReplaceIdentity bool   `help:"Replace a different local identity with the account's without asking"`
-	NoBrowser       bool   `help:"Do not try to open a browser"`
-	NoSeal          bool   `help:"Do not seal keyrings on this machine"`
-	NoIndex         bool   `help:"Do not publish project and environment names for the web UI"`
-	AccountKey      string `help:"Expected account key words (as shown by 'esec vault status' on another device); skips the interactive check"`
+	PersonalNamespace string `help:"Choose this personal namespace if your GitHub username is unavailable"`
+	Server            string `arg:"" optional:"" help:"Server origin, e.g. https://vault.example.com (default: the current server or ESEC_VAULT_SERVER)"`
+	SSHAgent          bool   `name:"ssh-agent" help:"Unlock with an SSH-agent unlock slot instead of waiting for approval"`
+	SSHKey            string `name:"ssh-key" help:"With --ssh-agent: use only this key (.pub file or SHA256 fingerprint); otherwise every agent key is tried"`
+	Recover           bool   `help:"Unlock with the recovery phrase instead of waiting for approval"`
+	Name              string `help:"Device name (default: hostname)"`
+	ReplaceIdentity   bool   `help:"Replace a different local identity with the account's without asking"`
+	NoBrowser         bool   `help:"Do not try to open a browser"`
+	NoSeal            bool   `help:"Do not seal keyrings on this machine"`
+	NoIndex           bool   `help:"Do not publish project and environment names for the web UI"`
+	AccountKey        string `help:"Expected account key words (as shown by 'esec vault status' on another device); skips the interactive check"`
 }
 
 // Run implements login.
@@ -102,6 +103,9 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	defer cancel()
 	a, err := account.Login(bg, ctx.Keyring, cliUI{quiet: ctx.Quiet}, opts)
 	if err != nil {
+		return err
+	}
+	if err := finishPersonalLogin(a, c.PersonalNamespace); err != nil {
 		return err
 	}
 

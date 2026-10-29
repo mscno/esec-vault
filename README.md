@@ -126,6 +126,152 @@ admins. On the web: the project's page › **Review who reads it**.
 
 ### Set up an organisation
 
+#### Personal and work tenants (guarded server)
+
+The first part of a project ID is its **tenant namespace**, not necessarily
+its GitHub repository owner. Keep personal projects under `mscno/...` and
+work projects under `geoman/...` or `paraplyventures/...`. There are no plans
+or billing tiers. Each tenant has its own ownership and signed policy.
+
+* **Personal:** reserved after verified GitHub sign-in and bound permanently
+  to the numeric account ID. Renaming a GitHub login does not rename or
+  release it, and a recycled login cannot inherit it. The tenant has one
+  permanent owner; individual projects can still have collaborators.
+* **Organisation:** any fully onboarded, whitelisted account can claim an
+  available namespace by creating a signed tenant. The creator becomes its
+  first **owner**. Daily administrators and members are separate roles;
+  membership does not automatically grant project keys.
+
+Authentication succeeds even when your GitHub username is unavailable as a
+personal namespace. Choose another in the browser, at the login prompt, with
+`login --personal-namespace NAME`, or later with `personal choose NAME`.
+There is one personal tenant per account, not a new identity per project.
+
+On your trusted device:
+
+```sh
+esec vault org create mscno             # personal, one permanent owner
+esec vault org create geoman            # self-service organisation; you own it
+esec vault org create paraplyventures   # separate team
+esec vault org                         # personal/team labels
+esec vault org geoman --json
+```
+
+Personal and organisation tenants share one case-insensitive namespace pool.
+Creating the first project or group does not claim it: creating the tenant
+commits its namespace and signed initialization in one transaction, so a
+failed signature or concurrent claim cannot leave a squatted organisation.
+System names are reserved. Organisation creation defaults to 10 per account;
+the operator can adjust `max_orgs_per_account` (no billing or plans).
+
+A vault namespace is **not** a verified claim to the same GitHub organisation.
+The signed tenant and its opaque `tenant_id`, not a reusable GitHub login or
+handle, identify the workspace. Owners can change its display name or rename
+its handle without rewriting history:
+
+```sh
+esec vault org add geoman alice --admin
+esec vault org owner geoman alice              # second owner, strongly recommended
+esec vault org owner geoman alice --remove     # retain daily admin rights
+esec vault org rename geoman geoman-work --display-name "Geoman Work"
+esec vault personal rename mads-personal
+```
+
+Only owners change ownership or the tenant's handle, and the last owner
+cannot be demoted or removed. Personal ownership is permanent. Previous
+names stay reserved as historical aliases of the same tenant; projects and
+groups keep their existing IDs and policy. Create new resources under the
+current handle, or use `access move` to rename an existing resource. A rename
+between aliases of one tenant retains its people; it is not a cross-tenant
+transfer. Namespace deletion/recycling is deliberately not automatic.
+
+Operators can optionally protect known users' personal handles before their
+first login with `access.reserved_github_handles = { mscno = 53101343 }`.
+IDs must also be allowlisted. Existing reservations are durable; removing
+configuration or recycling a GitHub login never transfers ownership.
+
+**Upgrading an existing server:** back up the database first. Existing
+unreserved resource prefixes become `legacy`, not somebody's property by
+creation order. Their existing projects and signed histories keep working,
+but new resources and claims need explicit operator approval. Add reservations
+for the actual owners before starting the upgraded server. For an existing
+personal prefix, approve it explicitly:
+
+```toml
+[[namespaces]]
+name = "mscno"
+kind = "personal"
+owner_github_id = 53101343
+```
+
+An existing signed tenant must already recognize the nominated owner;
+a personal one must have exactly one person. Historical signed links are not
+rewritten. Update clients as well as the server: older clients cannot verify
+the new signed tenant-kind and project-transfer fields. Do not roll the
+server back to a release without namespace enforcement. Legacy organisation
+admins retain their historical owner authority until an owner explicitly
+establishes the ownership roster; new organisations separate roles immediately.
+
+#### Transfer a project between tenants
+
+```sh
+esec vault project transfer mscno/my-project --to geoman/my-project
+```
+
+You must administer the source project and own both tenants for an immediate
+cross-tenant move. The destination ID must be unused. The
+server creates its new signed chain and archives the source **in one
+transaction**, with reciprocal signed chain-root references. Old history and
+audit records stay at the source. A name collision, bad signature, stale
+source or authorization failure leaves both server resources unchanged.
+
+Across tenants, only the receiving account initially has access; source
+people, groups, and machines are **not copied**. Grant access deliberately in
+the destination. Within one tenant, renaming retains the existing people and
+can reconnect groups you administer. Machines must be recreated.
+
+If a different person owns the destination, create an acceptance request:
+
+```sh
+# Source project admin and source tenant owner:
+esec vault project transfer mscno/api --to geoman/api --recipient alice
+# Receiving tenant owner, on their trusted device:
+esec vault transfers
+esec vault transfers show tr_...
+esec vault transfers accept tr_...
+# Either party can withdraw or reject:
+esec vault transfers cancel tr_...
+esec vault transfers reject tr_...
+```
+
+Both accounts are checked using their GitHub SSH proofs, or explicit
+`--account-key WORD-WORD-...` verification. An offer binds the source head,
+both immutable tenant identities, the recipient's account key, and the exact
+new init/source archive. The recipient countersigns that init; signatures do
+not change its hash. The server checks both owners again and commits both
+projects and acceptance atomically. The source remains active until then.
+Offers expire after 24 hours; cancellation, expired offers, stale project
+heads, changed user keys, lost ownership, and destination collisions cannot
+complete a transfer. Ciphertext records are cleaned up seven days after expiry.
+Transfers require a trusted device holding every current environment key.
+Guarded-only keys are not silently unguarded or copied into a plain cache;
+when those keys are unavailable the transfer fails before changing the server.
+
+The environment keys in an offer are encrypted **only to the chosen account**,
+never in plaintext on the server. Offering a transfer authorizes that trusted
+person to receive them: someone who downloads the ciphertext can decrypt it
+before accepting. Expiry or cancellation prevents the ownership change; it
+cannot revoke keys already delivered. Rotate to revoke them.
+
+Environment keys are preserved so encrypted files continue to work. **Former
+readers may still possess those keys:** rotate destination environment keys
+and re-encrypt files to revoke them; a transfer cannot erase old secrets or
+git history. Update `project` in the repository's `esec.toml`, commit it, and
+update CI/deploy references to the new ID. The source stays archived, pointing
+to its successor; do not unarchive it as a parallel active copy.
+
+#### Signed tenant administration
+
 An organisation (the acme of acme/store) can have its own signed chain: its
 people, the KMS keys its workloads may use, and its rules, all signed on its
 admins' devices.

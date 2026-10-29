@@ -59,6 +59,8 @@ type cli struct {
 	Access      TeamCmd        `cmd:"" name:"access" aliases:"team" group:"team" help:"Who reads which environments of a shared project: share it, grant, revoke, offboard."`
 	Group       GroupCmd       `cmd:"" group:"team" help:"Groups of people or machines that read the same environments (acme/backend, acme/production)."`
 	Org         OrgCmd         `cmd:"" group:"team" help:"An organisation's projects, groups and policy (acme of acme/store)."`
+	Personal    PersonalCmd    `cmd:"" group:"team" help:"Choose or rename your personal namespace without changing your GitHub identity."`
+	Transfers   TransfersCmd   `cmd:"" group:"team" help:"Review, accept, reject or cancel signed project transfer offers."`
 	Changes     ChangesCmd     `cmd:"" group:"team" help:"Sign the changes made on the web pages (members, access, machines)."`
 	Todo        TodoCmd        `cmd:"" group:"team" help:"What waits for you across every project, group and organisation."`
 	Delegate    DelegateCmd    `cmd:"" group:"team" help:"Passkeys and the server, which may sign some changes for you on the web."`

@@ -108,6 +108,24 @@ func TestSettingsEndToEnd(t *testing.T) { //nolint:gocyclo // one sequential sto
 		t.Fatalf("alice still lists the deleted project:\n%s", out)
 	}
 
+	// --- Transfer across personal/work tenants without copying Alice. ---
+	owner.run("", "org", "create", "mscno")
+	if out := owner.run("", "org", "mscno", "--json"); !strings.Contains(out, `"kind": "personal"`) {
+		t.Fatalf("personal tenant kind:\n%s", out)
+	}
+	if out := owner.run("", "access", "move", "mscno/shop", "--yes", "--project=acme/shop"); !strings.Contains(out, "Cross-tenant transfer") || !strings.Contains(out, "alice") {
+		t.Fatalf("cross-tenant transfer:\n%s", out)
+	}
+	var readers int
+	if err := h.DB.SQL().QueryRow(`SELECT COUNT(*) FROM project_members WHERE project = 'mscno/shop' AND active = 1`).Scan(&readers); err != nil || readers != 1 {
+		t.Fatalf("source collaborators copied across tenants: %d %v", readers, err)
+	}
+	owner.run("", "org", "create", "acme")
+	owner.run("", "access", "move", "acme/final", "--yes", "--project=mscno/shop")
+	if err := h.DB.SQL().QueryRow(`SELECT COUNT(*) FROM project_members WHERE project = 'acme/final' AND active = 1`).Scan(&readers); err != nil || readers != 1 {
+		t.Fatalf("work tenant transfer: %d %v", readers, err)
+	}
+
 	// --- A new device: approved through a web change, typing its words. ---
 	accountKey := regexpFind(t, owner.run("", "status"), `Account key: ([a-z-]+)`)
 	vm := newMachine(t, bin, "vm")

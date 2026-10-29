@@ -27,7 +27,8 @@ import (
 
 // ProjectCmd scaffolds projects.
 type ProjectCmd struct {
-	Init ProjectInitCmd `cmd:"" help:"Create project marker, environment keys and secrets templates."`
+	Init     ProjectInitCmd     `cmd:"" help:"Create project marker, environment keys and secrets templates."`
+	Transfer ProjectTransferCmd `cmd:"" help:"Transfer a project to a tenant you own, or request another owner's acceptance."`
 }
 
 // ProjectInitCmd creates a project without exposing private keys.

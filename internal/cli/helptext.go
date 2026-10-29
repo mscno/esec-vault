@@ -262,7 +262,7 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault org acme",
 		"esec vault org acme --json",
 	),
-	"org create": `Signs the organisation's first link with you as its admin. Anyone may set up a name nothing is named after yet; once projects or groups are, an admin of one of them (or a server admin).
+	"org create": `Creates a tenant and claims its available namespace atomically, with you as its first owner. Any onboarded, whitelisted user can create organisations. Personal namespaces are automatically bound to numeric GitHub account IDs; after a collision choose another with personal choose. Creating the first project or group never claims a name. Vault namespace ownership does not assert GitHub organisation ownership.
 
 ` + examples(
 		"esec vault org create acme",
@@ -311,7 +311,7 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault access handover alice",
 		"esec vault access handover alice --step-down     # then you are a member who reads everything",
 	),
-	"access move": `Renames a project: a new chain under the new id, with the same environment keys (the encrypted files stay as they are) and people, who get the keys again; the old project is archived, naming the new one, and members' devices follow it. Groups you administer move too; machines, and other admins' groups, are listed to add again. Then set project in the repository's esec.toml (esec vault project init NEW --force does it).
+	"access move": `Atomically renames or transfers a project: a new signed chain under the new id, and the old project archived pointing there. Environment keys stay the same so encrypted files still work. Within one tenant people are retained and groups you administer can reconnect. Across tenants you must administer the source project and own both tenants; for a different receiving owner use project transfer --recipient LOGIN. Source people, groups and machines are not granted destination access. Former readers may still possess the old keys: rotate destination keys and re-encrypt files to revoke them. Then set project in the repository's esec.toml (esec vault project init NEW --force does it).
 
 ` + examples(
 		"esec vault access move acme/shop",

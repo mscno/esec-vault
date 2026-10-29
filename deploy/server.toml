@@ -1,4 +1,4 @@
-# esec vault server configuration. Every setting can be overridden with an
+# esec vault server configuration. Scalar settings can be overridden with an
 # ESEC_SERVER_* environment variable. Secrets come only from the environment:
 # ESEC_SERVER_GITHUB_CLIENT_SECRET and ESEC_SERVER_BOOTSTRAP_TOKEN (required;
 # it authorizes creating accounts).
@@ -11,6 +11,7 @@ client_ip_header = "Fly-Client-IP"
 # Emergency switch: "closed" refuses brand-new devices and browsers; trusted
 # devices and browsers that signed in before keep working.
 new_devices = "open"
+max_orgs_per_account = 10 # self-service organisations created per account
 
 [github]
 client_id = "REPLACE_WITH_OAUTH_APP_CLIENT_ID"
@@ -26,6 +27,8 @@ allowed_github_ids = [
 admin_github_ids = [
   53101343, # mscno (owner)
 ]
+# Optional: reserve known personal handles before these allowlisted users join.
+# reserved_github_handles = { mscno = 53101343 }
 
 [sessions]
 idle = "720h"      # 30 days
@@ -38,3 +41,15 @@ absolute = "2160h" # 90 days
 # [alerts]
 # email_from = "esec vault <vault@example.com>"
 # email_to = ["security@example.com"]
+
+# Optional migration/reservation overrides, not required for new organisations.
+# Initial owners must be allowlisted.
+# These reservations persist in the database; removing a config entry does
+# not release a name. For an existing personal prefix, set kind = "personal".
+# [[namespaces]]
+# name = "geoman"
+# owner_github_id = 53101343
+#
+# [[namespaces]]
+# name = "paraplyventures"
+# owner_github_id = 53101343

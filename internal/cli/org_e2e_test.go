@@ -67,8 +67,8 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	}
 	alice, carol, dave := person(2002, "alice"), person(2003, "carol"), person(2004, "dave")
 
-	// --- Claiming acme: only an admin of what is named after it may. ---
-	failsWith(t, carol, "only an admin of the first project or group", "org", "create", "acme")
+	// --- Claiming acme requires the operator's namespace reservation. ---
+	failsWith(t, carol, "reserved for another account", "org", "create", "acme")
 	if out := owner.run("", "org", "create", "acme"); !strings.Contains(out, "Created the organisation acme") || !strings.Contains(out, "Fingerprint:") {
 		t.Fatalf("org create:\n%s", out)
 	}

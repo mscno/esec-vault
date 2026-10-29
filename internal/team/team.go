@@ -116,6 +116,8 @@ type Env struct {
 type InitBody struct {
 	Creator Person `json:"creator"`
 	Envs    []Env  `json:"envs"`
+	// Predecessor anchors a move without rewriting either signed history.
+	Predecessor *ProjectRef `json:"predecessor,omitempty"`
 }
 
 // MemberAddBody adds a member. Admins can read every environment and
@@ -285,9 +287,10 @@ type State struct {
 	Groups map[string]*ProjectGroupState
 	// Archived says the project is stopped; Successor is where it moved,
 	// when it did.
-	Archived  bool
-	Successor *ProjectRef
-	Links     []Link
+	Archived    bool
+	Successor   *ProjectRef
+	Predecessor *ProjectRef
+	Links       []Link
 	// signerSeqs is each signer's latest user chain position.
 	signerSeqs map[string]uint64
 }
@@ -832,6 +835,13 @@ func (s *State) applyInit(l Link) error {
 	}
 	if err := validPerson(b.Creator); err != nil {
 		return err
+	}
+	if b.Predecessor != nil {
+		if ValidProject(b.Predecessor.Project) != nil || b.Predecessor.Project == s.Project || !rootPattern.MatchString(b.Predecessor.Root) {
+			return errors.New("invalid predecessor")
+		}
+		ref := *b.Predecessor
+		s.Predecessor = &ref
 	}
 	for _, e := range b.Envs {
 		if err := s.setEnv(e, l, false); err != nil {

@@ -413,9 +413,32 @@ var schema = []string{
 		PRIMARY KEY (org, user_id))`,
 	`CREATE INDEX IF NOT EXISTS org_people_user ON org_people(user_id)`,
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`,
+	// Names outlive login renames, deleted resources, and configuration edits.
+	`CREATE TABLE IF NOT EXISTS namespaces (
+		name TEXT PRIMARY KEY COLLATE NOCASE,
+		kind TEXT NOT NULL CHECK(kind IN ('personal', 'team', 'legacy')),
+		owner TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS namespace_personal_owner ON namespaces(owner) WHERE kind = 'personal'`,
+	`CREATE TABLE IF NOT EXISTS tenants (
+		id TEXT PRIMARY KEY,
+		canonical TEXT UNIQUE NOT NULL,
+		namespace TEXT UNIQUE COLLATE NOCASE NOT NULL,
+		kind TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		display_name TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS tenant_personal_owner ON tenants(owner) WHERE kind = 'personal'`,
+	`CREATE TABLE IF NOT EXISTS transfer_requests (
+		id TEXT PRIMARY KEY, source TEXT NOT NULL, sender TEXT NOT NULL,
+		recipient TEXT NOT NULL, offer BLOB NOT NULL, expires_at INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS transfers_recipient ON transfer_requests(recipient,status)`,
+	`CREATE INDEX IF NOT EXISTS transfers_sender ON transfer_requests(sender,status)`,
 }
 
 var addedColumns = []struct{ table, column, def string }{
+	{"namespaces", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
 	// Why timed access has not ended yet; it is tried again (timed.go).
 	{"access_expiries", "last_error", "TEXT NOT NULL DEFAULT ''"},
 	// A passkey's description, for a change that adds one.
@@ -555,8 +578,14 @@ func userID(githubID int64) string { return fmt.Sprintf("gh:%d", githubID) }
 
 func (d *DB) upsertUser(ctx context.Context, githubID int64, login string, now time.Time) (*userRow, error) {
 	id := userID(githubID)
-	_, err := d.sql.ExecContext(ctx, `INSERT INTO users (id, github_id, login, created_at) VALUES (?, ?, ?, ?)
+	err := d.tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO users (id, github_id, login, created_at) VALUES (?, ?, ?, ?)
 		ON CONFLICT(github_id) DO UPDATE SET login = excluded.login`, id, githubID, login, unix(now))
+		if err != nil {
+			return err
+		}
+		return reservePersonal(ctx, tx, id, login, now)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -760,6 +789,7 @@ func (d *DB) cleanup(ctx context.Context, now time.Time) error {
 		args []any
 	}{
 		{`DELETE FROM nonces WHERE seen_at < ?`, []any{unix(now.Add(-10 * time.Minute))}},
+		{`DELETE FROM transfer_requests WHERE expires_at < ?`, []any{unix(now.Add(-7 * 24 * time.Hour))}},
 		// Requests, invites and timed access, answered or past use.
 		{`DELETE FROM access_requests WHERE created_at < ?`, []any{unix(now.Add(-requestLifetime - 60*24*time.Hour))}},
 		{`DELETE FROM invites WHERE created_at < ?`, []any{unix(now.Add(-inviteLifetime - 60*24*time.Hour))}},

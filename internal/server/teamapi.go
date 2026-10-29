@@ -248,7 +248,7 @@ func (s *Server) apiProjectCommit(w http.ResponseWriter, r *http.Request, c *req
 	var out wire.ProjectCommitResult
 	var wake []string
 	err = s.db.tx(ctx, func(tx *sql.Tx) error {
-		res, users, err := s.projectCommit(ctx, tx, c, project, &req)
+		res, users, err := s.projectCommit(ctx, tx, c, project, &req, false)
 		if res != nil {
 			out = *res
 		}
@@ -268,7 +268,7 @@ func (s *Server) apiProjectCommit(w http.ResponseWriter, r *http.Request, c *req
 
 // projectCommit applies a project commit inside tx and returns the accounts
 // to wake.
-func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, project string, req *wire.ProjectCommit) (*wire.ProjectCommitResult, []string, error) { //nolint:gocyclo // one linear validation pass, kept together for review
+func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, project string, req *wire.ProjectCommit, transfer bool) (*wire.ProjectCommitResult, []string, error) { //nolint:gocyclo // one linear validation pass, kept together for review
 	now := s.now()
 	chains := s.db.userChains(ctx, tx)
 	caller, err := chains(c.user.ID)
@@ -313,6 +313,13 @@ func (s *Server) projectCommit(ctx context.Context, tx *sql.Tx, c *reqCtx, proje
 			return nil, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "link time %s is too far from the server's clock; check this machine's clock", l.CTime.Format(time.RFC3339))
 		}
 		if l.Type == team.TypeInit {
+			var init team.InitBody
+			if err := envelope.DecodeStrict(l.Body, &init); err != nil {
+				return nil, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid init")
+			}
+			if init.Predecessor != nil && !transfer {
+				return nil, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "use the atomic transfer endpoint for a moved project")
+			}
 			var n int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE id = ?`, project).Scan(&n); err != nil {
 				return nil, nil, err

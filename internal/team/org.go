@@ -46,6 +46,8 @@ const (
 	OrgAdminRemove  = "admin_remove"
 	OrgMemberAdd    = "member_add"
 	OrgMemberRemove = "member_remove"
+	OrgOwnerSet     = "owner_set"
+	OrgProfileSet   = "profile_set"
 	// OrgKMSAdd approves a KMS key for the workloads of the organisation's
 	// groups; OrgKMSRemove withdraws it.
 	OrgKMSAdd    = "kms_add"
@@ -143,7 +145,23 @@ type OrgKMSKey struct {
 type (
 	// OrgInitBody creates an organisation; the creator is its first admin.
 	OrgInitBody struct {
-		Creator Person `json:"creator"`
+		Creator     Person `json:"creator"`
+		Kind        string `json:"kind,omitempty"`
+		TenantID    string `json:"tenant_id,omitempty"`
+		DisplayName string `json:"display_name,omitempty"`
+		// ExplicitOwners separates ownership from daily administration.
+		ExplicitOwners bool `json:"explicit_owners,omitempty"`
+	}
+	// OrgOwnerBody promotes or demotes an existing tenant admin's ownership.
+	OrgOwnerBody struct {
+		User  string `json:"user"`
+		Owner bool   `json:"owner"`
+	}
+	// OrgProfileBody changes a handle, never its immutable tenant identity.
+	OrgProfileBody struct {
+		TenantID    string `json:"tenant_id"`
+		Namespace   string `json:"namespace"`
+		DisplayName string `json:"display_name"`
 	}
 	// OrgAdminAddBody adds an admin.
 	OrgAdminAddBody struct {
@@ -196,13 +214,34 @@ type OrgKMSState struct {
 	RemovedTime time.Time `json:"removed_time,omitzero"`
 }
 
+// TenantKind defaults old organisation chains to team tenants.
+func (b OrgInitBody) TenantKind() string {
+	if b.Kind == "" {
+		return "team"
+	}
+	return b.Kind
+}
+
+// PersonalTenantAllows excludes shared ownership and owner removal. Project
+// collaboration is separate from tenant ownership.
+func PersonalTenantAllows(typ string) bool {
+	return typ == OrgInit || typ == OrgSettingsSet || typ == OrgKMSAdd || typ == OrgKMSRemove || typ == OrgProfileSet
+}
+
 // OrgState is the result of verifying an organisation chain.
 type OrgState struct {
-	Org      string
-	Seq      uint64
-	Hashes   []string
-	LastTime time.Time
-	Links    []OrgLink
+	Org            string
+	Kind           string
+	TenantID       string
+	Namespace      string
+	DisplayName    string
+	ExplicitOwners bool
+	Owners         map[string]bool
+	Aliases        map[string]bool
+	Seq            uint64
+	Hashes         []string
+	LastTime       time.Time
+	Links          []OrgLink
 	// Admins manage the organisation; Members belong to it. An admin is
 	// not also a member.
 	Admins  map[string]*GroupAdminState
@@ -218,7 +257,27 @@ type OrgState struct {
 
 // NewOrg returns the empty state of an organisation.
 func NewOrg(org string) *OrgState {
-	return &OrgState{Org: org, Admins: map[string]*GroupAdminState{}, Members: map[string]*GroupAdminState{}, KMS: map[string]*OrgKMSState{}, signerSeqs: map[string]uint64{}}
+	return &OrgState{Org: org, Namespace: org, Owners: map[string]bool{}, Aliases: map[string]bool{org: true}, Admins: map[string]*GroupAdminState{}, Members: map[string]*GroupAdminState{}, KMS: map[string]*OrgKMSState{}, signerSeqs: map[string]uint64{}}
+}
+
+// Owner is a signed governance role. Legacy admins retain their historical
+// authority until an owner explicitly establishes the ownership roster.
+func (s *OrgState) Owner(user string) bool {
+	if !s.ExplicitOwners {
+		return s.Admin(user)
+	}
+	return s.Admin(user) && s.Owners[user]
+}
+
+// OwnerCount counts active owners, including legacy admins where applicable.
+func (s *OrgState) OwnerCount() int {
+	n := 0
+	for user := range s.Admins {
+		if s.Owner(user) {
+			n++
+		}
+	}
+	return n
 }
 
 // VerifyOrg checks a complete organisation chain from its first link.
@@ -557,6 +616,11 @@ func (s *OrgState) step(e *envelope.Envelope, chains Chains) error {
 // checkSigner checks a link's signature: an admin's user key, a member's
 // (leaving), or a delegate of an admin's whose scope covers the link.
 func (s *OrgState) checkSigner(e *envelope.Envelope, l *OrgLink, chains Chains) error {
+	if l.Type == OrgOwnerSet || l.Type == OrgProfileSet {
+		if l.SignerDelegate != "" || !s.Owner(l.Signer) {
+			return errors.New("only a tenant owner's user key may change ownership or its namespace")
+		}
+	}
 	if l.SignerDelegate != "" {
 		return s.people().delegateUnless(e, KindOrgLink, l.head(), chains, func() (string, error) { return orgScope(*l) }, s.Settings.NoServerSigning)
 	}
@@ -613,23 +677,19 @@ func (s *OrgState) signerKey(l *OrgLink, chains Chains) (ed25519.PublicKey, erro
 }
 
 func (s *OrgState) apply(l OrgLink) error {
+	if s.Kind == "personal" && !PersonalTenantAllows(l.Type) {
+		return errors.New("personal tenants have one permanent owner; the owner cannot leave")
+	}
 	if l.Seq == 1 && l.Type != OrgInit {
 		return errors.New("an organisation chain must start with an init link")
 	}
 	switch l.Type {
 	case OrgInit:
-		if l.Seq != 1 {
-			return errors.New("init link after the start of the chain")
-		}
-		var b OrgInitBody
-		if err := decodeOrgBody(l, &b); err != nil {
-			return err
-		}
-		if err := validPerson(b.Creator); err != nil {
-			return err
-		}
-		s.Admins[b.Creator.User] = &GroupAdminState{Person: b.Creator, Active: true, AddedBy: l.Signer, AddedSeq: l.Seq}
-		return nil
+		return s.applyInit(l)
+	case OrgOwnerSet:
+		return s.applyOwner(l)
+	case OrgProfileSet:
+		return s.applyProfile(l)
 	case OrgAdminAdd:
 		var b OrgAdminAddBody
 		if err := decodeOrgBody(l, &b); err != nil {
@@ -666,6 +726,33 @@ func (s *OrgState) apply(l OrgLink) error {
 	return fmt.Errorf("unknown link type %q", l.Type)
 }
 
+func (s *OrgState) applyInit(l OrgLink) error {
+	if l.Seq != 1 {
+		return errors.New("init link after the start of the chain")
+	}
+	var b OrgInitBody
+	if err := decodeOrgBody(l, &b); err != nil {
+		return err
+	}
+	if err := validPerson(b.Creator); err != nil {
+		return err
+	}
+	if b.TenantKind() != "personal" && b.TenantKind() != "team" {
+		return errors.New("invalid tenant kind")
+	}
+	s.Kind = b.TenantKind()
+	if b.TenantID != "" && !ValidTenantID(b.TenantID) {
+		return errors.New("invalid tenant identity")
+	}
+	if !ValidDisplayName(b.DisplayName) {
+		return errors.New("invalid tenant display name")
+	}
+	s.TenantID, s.DisplayName, s.ExplicitOwners = b.TenantID, b.DisplayName, b.ExplicitOwners
+	s.Owners[b.Creator.User] = true
+	s.Admins[b.Creator.User] = &GroupAdminState{Person: b.Creator, Active: true, AddedBy: l.Signer, AddedSeq: l.Seq}
+	return nil
+}
+
 func (s *OrgState) applyRemove(l OrgLink) error {
 	if l.Type == OrgAdminRemove {
 		var b OrgAdminRemoveBody
@@ -682,7 +769,16 @@ func (s *OrgState) applyRemove(l OrgLink) error {
 		if len(s.ActiveAdmins()) == 1 {
 			return errors.New("an organisation needs at least one admin")
 		}
+		if s.Owner(b.User) {
+			if !s.Owner(l.Signer) {
+				return errors.New("only an owner may remove another owner")
+			}
+			if s.OwnerCount() == 1 {
+				return errors.New("a tenant must retain at least one owner")
+			}
+		}
 		a.Active, a.RemovedSeq, a.RemovedTime = false, l.Seq, l.CTime
+		s.Owners[b.User] = false
 		return nil
 	}
 	var b OrgMemberRemoveBody
@@ -774,7 +870,7 @@ func (s *OrgState) addKMS(k OrgKMSKey, l OrgLink) error {
 		if err := ValidGroup(g); err != nil {
 			return err
 		}
-		if OrgOf(g) != s.Org {
+		if !s.ContainsProject(g) {
 			return fmt.Errorf("%s is not a group of %s", g, s.Org)
 		}
 	}
@@ -806,6 +902,14 @@ func decodeOrgBody(l OrgLink, v any) error {
 
 func (s *OrgState) clone() *OrgState {
 	n := *s
+	n.Aliases = make(map[string]bool, len(s.Aliases))
+	for name, yes := range s.Aliases {
+		n.Aliases[name] = yes
+	}
+	n.Owners = make(map[string]bool, len(s.Owners))
+	for user, owner := range s.Owners {
+		n.Owners[user] = owner
+	}
 	n.Hashes = append([]string(nil), s.Hashes...)
 	n.Links = append([]OrgLink(nil), s.Links...)
 	n.Admins = make(map[string]*GroupAdminState, len(s.Admins))

@@ -62,6 +62,11 @@ func (d *DB) orgLinks(ctx context.Context, q queryer, org string) ([]*envelope.E
 // with no chain. The state is shared: callers must not change it.
 func (d *DB) orgState(ctx context.Context, q queryer, org string) (*team.OrgState, []*envelope.Envelope, error) {
 	org = strings.ToLower(org)
+	if n, err := namespace(ctx, q, org); err != nil {
+		return nil, nil, err
+	} else if n != nil {
+		org = n.Canonical
+	}
 	var head string
 	err := q.QueryRowContext(ctx, `SELECT hash FROM org_links WHERE org = ? ORDER BY seq DESC LIMIT 1`, org).Scan(&head)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -127,13 +132,17 @@ func (d *DB) orgsOf(ctx context.Context, user string) ([]string, error) {
 
 // orgIDs lists the projects and groups named after org.
 func (d *DB) orgIDs(ctx context.Context, q queryer, org string) (projects, groups []string, err error) {
+	os, _, err := d.orgState(ctx, q, org)
+	if err != nil {
+		return nil, nil, err
+	}
 	collect := func(query string, out *[]string) error {
 		return scanAll(ctx, q, query, nil, func(r *sql.Rows) error {
 			var id string
 			if err := r.Scan(&id); err != nil {
 				return err
 			}
-			if team.OrgOf(id) == org {
+			if (os != nil && os.ContainsProject(id)) || (os == nil && team.OrgOf(id) == org) {
 				*out = append(*out, id)
 			}
 			return nil
@@ -150,8 +159,17 @@ func (d *DB) orgIDs(ctx context.Context, q queryer, org string) (projects, group
 // people, the members of its projects and groups (whose devices check the
 // chain), and the server's admins.
 func (s *Server) canReadOrg(ctx context.Context, user string, githubID int64, org string) (bool, error) {
+	if n, err := namespace(ctx, s.db.sql, org); err != nil {
+		return false, err
+	} else if n != nil {
+		org = n.Canonical
+	}
 	if s.cfg.Admin(githubID) {
 		return true, nil
+	}
+	os, _, err := s.db.orgState(ctx, s.db.sql, org)
+	if err != nil {
+		return false, err
 	}
 	orgs, err := s.db.orgsOf(ctx, user)
 	if err != nil || slices.Contains(orgs, org) {
@@ -162,7 +180,7 @@ func (s *Server) canReadOrg(ctx context.Context, user string, githubID int64, or
 		return false, err
 	}
 	for _, p := range projects {
-		if team.OrgOf(p) == org {
+		if (os != nil && os.ContainsProject(p)) || (os == nil && team.OrgOf(p) == org) {
 			return true, nil
 		}
 	}
@@ -171,7 +189,7 @@ func (s *Server) canReadOrg(ctx context.Context, user string, githubID int64, or
 		return false, err
 	}
 	for _, g := range groups {
-		if team.OrgOf(g) == org {
+		if (os != nil && os.ContainsProject(g)) || (os == nil && team.OrgOf(g) == org) {
 			return true, nil
 		}
 	}
@@ -225,7 +243,7 @@ func (s *Server) apiOrgChain(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, wire.OrgChain{Links: links, Chains: chains})
+	writeJSON(w, http.StatusOK, wire.OrgChain{Canonical: os.Org, Links: links, Chains: chains})
 }
 
 // apiOrgs lists the organisations the caller belongs to.
@@ -254,7 +272,19 @@ func (s *Server) orgSummaries(ctx context.Context, user string) ([]wire.OrgSumma
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, wire.OrgSummary{Org: o, Admin: os.Admin(user), People: len(os.People()), Keys: len(os.ActiveKMS()), Changes: len(changes)})
+		n, err := namespace(ctx, s.db.sql, o)
+		if err != nil {
+			return nil, err
+		}
+		kind := "legacy"
+		if n != nil {
+			kind = n.Kind
+		}
+		sum := wire.OrgSummary{Org: o, Kind: kind, Admin: os.Admin(user), Owner: os.Owner(user), People: len(os.People()), Keys: len(os.ActiveKMS()), Changes: len(changes)}
+		if n != nil {
+			sum.TenantID, sum.Namespace, sum.DisplayName = n.TenantID, n.Name, n.DisplayName
+		}
+		out = append(out, sum)
 	}
 	return out, nil
 }
@@ -275,6 +305,12 @@ func (s *Server) apiOrgCommit(w http.ResponseWriter, r *http.Request, c *reqCtx)
 		return
 	}
 	ctx := r.Context()
+	if n, err := namespace(ctx, s.db.sql, org); err != nil {
+		s.internalError(w, r, err)
+		return
+	} else if n != nil {
+		org = n.Canonical
+	}
 	var out wire.OrgCommitResult
 	var wake []string
 	err = s.db.tx(ctx, func(tx *sql.Tx) error {
@@ -292,7 +328,7 @@ func (s *Server) apiOrgCommit(w http.ResponseWriter, r *http.Request, c *reqCtx)
 				return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "links must be signed with your current user key")
 			}
 		}
-		out.Seq, wake, err = s.orgCommit(ctx, tx, org, c.user.ID, s.cfg.Admin(c.user.GitHubID), c.ip, req.Links)
+		out.Seq, wake, err = s.orgCommit(ctx, tx, org, c.user.ID, c.ip, req.Links)
 		if err != nil {
 			return err
 		}
@@ -311,7 +347,7 @@ func (s *Server) apiOrgCommit(w http.ResponseWriter, r *http.Request, c *reqCtx)
 // orgCommit verifies and stores links of an organisation chain inside tx,
 // signed by actor (or their delegates), and returns the new length and the
 // accounts to wake.
-func (s *Server) orgCommit(ctx context.Context, tx *sql.Tx, org, actor string, serverAdmin bool, ip string, links []*envelope.Envelope) (uint64, []string, error) {
+func (s *Server) orgCommit(ctx context.Context, tx *sql.Tx, org, actor, ip string, links []*envelope.Envelope) (uint64, []string, error) {
 	now := s.now()
 	chains := s.db.userChains(ctx, tx)
 	stored, err := s.db.orgLinks(ctx, tx, org)
@@ -340,14 +376,17 @@ func (s *Server) orgCommit(ctx context.Context, tx *sql.Tx, org, actor string, s
 		if err := linkClock(l.CTime, now); err != nil {
 			return 0, nil, err
 		}
-		if l.Type == team.OrgInit {
-			if err := s.checkClaim(ctx, tx, org, actor, serverAdmin); err != nil {
-				return 0, nil, err
-			}
+		if err := s.checkTenantLink(ctx, tx, org, actor, *l); err != nil {
+			return 0, nil, err
 		}
 		next, err := os.Next(e, chains)
 		if err != nil {
 			return 0, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "link rejected: %v", err)
+		}
+		if l.Type == team.OrgProfileSet {
+			if err := s.updateTenantProfile(ctx, tx, next); err != nil {
+				return 0, nil, err
+			}
 		}
 		if err := s.checkOrgLink(ctx, tx, *l, chains); err != nil {
 			return 0, nil, err
@@ -376,11 +415,49 @@ func (s *Server) orgCommit(ctx context.Context, tx *sql.Tx, org, actor string, s
 	return os.Seq, wake, err
 }
 
-// checkClaim lets someone start an organisation's chain: anyone while
-// nothing is named after it yet; once projects or groups are, an admin of
-// the first of them (whoever came first is most likely its owner; a
-// project made just to claim the name comes later), or a server admin.
-func (s *Server) checkClaim(ctx context.Context, tx *sql.Tx, org, user string, serverAdmin bool) error {
+// checkTenantLink binds new signed tenants to their approved reservation and
+// keeps legacy personal tenants single-owner without rewriting old links.
+func (s *Server) checkTenantLink(ctx context.Context, tx *sql.Tx, org, actor string, l team.OrgLink) error {
+	n, err := namespace(ctx, tx, org)
+	if err != nil {
+		return err
+	}
+	if l.Type == team.OrgInit {
+		if err := s.checkClaim(ctx, tx, org, actor); err != nil {
+			return err
+		}
+		var b team.OrgInitBody
+		if err := envelope.DecodeStrict(l.Body, &b); err != nil {
+			return err
+		}
+		if n == nil {
+			if b.TenantKind() != "team" || !team.ValidTenantID(b.TenantID) || !b.ExplicitOwners {
+				return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "new organisations require a signed tenant identity and explicit ownership")
+			}
+			if err := createTenant(ctx, tx, org, "team", actor, b.TenantID, b.DisplayName, s.now()); err != nil {
+				return err
+			}
+			n, err = namespace(ctx, tx, org)
+			if err != nil {
+				return err
+			}
+		}
+		if n == nil || b.TenantKind() != n.Kind {
+			return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "signed tenant kind must match the namespace reservation")
+		}
+		if b.TenantID != "" && b.TenantID != n.TenantID {
+			return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "tenant identity does not match the namespace")
+		}
+	}
+	if n != nil && n.Kind == "personal" && (actor != n.Owner || !team.PersonalTenantAllows(l.Type)) {
+		return clientErr(http.StatusForbidden, wire.ErrForbidden, "a personal tenant has one permanent owner; use a team tenant for shared ownership")
+	}
+	return nil
+}
+
+// checkClaim never derives namespace ownership from resource creation order.
+// Even a server admin cannot initialize a tenant as a different owner.
+func (s *Server) checkClaim(ctx context.Context, tx *sql.Tx, org, user string) error {
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM orgs WHERE id = ?`, org).Scan(&n); err != nil {
 		return err
@@ -388,50 +465,7 @@ func (s *Server) checkClaim(ctx context.Context, tx *sql.Tx, org, user string, s
 	if n > 0 {
 		return clientErr(http.StatusConflict, wire.ErrConflict, "the organisation %s exists already; ask one of its admins to add you", org)
 	}
-	if serverAdmin {
-		return nil
-	}
-	type named struct {
-		id    string
-		group bool
-		at    int64
-	}
-	var first *named
-	collect := func(query string, group bool) error {
-		return scanAll(ctx, tx, query, nil, func(r *sql.Rows) error {
-			var v named
-			if err := r.Scan(&v.id, &v.at); err != nil {
-				return err
-			}
-			v.group = group
-			if team.OrgOf(v.id) == org && (first == nil || v.at < first.at) {
-				first = &v
-			}
-			return nil
-		})
-	}
-	if err := collect(`SELECT id, created_at FROM projects`, false); err != nil {
-		return err
-	}
-	if err := collect(`SELECT id, created_at FROM machine_groups`, true); err != nil {
-		return err
-	}
-	if first == nil {
-		return nil
-	}
-	var active int
-	query := `SELECT active FROM project_members WHERE project = ? AND user_id = ? AND admin = 1`
-	if first.group {
-		query = `SELECT active FROM group_admins WHERE group_id = ? AND user_id = ?`
-	}
-	err := tx.QueryRowContext(ctx, query, first.id, user).Scan(&active)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if active == 1 {
-		return nil
-	}
-	return clientErr(http.StatusForbidden, wire.ErrForbidden, "%s/... is in use on this server: only an admin of the first project or group named %s/..., or a server admin, can set up %s", org, org, org)
+	return s.canCreateTenant(ctx, tx, org, user)
 }
 
 // checkOrgLink checks what the chain cannot: that people added are those
@@ -531,9 +565,25 @@ func (s *Server) orgWake(ctx context.Context, tx *sql.Tx, before, after *team.Or
 // organisation whose chain does not list its creator.
 func (s *Server) checkNamespace(ctx context.Context, q queryer, id, user, login string) error {
 	org := team.OrgOf(id)
+	if !strings.HasPrefix(id, org+"/") {
+		return clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "use a lower-case namespace")
+	}
 	os, _, err := s.db.orgState(ctx, q, org)
-	if err != nil || os == nil {
+	if err != nil {
 		return err
+	}
+	n, err := namespace(ctx, q, org)
+	if err != nil {
+		return err
+	}
+	if n == nil || n.Kind == "legacy" || reservedNamespace(org) {
+		return clientErr(http.StatusForbidden, wire.ErrForbidden, "namespace %s needs a tenant before new resources can be created: esec vault org create %s", org, org)
+	}
+	if n.Name != org {
+		return clientErr(http.StatusConflict, wire.ErrConflict, "namespace %s was renamed; create new resources under %s", org, n.Name)
+	}
+	if n.Kind == "personal" || os == nil {
+		return s.requireNamespaceOwner(ctx, q, org, user)
 	}
 	if !os.In(user) {
 		return clientErr(http.StatusForbidden, wire.ErrForbidden, "%s is an organisation on this server, and you are not in it: an admin of %s adds you first (esec vault org add %s %s)", org, org, org, login)

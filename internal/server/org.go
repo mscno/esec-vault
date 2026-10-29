@@ -40,6 +40,11 @@ func validOrg(org string) bool {
 // organisation (the zero policy when none is set).
 func (s *Server) serverPolicy(ctx context.Context, q queryer, org string) (wire.OrgPolicy, error) {
 	var p wire.OrgPolicy
+	if n, err := namespace(ctx, q, org); err != nil {
+		return p, err
+	} else if n != nil {
+		org = n.Canonical
+	}
 	var raw, by string
 	var at int64
 	err := q.QueryRowContext(ctx, `SELECT policy, updated_by, updated_at FROM org_policies WHERE org = ?`, strings.ToLower(org)).Scan(&raw, &by, &at)
@@ -203,8 +208,14 @@ func (s *Server) webOrgPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		now := s.now()
 		err = s.db.tx(ctx, func(tx *sql.Tx) error {
+			canonical := strings.ToLower(org)
+			if n, err := namespace(ctx, tx, canonical); err != nil {
+				return err
+			} else if n != nil {
+				canonical = n.Canonical
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO org_policies (org, policy, updated_by, updated_at) VALUES (?, ?, ?, ?)
-				ON CONFLICT(org) DO UPDATE SET policy = excluded.policy, updated_by = excluded.updated_by, updated_at = excluded.updated_at`, strings.ToLower(org), string(raw), ws.user.ID, now.Unix()); err != nil {
+				ON CONFLICT(org) DO UPDATE SET policy = excluded.policy, updated_by = excluded.updated_by, updated_at = excluded.updated_at`, canonical, string(raw), ws.user.ID, now.Unix()); err != nil {
 				return err
 			}
 			return s.db.audit(ctx, tx, ws.user.ID, "", s.clientIP(r), "org_policy", org+" "+string(raw), now)

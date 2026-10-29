@@ -1,6 +1,8 @@
 {{template "head" .}}
 <p class="crumbs"><a href="/orgs">Organisations</a> › {{.Org}}</p>
-<h1>{{.Org}} {{if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .MyMember}}<span class="badge status-active">member</span>{{end}}{{if .Chain}} <span class="badge">signed</span>{{end}}</h1>
+<p class="muted">{{.TenantKind}} tenant{{if eq .TenantKind "personal"}} · one permanent owner; project collaborators do not own the tenant{{end}}{{if eq .TenantKind "legacy"}} · namespace ownership needs operator approval before creating resources{{end}}</p>
+<h1>{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Org}}{{end}} {{if .MyOwner}}<span class="badge status-active">owner</span>{{else if .MyAdmin}}<span class="badge status-active">admin</span>{{else if .MyMember}}<span class="badge status-active">member</span>{{end}}{{if .Chain}} <span class="badge">signed</span>{{end}}</h1>
+{{if .TenantID}}<p class="muted">Namespace <code>{{.Namespace}}</code> · immutable tenant <code>{{.TenantID}}</code>. {{if .MyOwner}}Rename on your trusted device: <code>esec vault org rename {{.Namespace}} NEW --display-name NAME</code>.{{end}}</p>{{end}}
 {{if .Chain}}
 <p class="muted">Its people, approved KMS keys and rules are a chain its admins sign on their devices; the server keeps it but cannot change it. Set up by {{.Creator}} {{when .Created}}. Fingerprint <code>{{.Words}}</code>.</p>
 <nav class="tabs" aria-label="{{.Org}}">
@@ -164,6 +166,7 @@
 
 {{define "org-people"}}
 <h2 id="people">People</h2>
+{{if .MyOwner}}<p class="muted">Keep a second owner for recovery. Ownership changes are signed on your trusted device: <code>esec vault org owner {{.Namespace}} LOGIN [--remove]</code>. The last owner cannot be removed.</p>{{end}}
 <p class="muted">Belonging to {{.Org}} gives no keys by itself: people read what its projects grant them and the groups they are in. {{if .Settings.MembersOnly}}Only its people may be added to its projects and groups.{{end}}</p>
 <div class="filterbar"><input type="search" class="filter" placeholder="Filter people" aria-label="Filter people" data-filter="#org-people" hidden> <span id="org-people-count" class="muted"></span></div>
 <div class="scroll">
@@ -173,10 +176,10 @@
   {{range .Roster}}
   <tr>
     <td><a href="/people/{{.Login}}"><strong>{{.Login}}</strong></a>{{if eq .Verified "account_key"}} <span class="badge" title="checked with account key words, not a GitHub SSH proof">key words</span>{{end}}</td>
-    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else}}member{{end}}</td>
+    <td>{{if .Owner}}<span class="badge status-active">owner</span>{{else if .Admin}}<span class="badge status-active">admin</span>{{else}}member{{end}}</td>
     <td>{{range .Reads}}<div>{{.}}</div>{{else}}<span class="muted">reads nothing yet</span>{{end}}</td>
     <td class="nowrap">{{when .Added}}{{with .AddedBy}}<br><span class="muted">by {{.}}</span>{{end}}</td>
-    <td class="actions">{{if and $.MyAdmin (ne .User $.User.ID)}}<form method="post" action="/orgs/{{$.Org}}/people/remove" class="inline" data-confirm="Remove {{.Login}} from {{$.Org}}? Every project and group of {{$.Org}} loses them: your device takes them out of what you administer, other admins' devices at their next sync." {{dsPost (printf "/orgs/%s/people/remove" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="login" value="{{.Login}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
+    <td class="actions">{{if and $.MyAdmin (ne .User $.User.ID) (or (not .Owner) $.MyOwner)}}<form method="post" action="/orgs/{{$.Org}}/people/remove" class="inline" data-confirm="Remove {{.Login}} from {{$.Org}}? Every project and group of {{$.Org}} loses them: your device takes them out of what you administer, other admins' devices at their next sync." {{dsPost (printf "/orgs/%s/people/remove" $.Org)}}><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="login" value="{{.Login}}"><button type="submit" class="danger">Remove</button></form>{{end}}</td>
   </tr>
   {{end}}
   </tbody>
@@ -203,7 +206,7 @@
 </table>
 </div>
 {{end}}
-{{if .MyAdmin}}
+{{if and .MyAdmin (ne .TenantKind "personal")}}
 <details class="help" data-preserve-attr="open" open>
   <summary>Add a person</summary>
   <form method="post" action="/orgs/{{.Org}}/people" class="grid-form" {{dsPost (printf "/orgs/%s/people" .Org)}}>

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 
 	"github.com/mscno/esec-vault/internal/envelope"
 	"github.com/mscno/esec-vault/internal/team"
+	"github.com/mscno/esec-vault/internal/wire"
 )
 
 // Project settings: archiving a project, moving it to a new id, deleting
@@ -54,7 +56,8 @@ func (a *Account) DeleteProject(ctx context.Context, project string) error {
 
 // MoveResult describes a project moved to a new id.
 type MoveResult struct {
-	Project string
+	Project     string
+	CrossTenant bool
 	// Members lists the people added to the new project; Skipped those who
 	// were not, with why.
 	Members, Skipped []string
@@ -65,18 +68,17 @@ type MoveResult struct {
 	Missing []string
 }
 
-// MoveProject moves a project to a new id: a new chain with the same
-// environment keys (the encrypted files stay as they are) and the same
-// people, who get the keys sealed to them again, then the old chain
-// archived, naming the new one. Members' devices follow the move on their
-// own: an admin of a project they accepted named it. Machines are bound to
-// the old project and are created again; groups whose admins this account
-// is not grant the new project again.
-func (a *Account) MoveProject(ctx context.Context, project, next string) (*MoveResult, error) {
+// MoveProject atomically creates a new chain and archives the source, with
+// reciprocal root references. Keys stay the same. Within a tenant people
+// are retained; across tenants only the transferring admin is added, and
+// no source group is reconnected. Old readers may still possess keys: a
+// transfer is not a substitute for rotation and re-encryption.
+func (a *Account) MoveProject(ctx context.Context, project, next string) (*MoveResult, error) { //nolint:gocyclo // one ordered preflight, signed atomic move and local key-delivery sequence
 	if err := team.ValidProject(next); err != nil {
 		return nil, err
 	}
 	out := &MoveResult{Project: next}
+	out.CrossTenant = team.OrgOf(project) != team.OrgOf(next)
 	err := a.withTeam(ctx, func(t *teamCtx) error {
 		old, err := t.requireAdmin(project)
 		if err != nil {
@@ -85,40 +87,53 @@ func (a *Account) MoveProject(ctx context.Context, project, next string) (*MoveR
 		if old.Archived {
 			return fmt.Errorf("%s is archived; unarchive it first", project)
 		}
-		existing, err := t.state(next)
-		if err != nil && !errors.Is(err, errNotMember) {
+		from, err := a.Client.Namespace(ctx, team.OrgOf(project))
+		if err != nil {
 			return err
 		}
-		if existing != nil || err != nil {
-			return fmt.Errorf("%s exists already", next)
+		to, err := a.Client.Namespace(ctx, team.OrgOf(next))
+		if err != nil {
+			return err
 		}
+		out.CrossTenant = from.TenantID != to.TenantID
+		if out.CrossTenant {
+			os, err := t.org(team.OrgOf(project))
+			if err != nil {
+				return err
+			}
+			if (os != nil && !os.Owner(a.State.User)) || (os == nil && from.Owner != a.State.User) {
+				return fmt.Errorf("source tenant owner authorization is required")
+			}
+		}
+		if err := t.checkMoveDestination(next, out.CrossTenant); err != nil {
+			return err
+		}
+		links, st, err := t.moveDestination(old, out)
+		if err != nil {
+			return err
+		}
+		archive, archived, err := t.link(old, team.TypeArchive, team.ArchiveBody{Reason: "moved to " + next, Successor: &team.ProjectRef{Project: next, Root: st.Root()}})
+		if err != nil {
+			return err
+		}
+		// Copy locally only after all preflight checks, before committing so a
+		// failed network response cannot strand keys at an archived source.
 		if err := a.copyKeyring(project, next); err != nil {
 			return err
 		}
-		have := t.localKeys(old)
-		body := team.InitBody{Creator: team.Person{User: a.State.User, Login: a.State.Login, Root: t.own.Root()}}
-		for _, n := range old.EnvNames() {
-			if _, ok := have[n]; !ok {
-				out.Missing = append(out.Missing, n)
-			}
-			body.Envs = append(body.Envs, old.Envs[n].Env)
+		for _, l := range append(links, archive) {
+			t.pins.Signed[l.Hash()] = true
 		}
-		if len(out.Missing) > 0 {
-			return fmt.Errorf("this device has no current key for %s of %s; move it from a device that has them all", strings.Join(out.Missing, ", "), project)
-		}
-		e, st, err := t.link(team.New(next), team.TypeInit, body)
-		if err != nil {
+		if err := a.Client.TransferProject(ctx, project, &wire.ProjectTransfer{Destination: next, Links: links, Archive: archive}); err != nil {
 			return err
 		}
-		links, st, err := t.moveMembers(old, st, out)
-		if err != nil {
-			return err
-		}
-		if err := t.commit(st, append([]*envelope.Envelope{e}, links...), nil); err != nil {
-			return err
+		t.pin(st)
+		t.pin(archived)
+		for _, m := range old.ActiveMachines() {
+			out.Machines = append(out.Machines, m.Name+" ("+strings.Join(m.Envs, ",")+")")
 		}
 		t.pins.Accepted[next] = true
-		for _, env := range body.Envs {
+		for _, env := range st.Envs {
 			t.pins.hold(next, env.Name, env.PublicKey)
 		}
 		if err := t.sendAll(st); err != nil {
@@ -127,12 +142,82 @@ func (a *Account) MoveProject(ctx context.Context, project, next string) (*MoveR
 		if err := t.ackOwn(st); err != nil {
 			return err
 		}
-		if err := t.archiveMoved(old, st, out); err != nil {
-			return err
+		if out.CrossTenant {
+			return nil
 		}
 		return t.moveGroups(old, next, out)
 	})
 	return out, err
+}
+
+func (t *teamCtx) checkMoveDestination(next string, cross bool) error {
+	if err := t.checkNamespace(next); err != nil {
+		return err
+	}
+	if cross {
+		names, err := t.a.Client.Namespaces(t.ctx)
+		if err != nil {
+			return err
+		}
+		personal := false
+		for _, n := range names {
+			if n.Name == team.OrgOf(next) && n.Kind == "personal" && n.Owner == t.a.State.User {
+				personal = true
+			}
+		}
+		if !personal {
+			os, err := t.requireOrgAdmin(team.OrgOf(next))
+			if err != nil {
+				return err
+			}
+			if !t.trusted(os) {
+				return errUntrusted(os)
+			}
+			if !os.Owner(t.a.State.User) {
+				return fmt.Errorf("destination tenant owner authorization is required; use project transfer --recipient OWNER to request acceptance")
+			}
+		}
+	}
+	existing, err := t.state(next)
+	if err != nil && !errors.Is(err, errNotMember) {
+		return err
+	}
+	if existing != nil || err != nil {
+		return fmt.Errorf("%s exists already", next)
+	}
+	return nil
+}
+
+func (t *teamCtx) moveDestination(old *team.State, out *MoveResult) ([]*envelope.Envelope, *team.State, error) {
+	have := t.localKeys(old)
+	body := team.InitBody{Creator: team.Person{User: t.a.State.User, Login: t.a.State.Login, Root: t.own.Root()}, Predecessor: &team.ProjectRef{Project: old.Project, Root: old.Root()}}
+	for _, n := range old.EnvNames() {
+		if _, ok := have[n]; !ok {
+			out.Missing = append(out.Missing, n)
+		}
+		body.Envs = append(body.Envs, old.Envs[n].Env)
+	}
+	if len(out.Missing) > 0 {
+		return nil, nil, fmt.Errorf("this device has no current key for %s of %s; move it from a device that has them all", strings.Join(out.Missing, ", "), old.Project)
+	}
+	e, st, err := t.link(team.New(out.Project), team.TypeInit, body)
+	if err != nil {
+		return nil, nil, err
+	}
+	links := []*envelope.Envelope{e}
+	if !out.CrossTenant {
+		members, next, err := t.moveMembers(old, st, out)
+		return append(links, members...), next, err
+	}
+	for _, m := range old.ActiveMembers() {
+		if m.User != t.a.State.User {
+			out.Skipped = append(out.Skipped, m.Login+": access is not copied across tenants")
+		}
+	}
+	for _, g := range old.ActiveGroups() {
+		out.GroupsLeft = append(out.GroupsLeft, g.Group)
+	}
+	return links, st, nil
 }
 
 // copyKeyring copies this device's keyring of a project to its new name,
@@ -142,8 +227,14 @@ func (a *Account) copyKeyring(project, next string) error {
 	if err != nil {
 		return fmt.Errorf("this device has no keyring for %s: %w", project, err)
 	}
-	if _, err := a.KS.Read(next); !errors.Is(err, os.ErrNotExist) {
-		return err
+	if existing, err := a.KS.Read(next); !errors.Is(err, os.ErrNotExist) {
+		if err != nil {
+			return err
+		}
+		if maps.Equal(existing, entries) {
+			return nil
+		}
+		return fmt.Errorf("a different local keyring exists for %s; refusing to overwrite it", next)
 	}
 	return a.KS.Write(next, entries, false)
 }
@@ -196,19 +287,6 @@ func (t *teamCtx) sendAll(st *team.State) error {
 	return t.commit(st, nil, grants)
 }
 
-// archiveMoved archives old, naming st as where it moved, and lists its
-// machines to create again.
-func (t *teamCtx) archiveMoved(old, st *team.State, out *MoveResult) error {
-	for _, m := range old.ActiveMachines() {
-		out.Machines = append(out.Machines, m.Name+" ("+strings.Join(m.Envs, ",")+")")
-	}
-	e, archived, err := t.link(old, team.TypeArchive, team.ArchiveBody{Reason: "moved to " + st.Project, Successor: &team.ProjectRef{Project: st.Project, Root: st.Root()}})
-	if err != nil {
-		return err
-	}
-	return t.commit(archived, []*envelope.Envelope{e}, nil)
-}
-
 // moveGroups lets the groups that read old read next, where this account
 // administers them.
 func (t *teamCtx) moveGroups(old *team.State, next string, out *MoveResult) error {
@@ -258,6 +336,9 @@ func (t *teamCtx) followMoves(st *team.State) bool {
 // Lines says what a move did, one line each.
 func (r *MoveResult) Lines(from string) []string {
 	out := []string{fmt.Sprintf("Moved %s to %s, with %d member(s); %s is archived, pointing there.", from, r.Project, len(r.Members), from)}
+	if r.CrossTenant {
+		out = append(out, "Cross-tenant transfer: source people, groups and machines were not granted destination access. Existing readers may still hold the old environment keys; rotate them and re-encrypt files to revoke that access.")
+	}
 	for _, s := range r.Skipped {
 		out = append(out, "Not added: "+s)
 	}
