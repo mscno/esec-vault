@@ -1043,7 +1043,7 @@ func (s *Server) fleetKeys(ctx context.Context, gs *team.GroupState, links []*en
 		}
 	}
 	if kg == nil {
-		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "the group key was not sent to it yet; an admin's device sends it (esec vault group sync)")
+		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "the group key was not sent to it yet; an admin's device sends it (esec vault sync)")
 	}
 	out := &wire.GroupKeys{Links: links, Chains: map[string][]*envelope.Envelope{}, KeyGrant: kg, Projects: []wire.GroupProjectKeys{}}
 	signers := groupSigners(gs)

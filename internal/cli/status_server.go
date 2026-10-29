@@ -52,7 +52,7 @@ func inspectServer(ctx *cliCtx, problems *[]string) *serverStatus {
 	}
 	out := &serverStatus{Server: st.Server, Login: st.Login, User: st.User, DeviceID: st.DeviceID, DeviceName: st.DeviceName, AccountWords: st.Chain.AccountWords, ChainSeq: st.Chain.Seq, UKeyVersion: st.Chain.UKeyVersion, VaultVersion: st.Vault.Version, VaultGen: st.Vault.Generation, LastSync: st.Vault.SyncedAt, Conflicts: st.Vault.Conflicts}
 	if len(st.Vault.Conflicts) > 0 {
-		*problems = append(*problems, fmt.Sprintf("%d vault entries conflict with this machine's keyrings; run: esec vault sync --server", len(st.Vault.Conflicts)))
+		*problems = append(*problems, fmt.Sprintf("%d vault entries conflict with this machine's keyrings; run: esec vault sync", len(st.Vault.Conflicts)))
 	}
 	a, err := openAccount(ctx)
 	if err != nil {

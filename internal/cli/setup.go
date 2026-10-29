@@ -163,7 +163,7 @@ func (r *setupRun) identity() bool {
 		return false
 	}
 	server := r.serverURL()
-	join := "esec vault login SERVER (joining your account), esec vault recover --file BACKUP (from a backup), or esec vault init (your first machine)"
+	join := "esec vault login SERVER (joining your account), esec vault recover --file BACKUP (from a backup), or esec vault identity init (your first machine)"
 	if server != "" {
 		join = "esec vault login " + server
 	}
@@ -235,7 +235,7 @@ func (r *setupRun) server() {
 		return
 	}
 	if err := serverSync(r.ctx, r.interactive); err != nil {
-		r.add("vault server", "failed", "sync: "+err.Error(), "esec vault sync --server")
+		r.add("vault server", "failed", "sync: "+err.Error(), "esec vault sync")
 		return
 	}
 	r.add("vault server", "done", "keys synced", "")

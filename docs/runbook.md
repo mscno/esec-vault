@@ -106,13 +106,23 @@ In the repository:
 esec vault project init acme/api --env dev,staging,prod   # esec.toml, keys, encrypted files
 $EDITOR .env.prod                                         # add values (plain)
 esec encrypt .env.prod                                    # encrypt them in place
-git add esec.toml .env.* && git commit -m "secrets"
-esec vault access create                                  # share it; you are its admin
+git add esec.toml .esec .env.* && git commit -m "secrets"
 ```
 
 ### People
 
 ```sh
+esec vault share dev,staging --with alice                 # one person, pinned by GitHub id
+esec vault share dev,staging --with "group acme/backend"  # or a team
+git add esec.toml .esec && git commit -m "share dev and staging"
+```
+
+They open the keys sealed to them in `.esec/` with their own keys after
+`git pull`; someone without an account yet is sealed in once they sign up.
+On the vault server (membership, groups, offboarding, machines):
+
+```sh
+esec vault access create                                  # you are its admin
 esec vault access grant alice --env dev,staging           # one person
 esec vault group create acme/backend                      # or a team
 esec vault group add acme/backend alice
@@ -122,6 +132,18 @@ esec vault access grant acme/backend --env dev,staging
 Their devices take the keys in on their next sync (they confirm the
 project once). Someone without an account yet: add them on the project's web
 page; the invite waits for them.
+
+### CI and deploys
+
+```sh
+esec vault ci add actions --env staging,prod --github acme/api   # the GitHub secret ESEC_AGE_IDENTITY
+esec vault ci add deploy --env prod --fly api                    # the Fly.io secret
+```
+
+Each gets its own age key, sealed into those environments (commit `.esec/`),
+and runs `esec run prod -- ./deploy.sh` with esec alone. Most CI needs only
+this. The advanced route below, for workloads that hold no secret, needs the
+project shared on the vault server (`esec vault access create`).
 
 ### A Fly.io app, with no secret stored anywhere
 
@@ -202,7 +224,7 @@ fly secrets set -a api ESEC_VAULT_MACHINE_KEY="$(esec vault group token acme/pro
   --expires 90d --fly-org acme --fly-app api --out -)"
 ```
 
-### CI (GitHub Actions)
+### CI bound to the repository (GitHub OIDC, on the vault server)
 
 ```sh
 esec vault machine create deploy --env prod --github-repo acme/api --github-ref refs/heads/main --out - \
@@ -216,8 +238,10 @@ The job needs `permissions: id-token: write` and runs
 
 ### Your laptop
 
-Keys reach your keyring by sync; then, in the repository (name the file, or
-use the environment name with `--format env`; `prod` alone means `.ejson.prod`):
+Keys open from `.esec/` when they are sealed to you, or reach your keyring by
+sync; then, in the repository, name the file or the environment. For a name,
+esec searches every supported format and naming pattern, and fails when more
+than one file matches (then pass `--format` or the path):
 
 ```sh
 esec run .env.dev -- npm start            # values as environment variables
@@ -258,7 +282,7 @@ esec vault group approve acme/production # on your laptop, comparing the words
 | Add or change a secret value | edit the file, `esec encrypt .env.prod`, commit, deploy: no key moves |
 | Give access for a while | `esec vault access grant alice --env prod --for 8h` |
 | Answer access requests | `esec vault access requests` (`--grant ID`, `--deny ID`) |
-| Remove someone | `esec vault access revoke alice` or `esec vault access offboard alice` |
+| Remove someone | `esec vault unshare prod --with alice --rotate`; on the server `esec vault access revoke alice` or `esec vault access offboard alice` |
 | Someone leaves the company | `esec vault org remove acme alice` (or **People** › **Remove**): every admin's device takes them out of its projects and groups |
 | Approve, or withdraw, a KMS key | `esec vault org kms add` / `remove`, or **Settings** › **KMS keys** |
 | Add a Fly.io app | `esec vault org fly-app acme APP --read acme/api:prod`, or **Workloads** › **Add a Fly.io app** |
@@ -340,7 +364,7 @@ esec vault access list --needs rotate --org acme
 esec vault env rotate-exposed --root ~/src --org acme     # then commit and deploy each
 ```
 
-People get the new key by sync; groups get it sealed to the group key at
+People get the new key from its seal, or by sync; groups get it sealed to the group key at
 once, so workloads pick it up at their next start. Also change the secret
 values themselves where someone who left may have seen them.
 
@@ -376,7 +400,7 @@ re-seals everything to your other devices.
 | `this needs an OIDC token from Fly.io Machines of acme` | run on a Fly.io Machine of that app; the app name must match `--fly-app` |
 | `google's token exchange refused ... attribute condition` | the app is in another Fly.io organisation than the provider trusts; run `kms setup gcp` again with `--fly-org` |
 | `cloud KMS refused to decrypt` | the IAM binding for the app is missing: `kms setup gcp ... --apply` |
-| `the group key was not sent to it yet` | an admin's device sends it: `esec vault access sync` |
+| `the group key was not sent to it yet` | an admin's device sends it: `esec vault sync` |
 | `... is archived` | the project was archived or moved; `esec vault access` shows where |
 | `app check`: `is left out of the image by .dockerignore` | add `!.env.prod` to `.dockerignore`: the file is encrypted |
 | `app check`: `encrypted to an earlier prod key` | the file was not re-encrypted after a rotation: `esec vault env rotate prod` in that repository |

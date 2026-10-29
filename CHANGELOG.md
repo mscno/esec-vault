@@ -1,3 +1,41 @@
+# v0.25.0
+
+Fewer ways to do the same thing. Only clients change; the server stays at
+v0.24.0. Pairs with esec v0.13.0, whose `run`, `decrypt` and `get` now read
+guarded environments through this background service.
+
+- **Removed: sharing through git without a server.** `esec vault members`
+  (prove, verify, trust, list) and the committed share files that
+  `esec vault sync` opened are gone: nothing had written those files since
+  `share` moved to sealed keys. Share with
+  `esec vault share ENV --with LOGIN` (signed in to a vault server), or with
+  no server `--with NAME=age1…`; commit `.esec/`. `~/.config/esec/trusted.toml`
+  (member pins) is no longer written or read.
+- **`esec vault sync` means one thing:** bring this machine up to date with
+  the vault server, your own keys and the shared projects' (accept
+  invitations, take in keys, and as an admin send keys others are missing).
+  It does what `sync --server` and `access sync` (also `group sync`) did
+  together. `sync --server` still does only the first half.
+- **Renamed:** `group grant` is `group set`, since it replaces what a group
+  reads (like `access set`; `access grant` adds). `keyring seal` and
+  `keyring unseal` are `keyring protect` and `keyring unprotect`, so "seal"
+  means only keys sealed in the repository.
+- **Old names still run, and say what replaced them; a later release removes
+  them:** `init` (use `setup`, or in a script `identity init` then
+  `backup --verify`), `team` (use `access`), `keys` (use `security-keys`),
+  `access sync` and `group sync` (use `sync`), `group grant`, `keyring
+  seal`/`unseal`, and `remote push` (use `backup --push`). `remote watch` is
+  hidden: the background service does it; `--once` still suits a scheduled
+  job on a machine without one.
+- **Shorter help.** `esec vault` and `esec vault --help` show the everyday
+  commands; `esec vault help all` lists every command. The overview leads
+  with sealed sharing, `ci add` and guard. Machines, workloads and KMS are
+  grouped as the route for projects shared on a server and for workloads
+  that hold no secret; most CI needs only `esec vault ci add`.
+- Messages and hints name the new commands. The README and runbook drop the
+  git sharing guide, lead with `share` and `ci add`, and fix places that
+  contradicted the CLI (environment discovery, encrypted keyring files).
+
 # v0.24.2
 
 Hardening of guarded reads and `esec vault decrypt`. Only clients change; the

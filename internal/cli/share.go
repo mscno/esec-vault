@@ -1,19 +1,14 @@
 package cli
 
-import (
-	"encoding/hex"
-	"fmt"
-	"os"
-
-	"github.com/mscno/esec-vault/internal/identity"
-	"github.com/mscno/esec-vault/internal/keystore"
-	"github.com/mscno/esec-vault/internal/share"
-)
-
-// SyncCmd opens committed share blobs into the global keyring store, or with
-// --server syncs the vault with the vault server.
+// SyncCmd brings this machine up to date with the vault server: its own keys
+// (vault sync), then the shared projects' (invitations to accept, keys to
+// take in, and as an admin keys others are missing). The background service
+// does both by itself; this shows the result at once and asks what it may
+// not decide alone.
 type SyncCmd struct {
-	Server bool `help:"Sync your vault with the vault server instead of importing committed shares"`
+	Yes bool `help:"Accept every shared project you were added to without asking"`
+	// Server is the old way to ask for the first half, which sync always does.
+	Server bool `hidden:""`
 }
 
 // Run implements sync.
@@ -21,26 +16,8 @@ func (c *SyncCmd) Run(ctx *cliCtx) error {
 	if c.Server {
 		return serverSync(ctx, true)
 	}
-	id, err := identity.Load(ctx.Keyring)
-	if err != nil {
+	if err := serverSync(ctx, true); err != nil {
 		return err
 	}
-	cwd, err := getwd()
-	if err != nil {
-		return err
-	}
-	synced, err := share.Sync(cwd, keystore.New(), id, confirm)
-	if err != nil {
-		return err
-	}
-	for _, s := range synced {
-		fmt.Println("Synced", s)
-	}
-	return nil
+	return (&TeamSyncCmd{Yes: c.Yes}).Run(ctx)
 }
-
-// helpers
-
-func getwd() (string, error) { return os.Getwd() }
-
-func hexDecode(s string) ([]byte, error) { return hex.DecodeString(s) }

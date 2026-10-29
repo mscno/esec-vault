@@ -105,7 +105,7 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	dave.run("", "access", "grant", "alice", "--env", "dev", "--project=acme/tools")
 	// Until her device confirms acme's fingerprint, it cannot vouch for
 	// whose projects they are.
-	if out := alice.run("n\nn\nn\n", "access", "sync"); !strings.Contains(out, "has not confirmed") {
+	if out := alice.run("n\nn\nn\n", "sync"); !strings.Contains(out, "has not confirmed") {
 		t.Fatalf("alice's sync before confirming acme:\n%s", out)
 	}
 	var fp struct {
@@ -113,7 +113,7 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	}
 	owner.runJSON(&fp, "org", "acme")
 	alice.run("", "org", "trust", "acme", "--fingerprint", fp.Words)
-	if out := alice.run("y\ny\ny\n", "access", "sync"); !strings.Contains(out, "belongs to the organisation acme") {
+	if out := alice.run("y\ny\ny\n", "sync"); !strings.Contains(out, "belongs to the organisation acme") {
 		t.Fatalf("alice's sync does not say the projects are acme's:\n%s", out)
 	}
 
@@ -228,13 +228,13 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 		t.Fatalf("org --json after removing alice: %+v", shown)
 	}
 	// Dave's device applies nothing until he confirms acme's fingerprint.
-	if out := dave.run("", "access", "sync"); strings.Contains(out, "Took alice out") || !strings.Contains(out, "has not confirmed") {
+	if out := dave.run("", "sync"); strings.Contains(out, "Took alice out") || !strings.Contains(out, "has not confirmed") {
 		t.Fatalf("dave's sync before confirming acme:\n%s", out)
 	}
 	failsWith(t, dave, "not the fingerprint words", "org", "trust", "acme", "--fingerprint", "wrong-words")
 	dave.run("", "org", "trust", "acme", "--fingerprint", fp.Words)
 	// Then his device takes her out of his project on its next sync.
-	if out := dave.run("", "access", "sync"); !strings.Contains(out, "Took alice out of acme/tools") {
+	if out := dave.run("", "sync"); !strings.Contains(out, "Took alice out of acme/tools") {
 		t.Fatalf("dave's sync:\n%s", out)
 	}
 	if out := dave.run("", "access", "show", "--project=acme/tools"); strings.Contains(out, "alice") && !strings.Contains(out, "rotate") {
@@ -250,7 +250,7 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	dave.run("", "access", "grant", "alice", "--env", "dev", "--project=acme/tools")
 	owner.run("", "org", "remove", "acme", "alice", "--yes")
 	owner.run("", "org", "add", "acme", "alice")
-	if out := dave.run("", "access", "sync"); strings.Contains(out, "Took alice out") {
+	if out := dave.run("", "sync"); strings.Contains(out, "Took alice out") {
 		t.Fatalf("dave's device took out someone who is back:\n%s", out)
 	}
 }

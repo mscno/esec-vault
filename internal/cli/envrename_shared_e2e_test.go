@@ -45,7 +45,7 @@ func TestSharedEnvironmentRenameCLI(t *testing.T) {
 		t.Fatalf("non-admin rename: %v %s", err, out)
 	}
 	owner.run("", "env", "rename", "prod", "production", "--dir", repo, "--yes")
-	alice.run("y\n", "access", "sync")
+	alice.run("y\n", "sync")
 	if ok, out := decrypts(alice, repo, "production"); !ok || !strings.Contains(out, "rename-keeps-this") {
 		t.Fatalf("old grant no longer decrypts renamed environment: %s", out)
 	}

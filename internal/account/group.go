@@ -828,7 +828,7 @@ func (a *Account) grantGroup(ctx context.Context, id, project string, envs []str
 	err := a.withTeam(ctx, func(t *teamCtx) error {
 		gs, err := t.group(id)
 		if client.IsCode(err, wire.ErrForbidden) {
-			return fmt.Errorf("you are not an admin of %s, and it does not take keys from %s yet: an admin of the group runs 'esec vault group grant %s --project %s --env ...' first", id, project, id, project)
+			return fmt.Errorf("you are not an admin of %s, and it does not take keys from %s yet: an admin of the group runs 'esec vault group set %s --project %s --env ...' first", id, project, id, project)
 		}
 		if err != nil {
 			return err

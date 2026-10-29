@@ -36,7 +36,7 @@ type TeamCmd struct {
 	Set      TeamSetCmd        `cmd:"" help:"Change what a member reads (replacing it), or make them an admin."`
 	Remove   TeamRemoveCmd     `cmd:"" help:"Remove a member."`
 	Leave    TeamLeaveCmd      `cmd:"" help:"Leave a shared project."`
-	Sync     TeamSyncCmd       `cmd:"" help:"Receive keys sent to you and, as an admin, send keys others are missing."`
+	Sync     TeamSyncCmd       `cmd:"" hidden:"" help:"Now esec vault sync."`
 	Publish  TeamPublishCmd    `cmd:"" help:"Make this device's key for an environment the project's key (a new environment, or one rotated by hand)."`
 	Prove    TeamProveCmd      `cmd:"" help:"Prove with your GitHub SSH key that your vault account is yours, so admins can add you."`
 }
@@ -522,7 +522,7 @@ func printTeamSync(res *account.TeamSyncResult) {
 		fmt.Println("  → " + safetext.Clean(s))
 	}
 	for _, s := range res.Conflicts {
-		fmt.Printf("  ! %s: kept this device's own key; run 'esec vault access sync' in a terminal to replace it\n", s)
+		fmt.Printf("  ! %s: kept this device's own key; run 'esec vault sync' in a terminal to replace it\n", s)
 	}
 	for _, s := range res.Dropped {
 		fmt.Println("  - dropped an out-of-date grant: " + safetext.Clean(s))
@@ -544,7 +544,7 @@ func printTeamSync(res *account.TeamSyncResult) {
 		fmt.Printf("  ! %s has an organisation chain this device has not confirmed (fingerprint %s); compare it with an admin's: esec vault org trust %s\n", org, words, org)
 	}
 	for _, inv := range res.Invites {
-		fmt.Printf("  ! did not take in the keys of %s; run 'esec vault access sync' again to accept it\n", inv.Project)
+		fmt.Printf("  ! did not take in the keys of %s; run 'esec vault sync' again to accept it\n", inv.Project)
 	}
 	projects := make([]string, 0, len(res.Rotations))
 	for p := range res.Rotations {

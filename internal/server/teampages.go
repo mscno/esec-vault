@@ -124,10 +124,10 @@ func (s *Server) teamNotices(ctx context.Context, user string) ([]notice, error)
 			}
 		}
 		if admin && missing > 0 {
-			out = append(out, notice{Level: "info", Text: id + ": " + plural(missing, "key") + " still have to be sent to members or machines. Any admin's device sends them on its next sync.", Command: "esec vault access sync", Link: link, LinkTo: "Open project"})
+			out = append(out, notice{Level: "info", Text: id + ": " + plural(missing, "key") + " still have to be sent to members or machines. Any admin's device sends them on its next sync.", Command: "esec vault sync", Link: link, LinkTo: "Open project"})
 		}
 		if waitingMine > 0 {
-			out = append(out, notice{Level: "info", Text: id + ": " + plural(waitingMine, "key") + " wait for your devices. A signed-in device with the background service picks them up by itself.", Command: "esec vault access sync", Link: link, LinkTo: "Open project"})
+			out = append(out, notice{Level: "info", Text: id + ": " + plural(waitingMine, "key") + " wait for your devices. A signed-in device with the background service picks them up by itself.", Command: "esec vault sync", Link: link, LinkTo: "Open project"})
 		}
 	}
 	return out, nil

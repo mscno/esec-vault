@@ -16,12 +16,12 @@ Both forms run the same program.
 - [Add environments and keys](#add-environments-and-keys).
 - [Use keys in subfolders](#use-keys-in-subfolders).
 - [Import existing project keys](#import-existing-project-keys).
-- [Share a project with your team through the server](#share-a-project-with-your-team).
+- [Share environments: sealed in the repository, by GitHub username](#keys-live-with-the-code-sealed-in-the-repository).
+- [Share a project on a vault server: members, groups, offboarding](#share-a-project-with-your-team).
 - [Give CI jobs and apps their own key](#give-ci-jobs-and-apps-their-own-key).
 - [Run a fleet of machines in groups](#run-a-fleet-of-machines-in-groups).
-- [Share keys with a teammate without a server](#share-project-keys-with-a-teammate).
 - [Run an application through the broker](#run-applications-through-the-broker).
-- [Keys live with the code: sealed in the repository, shared by GitHub username, prod behind your YubiKey](#keys-live-with-the-code-sealed-in-the-repository).
+- [Guard prod behind your YubiKey](#guard-prod-with-your-yubikeys).
 - [Work with agents and many machines safely](#work-with-agents-and-many-machines).
 - [Keep track of every project, and make sure no key is lost](#every-project-on-this-machine).
 - [The Mac app](#the-mac-app).
@@ -30,19 +30,35 @@ Both forms run the same program.
 - [Recover your keys](#recovery).
 - [Find and fix common problems](#find-and-fix-common-problems).
 
-The examples use esec v0.8.0 or later and esec-vault v0.3.0 or later.
+The examples use esec v0.12.0 or later and esec-vault v0.25.0 or later.
 Replace `acme`, project names, paths, and GitHub logins with your own values.
 Replace `npm run dev` with your application's start command. Set `$EDITOR` to
 your editor, or replace `$EDITOR` in the examples with an editor command.
 
 ## Quick recipes
 
-Copy-paste versions of the common tasks. Each assumes you signed in to your
-vault server (`esec vault login https://vault.example.com`) and run the
-command in the project's repository, or pass `--project org/repo`. Replace
+Copy-paste versions of the common tasks. Run each in the project's
+repository, or pass `--project org/repo`. Recipes with a vault server
+(membership, groups, organisations, offboarding, machines) assume you signed
+in to it (`esec vault login https://vault.example.com`). Replace
 `acme/store`, `acme/production` and the logins with your own.
 
-### Share a project with a teammate
+### Share environments with a teammate
+
+```sh
+esec vault share dev,staging --with alice          # a GitHub login, pinned by id
+esec vault share dev --with "group acme/backend"   # everyone in a group
+git add esec.toml .esec && git commit -m "share dev and staging with alice"
+esec vault unshare staging --with alice --rotate   # take it away, with a new key
+```
+
+Each key is sealed to its readers in `.esec/<env>.age`. Alice opens it with
+her own keys after `git pull`; nothing else is sent. A GitHub login needs a
+sign-in to a vault server, which holds her public keys. Without a server,
+share to an age key: `--with alice=age1…`. Details in
+[Keys live with the code](#keys-live-with-the-code-sealed-in-the-repository).
+
+### Make a teammate a member of a project on the server
 
 ```sh
 esec vault access create                    # once per project: you become its admin
@@ -53,8 +69,7 @@ esec vault access grant alice --env staging # later: now dev and staging
 ```
 
 On the web: the project's page › **Add a member**, then sign it with a
-passkey or `esec vault changes`. (`esec vault team ...` still works: `team`
-is the old name of `access`.)
+passkey or `esec vault changes`.
 
 ### Give a whole team access with a group
 
@@ -348,31 +363,34 @@ page.
 ### Give a GitHub Actions workflow its secrets
 
 ```sh
-esec vault group create acme/ci
-esec vault group grant acme/ci --env prod                 # in the repository
-esec vault group token acme/ci deploy --expires never \
-  --github-repo acme/store --github-ref refs/heads/main --out - | gh secret set ESEC_VAULT_MACHINE_KEY
+esec vault ci add actions --env prod --github acme/store   # the secret ESEC_AGE_IDENTITY, set with gh
+git add esec.toml .esec && git commit -m "CI reads prod"
 ```
 
 ```yaml
-permissions:
-  id-token: write          # the token works only from this repository's main branch
-  contents: read
 steps:
   - uses: actions/checkout@v5
-  - name: Install esec and esec-vault
-    run: |
-      curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.22.1/esec-vault_0.22.1_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec-vault
-      curl -fsSL https://github.com/mscno/esec/releases/download/v0.12.0/esec_0.12.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
-  - run: esec-vault machine run -- esec run prod -- ./deploy.sh
+  - name: Install esec
+    run: curl -fsSL https://github.com/mscno/esec/releases/download/v0.13.0/esec_0.13.0_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin esec
+  - run: esec run prod -- ./deploy.sh
     env:
-      ESEC_VAULT_MACHINE_KEY: ${{ secrets.ESEC_VAULT_MACHINE_KEY }}
+      ESEC_AGE_IDENTITY: ${{ secrets.ESEC_AGE_IDENTITY }}
 ```
 
-One token can serve every workflow of the repository; make one token per
-repository, so each works only from its own.
+The job's own age key opens `.esec/prod.age`: it needs esec only, and no
+vault server. `esec vault ci remove actions` takes it out. Most CI needs
+only this. For a project shared on a vault server, a machine key bound to
+the repository is the advanced route (see
+[Give CI jobs and apps their own key](#give-ci-jobs-and-apps-their-own-key)).
 
 ### Run a Fly.io app with its secrets
+
+```sh
+esec vault ci add deploy --env prod --fly store   # the secret ESEC_AGE_IDENTITY, set with fly
+```
+
+The image holds `esec`, `esec.toml`, `.esec/` and the encrypted
+`.env.prod`, and starts with `esec run prod -- /app/server`.
 
 With no secret stored anywhere: approve a cloud KMS key (or a self-hosted
 OpenBao one) for the organisation once, then set up each app in one step,
@@ -383,9 +401,10 @@ esec vault kms setup gcp --project acme-vault --fly-org acme --fly-app store --a
 esec vault org fly-app acme store --read acme/store:prod   # prints ESEC_VAULT_WORKLOAD for fly.toml
 ```
 
-The [runbook](docs/runbook.md) has the details. Or give the app's machines a
-token of a group, bound to the Fly.io app, and start the app through
-`esec-vault`, which hands it the keys of its project:
+The [runbook](docs/runbook.md) has the details. On a vault server you can
+also give the app's machines a token of a group, bound to the Fly.io app,
+and start the app through `esec-vault`, which hands it the keys of its
+project:
 
 ```sh
 esec vault group create acme/production
@@ -404,7 +423,7 @@ anywhere else. `esec vault machine create` takes the same flags.
 FROM alpine:3.21 AS esec
 RUN apk add --no-cache curl \
  && curl -fsSL https://github.com/mscno/esec-vault/releases/download/v0.22.1/esec-vault_0.22.1_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec-vault \
- && curl -fsSL https://github.com/mscno/esec/releases/download/v0.12.0/esec_0.12.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
+ && curl -fsSL https://github.com/mscno/esec/releases/download/v0.13.0/esec_0.13.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin esec
 
 FROM your-app-image
 COPY --from=esec /usr/local/bin/esec /usr/local/bin/esec-vault /usr/local/bin/
@@ -517,7 +536,8 @@ through a group, with what needs rotating first.
 ### Use it from scripts and agents
 
 ```sh
-esec vault                         # the commands, in sections; same as esec vault --help
+esec vault                         # the everyday commands; same as esec vault --help
+esec vault help all                # every command, in sections
 esec vault help group token        # one command, with examples
 esec vault access show --json      # list and show commands print JSON with --json
 esec vault access grant acme/backend --env dev --json
@@ -674,9 +694,9 @@ your recovery phrase once. The phrase signs your identity as the account's
 root, so a machine that later recovers with the phrase can tell your real
 account from one a server made up.
 
-On this machine, login also seals the keyring files under a per-machine
-cache key, if the `esec` on your PATH is v0.9.0 or later. Use `--no-seal` to
-keep them plain.
+On this machine, login also protects the keyring files with a per-machine
+cache key (as `esec vault keyring protect --all` does), if the `esec` on your
+PATH is v0.9.0 or later. Use `--no-seal` to keep them plain.
 
 ### Add a machine
 
@@ -724,10 +744,10 @@ file. `esec vault status` shows which one is used.
 
 The daemon syncs automatically: it pushes key changes and pulls changes from
 other devices. Without the daemon, commands that change keys push right away.
-To sync by hand and answer any conflict questions:
+To sync by hand (your keys and your shared projects) and answer any questions:
 
 ```sh
-esec vault sync --server
+esec vault sync
 ```
 
 A key changed on one machine replaces the old value on the others. A key
@@ -957,15 +977,16 @@ DATABASE_URL=postgres://localhost/store_dev
 API_TOKEN=replace-with-your-token
 ```
 
-Use `-f env` for environment-name commands with dotenv files.
-Core esec defaults to `.ejson`.
-
 Read a value or start your application:
 
 ```sh
 esec get dev DATABASE_URL -f env
 esec run dev -f env -- npm run dev
 ```
+
+Commands that take an environment name search every supported format and
+naming pattern, and fail when more than one file matches; `-f env` narrows
+the search to dotenv files.
 
 `esec run` reads the local keyring directly. It does not require the daemon.
 Use [the broker](#run-applications-through-the-broker) when you want policy-controlled
@@ -979,7 +1000,7 @@ files to Git. Keep private keyring files out of Git.
 ```sh
 esec encrypt staging -f env
 esec encrypt prod -f env
-git add esec.toml .gitignore .env.dev .env.staging .env.prod
+git add esec.toml .esec .gitignore .env.dev .env.staging .env.prod
 ```
 
 If your repository ignores `.env.*`, add exceptions for the specific encrypted
@@ -1029,8 +1050,10 @@ cd store
 
 The clone contains the project file and encrypted files. It does not contain
 your private keys. If your global keyring already has `acme/store`, use esec
-immediately. Otherwise, restore your own backup or import a teammate's share
-with `esec vault sync`.
+immediately. If you read an environment, its key is sealed to you in
+`.esec/`: `esec vault seal sync` opens it on this machine. Otherwise, restore
+your own backup, or ask a reader to share it with you
+(`esec vault share ENV --with LOGIN`).
 
 Keep the public keys that are already in the files. Generating new keys does
 not recover the keys used by existing encrypted files.
@@ -1128,8 +1151,8 @@ This stores a key under its public-key entry. It prints the public key for a new
 file. It does not create a named environment or a secrets file.
 
 Use named environments for normal project work and selective team sharing.
-`share --env dev` selects a named key. It does not discover unnamed keys by
-looking at your files.
+`share dev --with alice` shares a named environment. It does not discover
+unnamed keys by looking at your files.
 
 ### Refresh the broker after changing keys
 
@@ -1324,6 +1347,11 @@ or other tools' credential stores for project keys.
 
 ## Share a project with your team
 
+To share environments, `esec vault share ENVS --with WHO` seals their keys
+into the repository (see [Keys live with the code](#keys-live-with-the-code-sealed-in-the-repository)).
+This section is about a project shared on a vault server: membership,
+groups, organisations, offboarding and machines.
+
 With a vault server, a project can have members: who may read which
 environment is kept in a list signed by the project's admins, and each
 member's devices receive the keys they may read, sealed to that member's
@@ -1365,7 +1393,7 @@ sends them the keys of the environments they may read. The first time, the
 member's device asks before it takes in a project's keys:
 
 ```sh
-esec vault access sync                      # on Alice's machine
+esec vault sync                             # on Alice's machine
 ```
 
 After that, the background service takes in new keys on its own, and
@@ -1429,14 +1457,33 @@ themselves where they may have been seen. Only admins rotate or add keys of
 a shared project; `env add` and `env rotate` send them to the team.
 
 Admins' devices send keys that members are missing on their own, for
-example after a member's user key changed. `esec vault access sync` does the
+example after a member's user key changed. `esec vault sync` does the
 same by hand.
 
 ## Give CI jobs and apps their own key
 
-A machine is a key for one CI job or app, instead of a copy of an
-environment key: it reads only the environments you give it, every use
-is recorded, and removing it stops it at once. An admin creates it:
+Most CI needs only `ci add`. It makes an age key for the job, seals the
+environments to it, and stores it as the secret `ESEC_AGE_IDENTITY` with
+`gh` or `fly` (or prints it once). The job then reads them with esec alone,
+with no vault server:
+
+```sh
+esec vault ci add actions --env prod --github acme/store   # stored with gh
+esec vault ci add deploy --env prod --fly store            # stored with fly
+esec vault ci add build --env dev                          # prints the key once
+esec vault ci remove build
+```
+
+Commit `esec.toml` and `.esec/`. The job runs `esec run prod -- ./deploy.sh`.
+
+### Machines of a project shared on the server
+
+Machines, groups, workloads and KMS keys are the advanced route: for a
+project shared on a vault server, and for workloads that hold no secret
+(OIDC and a cloud KMS, in the [runbook](docs/runbook.md)). A machine is a
+key for one CI job or app, instead of a copy of an environment key. It reads
+only the environments you give it, every use is recorded, and removing it
+stops it at once. An admin creates it:
 
 ```sh
 esec vault machine create deploy --env prod
@@ -1489,15 +1536,16 @@ On a device that holds the projects' keys (an admin of the projects):
 
 ```sh
 esec vault group create acme/production
-esec vault group grant acme/production --project acme/store --env prod
-esec vault group grant acme/production --project acme/api --env prod
+esec vault group set acme/production --project acme/store --env prod
+esec vault group set acme/production --project acme/api --env prod
 ```
 
 `group create` with a bare name (`production`) creates `LOGIN/production`.
-`group grant` again with other environments changes what the group reads;
-`group revoke` stops it reading a project. When the project's admins and the
-group's admins are different people, each side runs `group grant` to agree:
-the group's admins first, since they choose which projects it reads.
+`group set` replaces what the group reads of a project; `access grant GROUP`
+adds to it; `group revoke` stops it reading a project. When the project's
+admins and the group's admins are different people, each side runs
+`group set` to agree: the group's admins first, since they choose which
+projects it reads.
 
 ### Step 2: Bring machines in
 
@@ -1514,7 +1562,7 @@ Pick whatever suits the machine:
   ```
 
   Bind a token to GitHub Actions with `--github-repo`, as for single
-  machines below: it then works, and enrolls machines, only from that
+  machines above: it then works, and enrolls machines, only from that
   repository's jobs.
 
 - **On the machine itself**: it asks to join and shows six words; you let it
@@ -1571,135 +1619,6 @@ machine, proposes the change; removing blocks the machine on the server at
 once. Your device signs proposed changes with `esec vault group approve`,
 because the server holds no key it could sign them with. The background
 service tells you when machines wait to join or changes wait to be signed.
-
-## Share project keys with a teammate
-
-This section shares keys without a vault server, through files committed to
-the repository. With a server, [share the project with your team](#share-a-project-with-your-team)
-instead.
-
-Sharing is different from cloud backup. A backup protects your copy of the keys.
-A share gives another person's vault identity a copy of selected project keys.
-
-In this example, Alice receives `dev` and `staging` for `acme/store`.
-Each person needs their own personal vault identity.
-Run the commands in the directory that contains this project's `esec.toml`.
-
-### Step 1: Alice publishes her identity proof
-
-Alice needs an SSH key whose public key is registered on her GitHub account.
-The proof command uses OpenSSH to sign her vault public key.
-
-On Alice's computer, in her clone:
-
-```sh
-esec vault identity show
-esec vault members prove --login alice --ssh-key "$HOME/.ssh/id_ed25519"
-git add .esec/members/alice.proof
-git commit -m "Add Alice vault identity proof"
-git push
-```
-
-If needed, load the SSH key into Alice's SSH agent with
-`ssh-add "$HOME/.ssh/id_ed25519"` before creating the proof.
-The committed proof contains public identity data and a signature.
-It does not contain either private key.
-
-### Step 2: The key owner verifies and trusts Alice
-
-On the computer that already has the project keys:
-
-```sh
-git pull
-esec vault members verify alice
-esec vault members trust alice
-```
-
-Compare the displayed fingerprint with Alice's `identity show` output through
-a separate trusted channel. Confirm the trust prompt after the fingerprints match.
-
-### Step 3: The key owner creates the share
-
-```sh
-esec vault share --to alice --env dev,staging
-git add .esec/vault/alice.esec
-git commit -m "Share development and staging keys with Alice"
-git push
-```
-
-The share file is encrypted to Alice's vault identity. It can be committed.
-For dotted environments, use the full name:
-
-```sh
-esec vault share --to alice --env api.dev,worker.dev
-```
-
-Use `--to alice,bob` to send the same selection to two verified, trusted members.
-Omitting `--env` shares every entry in the current project's keyring, including
-unnamed keys. It does not share all projects in your personal vault.
-
-Each `share` command replaces that member's share file in the current directory.
-List the complete set of environments the member should receive each time.
-For example, use `--env dev,staging,qa` when you add `qa` to an existing share.
-
-An environment-limited share contains the named key entries. Keep matching
-environment and file names on the receiving side. For example, use `api.dev`
-with `.env.api.dev`. Such a share does not include every public-key alias.
-
-### Step 4: Alice imports the share
-
-On Alice's computer:
-
-```sh
-git pull
-esec vault sync
-esec vault env list
-esec get dev DATABASE_URL -f env
-esec vault backup --verify --push
-```
-
-`sync` imports shares addressed to Alice's current identity. It keeps existing
-entries and asks before replacing conflicting values. Alice can now use core
-esec directly, or [configure broker access](#run-applications-through-the-broker).
-If her broker is already unlocked, she must run `unlock` again to load the keys.
-
-### Share keys for a nested project
-
-For separate component projects, run the complete workflow from each component
-directory. Its proof and share files are local to that directory:
-
-```text
-services/api/
-  esec.toml
-  .esec/members/alice.proof
-  .esec/vault/alice.esec
-```
-
-The key owner runs:
-
-```sh
-cd services/api
-esec vault members verify alice
-esec vault members trust alice
-esec vault share --to alice --env dev
-```
-
-Alice runs `esec vault sync` from `services/api` in her clone.
-Repeat for `services/worker` if Alice should also receive its keys.
-
-An identity proof can be reused in several projects. Place it in each project's
-`.esec/members` directory. `members`, `share`, and `sync` use the current directory;
-they do not search parents or recursively process nested projects.
-
-### Change or remove access
-
-Create and commit a new share when you add keys or when a teammate changes their
-personal identity. Verify a changed identity fingerprint before trusting it.
-
-Deleting a committed share file does not remove keys already imported by a
-recipient. To remove access, replace the affected project keys, re-encrypt the
-affected files, and share the new keys with the remaining members. Replace any
-credentials that the removed member already received.
 
 ## Run applications through the broker
 
@@ -1789,7 +1708,7 @@ esec vault lock
 ```
 
 Locking ends broker access. It does not stop backups or revoke direct access
-to plaintext working keyring files on your computer.
+to working keyring files on your computer.
 
 ## Keys live with the code: sealed in the repository
 
@@ -1848,9 +1767,11 @@ esec vault run prod -- ./deploy       # dialog: what, which file, which programs
 esec vault decrypt prod STRIPE_KEY    # one value, after the same dialog and touch (no KEY: all of them)
 ```
 
-`esec decrypt` cannot open a guarded environment: its key opens only through
-the background service, so read the values with `esec vault decrypt` or use
-them with `esec vault run`. `esec vault unlock` needs no touch; touching a
+A guarded key opens only through the background service: read the values
+with `esec vault decrypt`, or use them with `esec vault run`. From esec
+v0.13.0, `esec run`, `esec decrypt` and `esec get` hand a guarded read to
+them when esec-vault is installed, with the same dialog and touch.
+`esec vault unlock` needs no touch; touching a
 YubiKey that nothing waits for types its one-time password into the terminal
 (`ykman config usb --disable OTP` turns that off if you do not use it).
 
@@ -1898,7 +1819,7 @@ values for one run, or keys of their own that read dev.**
 | Your Macs | a device: your user key, signs changes | everything you are granted; guarded envs after a touch |
 | A dev VM or box where agents run | a machine in a group, such as `acme/agents-dev` | the dev environments the group reads |
 | A cloud agent sandbox | a short-lived group token (`--expires 24h`) | dev |
-| CI | a machine bound to the repository (GitHub OIDC) | what the workflow needs |
+| CI | its own age key (`esec vault ci add`) | what the workflow needs |
 | Fly.io apps | a KMS workload, no secret | its environment |
 
 Never `esec vault login` on a box agents use: a device reads everything
@@ -2061,7 +1982,7 @@ esec-vault remote list
 esec-vault remote set-default r2
 esec-vault remote remove r2             # configuration only
 esec-vault remote test r2               # random PUT → GET → LIST → DELETE probe
-esec-vault remote push r2               # snapshots live keys before uploading
+esec-vault backup --push --remote r2    # snapshots live keys before uploading
 esec-vault remote pull r2 --out backup.esec
 esec-vault remote prune r2 --keep 30     # explicitly delete older generations
 esec-vault status --json
@@ -2086,7 +2007,7 @@ esec-vault remote add archive --type restic --repository /path/to/restic-repo
 
 The file backend is also suitable for a synced folder. Only encrypted snapshots
 are placed there: do not sync the entire live vault home, which contains
-plaintext working keyrings.
+working keyrings.
 
 Restic stores one tagged snapshot per object. Get uses `dump`; delete uses
 `forget`. Run restic's own `prune` separately to reclaim repository space.
@@ -2134,8 +2055,7 @@ esec-vault daemon upgrade               # after upgrading the CLI
 The OS owns the process: a macOS LaunchAgent or Linux systemd user service starts
 at login and restarts after a crash. Installation copies the current executable
 to a stable, private path and records an ownership manifest. No root service or
-terminal session is needed. `daemon run` and `remote watch` remain foreground
-debugging tools.
+terminal session is needed. `daemon run` remains a foreground debugging tool.
 
 ### Upgrading the CLI and the daemon
 
@@ -2166,7 +2086,7 @@ esec-vault lock
 
 Expiration discards the broker key cache; snapshots and uploads continue. Backup
 operations use the OS keyring transiently and do not unlock or extend the broker
-session. Locking does not encrypt the existing plaintext working keyring files.
+session. Locking does not encrypt working keyring files; `keyring protect` does.
 The user's OS keyring must be available to the service. Unavailable keyring or
 network access leaves work pending for retry.
 
@@ -2190,7 +2110,7 @@ esec-vault daemon reload              # reload broker policy
 
 Job history is bounded and in-memory; durable snapshot/pending/upload records
 survive daemon restarts. Manual backup and recovery still work without the
-daemon. `remote watch --once` remains available for external schedulers.
+daemon; an external scheduler can run `esec-vault backup --push`.
 
 Installation captures only transport paths/profile references and PATH, including
 `RCLONE_CONFIG`, `RESTIC_PASSWORD_FILE`, `AWS_PROFILE`, and the keyring directory.
@@ -2252,7 +2172,10 @@ replaces conflicts, and `--settings` explicitly restores backed-up policy, trust
 pins and remote config. Downloads never overwrite the active vault implicitly.
 
 Cloud backups and local snapshots are encrypted. The working `keyrings/*.keyring`
-files are still plaintext with mode 0600 for compatibility with core esec.
+files (mode 0600) are plain text unless protected: then they are encrypted
+with this machine's cache key, kept in the OS keyring. `esec vault login`
+protects them when the `esec` on your PATH is v0.9.0 or later; `esec vault
+keyring protect --all` does it by hand, and `keyring unprotect` reverses it.
 The broker can load ciphertext directly using `agent --from-vault`.
 
 ### Encryption and identity
@@ -2311,14 +2234,14 @@ Migration is explicit; installing the binary does not alter live keys.
 | Every project on this machine | `esec vault projects` |
 | Check no key can be lost | `esec vault verify` |
 | Share an environment with someone | `esec vault share dev --with LOGIN` |
+| Stop sharing it, with a new key | `esec vault unshare dev --with LOGIN --rotate` |
 | See who reads what, and what to seal again | `esec vault seal` |
 | Register your YubiKeys | `esec vault security-keys add` |
-| Guard an environment | `esec vault guard enable --env prod` |
+| Guard an environment with your YubiKey | `esec vault guard enable --env prod` |
 | Give CI its own key | `esec vault ci add NAME --env prod --github OWNER/REPO` |
 | Every security key lost | `esec vault seal recover --all` |
 | See which programs and agents asked for keys | `esec vault activity` |
 | Prove the backup restores with the phrase | `esec vault drill` |
-| Guard an environment with your YubiKey | `esec vault guard enable --env prod` |
 | Use guarded keys from another machine | `esec vault forward HOST` |
 | List stored projects | `esec vault keyring list` |
 | List this project's named keys and public keys | `esec vault env list` |
@@ -2334,7 +2257,7 @@ Migration is explicit; installing the binary does not alter live keys.
 | Rename, archive or delete a project | `esec vault access move NEW`, `esec vault access archive`, `esec vault access delete` |
 | Make someone else an admin | `esec vault access handover alice --step-down` |
 | See an organisation and its policy | `esec vault org acme` |
-| Receive and send team keys now | `esec vault access sync` |
+| Bring this machine up to date with the server | `esec vault sync` |
 | List a project's machines | `esec vault machine list` |
 | List groups | `esec vault group` |
 | Add a person to a group | `esec vault group add acme/backend alice` |
@@ -2343,8 +2266,7 @@ Migration is explicit; installing the binary does not alter live keys.
 | Sign changes made on the web pages | `esec vault changes` |
 | Passkeys and server removals | `esec vault delegate` |
 | On a machine: what am I, what do I read | `esec-vault machine whoami` |
-| List proofs in the current project | `esec vault members list` |
-| Import a share after `git pull` | `esec vault sync` |
+| Open the keys sealed to you after `git pull` | `esec vault seal sync` |
 | Reload policy after editing it | `esec vault daemon reload` |
 | Load current keys and unlock for four hours | `esec vault unlock --ttl 4h` |
 | Lock broker access | `esec vault lock` |
@@ -2361,8 +2283,8 @@ same socket as an active managed daemon.
 
 | Problem | Check or action |
 |---|---|
-| A machine says the group key or a project's keys were not sent yet | An admin's device seals them on its next sync: `esec vault group sync`. `esec vault group show` says what is missing. |
-| A machine says it reads nothing of a project | The group and the project both have to agree: `esec vault group grant GROUP --project ORG/REPO --env ENV`, by an admin of each. |
+| A machine says the group key or a project's keys were not sent yet | An admin's device seals them on its next sync: `esec vault sync`. `esec vault group show` says what is missing. |
+| A machine says it reads nothing of a project | The group and the project both have to agree: `esec vault group set GROUP --project ORG/REPO --env ENV`, by an admin of each. |
 | `dev` cannot find a file | Check the current directory. Use `-f env` for `.env.dev`. Secrets files are not searched for in parent folders. |
 | No project file is found | Add `esec.toml` with `project = "org/repo"`, or run `esec vault project init org/repo`. The search stops at the Git root. |
 | A child file uses the wrong project | For core esec, pass `--key-dir services/api` from the root. For broker commands, change into the component directory. |
@@ -2373,12 +2295,10 @@ same socket as an active managed daemon.
 | Migration says the target keyring exists | Migration does not overwrite or merge that target. Keep both copies until you reconcile their keys. |
 | The broker reports a missing key after an import | Run `esec vault unlock --ttl 4h` again to reload its key cache. |
 | The broker reports `denied by policy` | Check the exact project ID and environment name. Run `daemon reload` after a policy edit. |
-| `share` or `members` cannot find files | Run the command in the directory that contains this project's esec.toml and `.esec` directory. Sharing commands do not search parents. |
-| A filtered share omits an unnamed key | `share --env` selects named entries. Use named environment keys for selective sharing. |
-| `sync` cannot open a share | Pull the latest share and check the current directory. If your identity changed, ask the owner to verify the new proof and share again. |
+| `share` cannot share an unnamed key | `share` takes environment names. Use named environment keys for selective sharing. |
 | A backup does not contain a repo-local key | Import the `.esec-keyring` first. Backups collect keys from the global store. |
 | An upload is pending | Check `remote list` and `daemon logs`. Use `backup --push` to request an immediate upload. |
-| A new clone has encrypted files but cannot decrypt | Restore your personal backup or use `sync` to import a share. The project file alone does not provide private keys. |
+| A new clone has encrypted files but cannot decrypt | If you read the environment, `esec vault seal sync` opens its seal. Otherwise restore your personal backup, or ask a reader to run `esec vault share ENV --with LOGIN`. |
 
 ### Check key lookup without changing the shell
 

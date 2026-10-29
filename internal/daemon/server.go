@@ -49,7 +49,7 @@ func (s *Server) serverLoop(ctx context.Context) {
 		if err := s.serverSync(ctx, a); err != nil && ctx.Err() == nil {
 			s.Logger.Warn("vault server sync pending; will retry", "error", err)
 			if errors.Is(err, account.ErrConflicts) {
-				Notifier("esec vault", "Vault sync found conflicting keys. Run: esec vault sync --server")
+				Notifier("esec vault", "Vault sync found conflicting keys. Run: esec vault sync")
 			}
 		}
 		s.announceChain(ctx, a, before)
@@ -181,12 +181,12 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) { //nolint:go
 		// Most often a guarded key, which only a touch opens.
 		s.Logger.Info("shared projects: not sent", "keys", u)
 		if s.stillWaiting("unsent " + u) {
-			Notifier("esec vault: keys to send", u+" is waiting for a key this background service cannot open by itself. Run: esec vault access sync")
+			Notifier("esec vault: keys to send", u+" is waiting for a key this background service cannot open by itself. Run: esec vault sync")
 		}
 	}
 	for _, c := range res.Conflicts {
 		if s.stillWaiting("conflict " + c) {
-			Notifier("esec vault: key not replaced", c+": the team sent a key, but this device holds another. Run: esec vault access sync")
+			Notifier("esec vault: key not replaced", c+": the team sent a key, but this device holds another. Run: esec vault sync")
 		}
 	}
 	for _, d := range res.Dropped {
@@ -217,7 +217,7 @@ func (s *Server) teamSync(ctx context.Context, a *account.Account) { //nolint:go
 	}
 	for _, inv := range res.Invites {
 		if s.stillWaiting("invite " + inv.Project) {
-			msg := fmt.Sprintf("%s added you to the shared project %s. To take in its keys, run: esec vault access sync", inv.AddedBy, inv.Project)
+			msg := fmt.Sprintf("%s added you to the shared project %s. To take in its keys, run: esec vault sync", inv.AddedBy, inv.Project)
 			s.Logger.Info("shared projects: " + msg)
 			Notifier("esec vault: added to a project", msg)
 		}

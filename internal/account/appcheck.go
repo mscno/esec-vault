@@ -130,7 +130,7 @@ func (a *Account) CheckApp(ctx context.Context, in AppCheckInput) ([]Check, erro
 			for _, h := range status.Holders {
 				if h.ID == team.GroupHolder(gs.Group) {
 					if v := h.Envs[in.Env]; v != wire.KeyHeld && granted {
-						add("key sent", CheckFail, "the current "+in.Env+" key has not been sealed to "+gs.Group+" yet", "esec vault access sync  (on an admin's device of "+in.Project+")")
+						add("key sent", CheckFail, "the current "+in.Env+" key has not been sealed to "+gs.Group+" yet", "esec vault sync  (on an admin's device of "+in.Project+")")
 					} else if granted {
 						add("key sent", CheckOK, "the "+in.Env+" key is sealed to "+gs.Group, "")
 					}
@@ -153,7 +153,7 @@ func (a *Account) CheckApp(ctx context.Context, in AppCheckInput) ([]Check, erro
 		case used.Suspended:
 			add("group key", CheckFail, "the workload is blocked on the web, waiting for its removal to be signed", "esec vault changes")
 		case !used.HasKey:
-			add("group key", CheckFail, "the group key has not been wrapped for the workload yet", "esec vault access sync  (on an admin's device of "+gs.Group+")")
+			add("group key", CheckFail, "the group key has not been wrapped for the workload yet", "esec vault sync  (on an admin's device of "+gs.Group+")")
 		default:
 			add("group key", CheckOK, "wrapped for the workload with its KMS key", "")
 		}

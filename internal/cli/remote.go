@@ -27,10 +27,10 @@ type RemoteCmd struct {
 	SetDefault RemoteSetDefaultCmd `cmd:"" help:"Choose the default destination."`
 	Remove     RemoteRemoveCmd     `cmd:"" help:"Remove a destination's configuration."`
 	Test       RemoteTestCmd       `cmd:"" help:"Test put/get/list/delete with a random probe."`
-	Push       RemotePushCmd       `cmd:"" help:"Snapshot live keys and upload now."`
+	Push       RemotePushCmd       `cmd:"" hidden:"" help:"Now backup --push."`
 	Pull       RemotePullCmd       `cmd:"" help:"Download the newest backup for recovery or inspection."`
 	Prune      RemotePruneCmd      `cmd:"" help:"Delete older remote generations."`
-	Watch      RemoteWatchCmd      `cmd:"" help:"Continuously snapshot and retry pending uploads."`
+	Watch      RemoteWatchCmd      `cmd:"" hidden:"" help:"The background service does this; --once for a scheduled job without one."`
 }
 
 // RemoteAddCmd writes declarative destination configuration.

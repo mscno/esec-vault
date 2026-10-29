@@ -312,7 +312,7 @@ func (a *Account) Todos(ctx context.Context) ([]Todo, error) { //nolint:gocyclo 
 			plan, _ := t.orgRemovals(os, false, false)
 			for _, r := range plan {
 				if r.Login != "" {
-					out = append(out, Todo{Kind: "org-left", Target: r.ID, Text: fmt.Sprintf("%s left %s but is still in %s", r.Login, org, r.ID), Command: "esec vault access sync"})
+					out = append(out, Todo{Kind: "org-left", Target: r.ID, Text: fmt.Sprintf("%s left %s but is still in %s", r.Login, org, r.ID), Command: "esec vault sync"})
 				}
 			}
 		}

@@ -1,10 +1,8 @@
-// Package share implements git-native team sharing: per-member sealed keyring
-// blobs committed into the repository, with member identity rooted in GitHub.
+// Package share proves that a key belongs to a GitHub account.
 //
 // X25519 (NaCl box) keys cannot sign, so proof of key ownership uses the
 // member's GitHub-registered SSH key: a proof is an SSHSIG signature over a
 // canonical statement, verified against https://github.com/<login>.keys.
-// Verification results are pinned (TOFU) in ~/.config/esec/trusted.toml.
 package share
 
 import (

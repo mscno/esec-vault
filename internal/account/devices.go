@@ -296,7 +296,7 @@ func (a *Account) rotate(ctx context.Context, st *chain.State, id *identity.Iden
 	// The server now holds the new key in this device's box; installing it
 	// locally can be retried by any later sync if this step fails.
 	if err := a.installIdentity(ctx, next, rotated); err != nil {
-		return 0, fmt.Errorf("rotation committed, but installing the new key locally failed (run 'esec vault sync --server'): %w", err)
+		return 0, fmt.Errorf("rotation committed, but installing the new key locally failed (run 'esec vault sync'): %w", err)
 	}
 	return rotated.UKeyVersion, a.State.Save()
 }

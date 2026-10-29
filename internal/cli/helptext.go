@@ -338,9 +338,9 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault access remove alice --yes --reason \"left the team\"",
 		"esec vault env rotate dev",
 	),
-	"access sync": `The background service does this by itself; run it to see the result at once.
+	"sync": `The background service does this by itself; run it to see the result at once.
 
-` + examples("esec vault access sync"),
+` + examples("esec vault sync"),
 	"changes": `Changes made on the vault's web pages are signed by one of your devices before they take effect, since the server could have invented them. Each is shown and asked about; --yes signs removals without asking, never anything that gives access.
 
 ` + examples(
@@ -418,11 +418,11 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault group add acme/backend carol --account-key WORD-WORD-...",
 	),
 	"group leave": examples("esec vault group leave acme/backend"),
-	"group grant": `Run as an admin of both the project and the group. --env replaces what the group read before.
+	"group set": `Run as an admin of both the project and the group. --env replaces what the group read before.
 
 ` + examples(
-		"esec vault group grant acme/production --env prod",
-		"esec vault group grant acme/staging --env staging --project acme/api",
+		"esec vault group set acme/production --env prod",
+		"esec vault group set acme/staging --env staging --project acme/api",
 	),
 	"group token": `Printed once: store it as a secret. Expiry counts from now; --expires never suits app platforms such as Fly.io.
 

@@ -55,7 +55,7 @@ type SyncResult struct {
 }
 
 // ErrConflicts is returned when a non-interactive sync left conflicts.
-var ErrConflicts = errors.New("vault sync found conflicting keyring entries; run 'esec vault sync --server' in a terminal to resolve them")
+var ErrConflicts = errors.New("vault sync found conflicting keyring entries; run 'esec vault sync' in a terminal to resolve them")
 
 // entryName limits what a vault may write into a keyring.
 var entryName = regexp.MustCompile(`^(ESEC_PRIVATE_KEY(_[A-Z0-9_]{1,128})?|ESEC_GUARD_[A-Z0-9_]{1,128}|ESEC_ACTIVE_KEY|ESEC_ACTIVE_ENVIRONMENT)$`)

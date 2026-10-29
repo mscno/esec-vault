@@ -161,7 +161,7 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 		t.Fatalf("check: %d %s", code, out)
 	}
 	m := steps(fromJSON(out))
-	if m["identity"].Status != "todo" || !strings.Contains(m["identity"].Command, "esec vault init") {
+	if m["identity"].Status != "todo" || !strings.Contains(m["identity"].Command, "esec vault identity init") {
 		t.Fatalf("identity: %+v", m["identity"])
 	}
 	out, _ = r.run("", "", "setup", "--no-daemon", "--root", src)

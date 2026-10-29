@@ -121,7 +121,7 @@ func inspect(ctx *cliCtx) status {
 		s.Problems = append(s.Problems, err.Error())
 	}
 	if s.Stale {
-		s.Problems = append(s.Problems, "local snapshot is stale; run backup or remote watch")
+		s.Problems = append(s.Problems, "local snapshot is stale; run esec vault backup, or start the background service (esec vault daemon install --start)")
 	}
 	s.Destinations, err = remote.LoadState()
 	if err != nil {
