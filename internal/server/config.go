@@ -49,6 +49,18 @@ type Config struct {
 	Access   AccessConfig   `toml:"access"`
 	Sessions SessionsConfig `toml:"sessions"`
 	Alerts   AlertsConfig   `toml:"alerts"`
+	// Namespaces explicitly authorizes work tenants on this guarded server.
+	Namespaces        []NamespaceConfig `toml:"namespaces"`
+	MaxOrgsPerAccount int               `toml:"max_orgs_per_account"`
+}
+
+// NamespaceConfig reserves a team name for its initial admin's immutable
+// GitHub ID. It does not grant keys or replace the tenant's signed admins.
+type NamespaceConfig struct {
+	Name string `toml:"name"`
+	// Kind defaults to team; personal explicitly approves a legacy personal name.
+	Kind          string `toml:"kind"`
+	OwnerGitHubID int64  `toml:"owner_github_id"`
 }
 
 // AlertsConfig configures security alerts: an email (sent through
@@ -97,6 +109,9 @@ type GitHubConfig struct {
 
 // AccessConfig lists who may sign in.
 type AccessConfig struct {
+	// Optional known handles reserve personal addresses before first login.
+	// Values are immutable GitHub user IDs and must also be allowlisted.
+	ReservedGitHubHandles map[string]int64 `toml:"reserved_github_handles"`
 	// AllowedGitHubIDs are numeric GitHub user IDs. Usernames are never used
 	// for access: they can be renamed and later claimed by someone else.
 	AllowedGitHubIDs []int64 `toml:"allowed_github_ids"`
@@ -177,6 +192,9 @@ func parseIDs(s string) ([]int64, error) {
 // Validate checks the configuration.
 func (c *Config) Validate() error { //nolint:gocyclo // flat list of independent checks
 	var errs []error
+	if err := c.validateNamespaces(); err != nil {
+		errs = append(errs, err)
+	}
 	u, err := url.Parse(c.BaseURL)
 	switch {
 	case c.BaseURL == "" || err != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.User != nil:

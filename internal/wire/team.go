@@ -76,6 +76,15 @@ type ProjectCommitResult struct {
 	Seq uint64 `json:"seq"`
 }
 
+// ProjectTransfer creates the destination and archives the source atomically.
+// Both sides are signed by the source admin; the server also checks tenant
+// ownership. No keys or credentials are sent in plaintext.
+type ProjectTransfer struct {
+	Destination string               `json:"destination"`
+	Links       []*envelope.Envelope `json:"links"`
+	Archive     *envelope.Envelope   `json:"archive"`
+}
+
 // Key delivery states of a holder's environment.
 const (
 	// KeyHeld: the holder confirmed it has the current key.

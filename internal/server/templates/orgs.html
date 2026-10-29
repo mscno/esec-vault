@@ -1,5 +1,7 @@
 {{template "head" .}}
 <h1>Organisations</h1>
+{{if .PersonalPending}}<section class="notice"><h2>Choose your personal namespace</h2><p>You're signed in with GitHub. That username is unavailable as a vault namespace; choose another. This does not change your GitHub identity.</p>{{if .PersonalSuggestions}}<p>Available suggestions: {{range .PersonalSuggestions}}<code>{{.}}</code> {{end}}</p>{{end}}<form method="post" action="/personal/namespace" class="grid-form"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Personal namespace <input name="namespace" required pattern="[a-z0-9][a-z0-9_.\-]{0,38}" placeholder="your-name-personal"></label><button type="submit">Choose personal namespace</button></form></section>{{end}}
+<p class="muted">Personal tenants belong to one GitHub account. Any onboarded, whitelisted user can create an organisation and claim an available namespace; its owners and admins are signed roles. These are vault namespaces, not verified GitHub organisations. Creating a project never claims a name.</p>
 <p class="muted">An organisation is the acme of acme/store. Set one up to decide, signed on your devices, who belongs to it, which KMS keys its workloads may use, and its rules; only its people then create projects and groups named after it.</p>
 <div class="scroll">
 <table>
@@ -7,8 +9,8 @@
   <tbody>
   {{range .Orgs}}
   <tr>
-    <td><a href="/orgs/{{.Org}}"><strong>{{.Org}}</strong></a> {{if .Signed}}<span class="badge">signed</span>{{else}}<span class="badge status-pending">not set up</span>{{end}}</td>
-    <td>{{if .Admin}}<span class="badge status-active">admin</span>{{else if .People}}member{{else}}<span class="muted">works in it</span>{{end}}</td>
+    <td><a href="/orgs/{{.Org}}"><strong>{{.Org}}</strong></a> <span class="badge">{{.Kind}}</span> {{if .Signed}}<span class="badge">signed</span>{{else}}<span class="badge status-pending">not set up</span>{{end}}</td>
+    <td>{{if .Owner}}<span class="badge status-active">owner</span>{{else if .Admin}}<span class="badge status-active">admin</span>{{else if .People}}member{{else}}<span class="muted">works in it</span>{{end}}</td>
     <td>{{if .Signed}}{{.People}}{{else}}<span class="muted">—</span>{{end}}</td>
     <td>{{.Projects}}</td>
     <td>{{.Groups}}</td>

@@ -1,3 +1,41 @@
+# v0.23.0
+
+Upgrade the vault server and trusted-device clients together. No plans or
+billing tiers are introduced. Back up the database before upgrading; existing
+unclaimed prefixes require one-time explicit migration approval (README).
+
+- **Self-service tenants for whitelisted GitHub accounts.** Your numeric
+  GitHub ID remains your login identity. Its personal namespace is claimed
+  automatically; collisions open a browser/CLI picker, with
+  `login --personal-namespace` and `personal choose` for scripts or later setup.
+  Any onboarded user can create an organisation without operator approval.
+- **Namespace safety.** Personal and organisation handles share an atomic,
+  case-insensitive registry. Failed signed initializations do not claim a
+  name. Optional whitelist handle reservations protect people before they
+  join; reserved system names and a configurable creation cap limit squatting.
+- **Immutable tenant IDs, mutable handles.** `org rename` and `personal rename`
+  preserve signed history and retain historical aliases. Display names are
+  separate. Resources keep their IDs and policies across renames; old names
+  are never silently recycled to another owner.
+- **Signed ownership.** New organisations distinguish owners, daily admins
+  and members. `org owner` manages ownership; only owners rename tenants or
+  change owners. The last owner cannot be removed or demoted. Legacy admins
+  retain their historical authority until ownership is explicitly established.
+- **Atomic project transfers.** `project transfer SOURCE --to DEST` requires
+  source-project admin rights and both tenant owners' authorization. Across
+  tenants, collaborators, groups and machines are not copied. Within one
+  tenant, `access move` retains people, including moves between namespace aliases.
+- **Receiving-owner acceptance.** Add `--recipient LOGIN` to offer a transfer
+  to another owner. `transfers list/show/accept/reject/cancel` verifies source
+  consent, exact chain heads, tenant identities and recipient account keys.
+  Keys are encrypted only to the chosen account. Offers expire after 24 hours;
+  both ownership checks and both project updates run in one transaction.
+- **Key safety and migration.** Transfers preserve keys, not secrecy from
+  previous readers: rotate and re-encrypt to revoke old access. Guarded-only
+  keys are not silently unguarded. Local keyring collisions fail closed.
+  Tests cover tenant collisions, last-owner protection, stable renames,
+  tampering, stale/expired consent, account-key rotation and usable key delivery.
+
 # v0.22.1
 
 - Fix the release: v0.22.0 was tagged but built no binaries, since the age

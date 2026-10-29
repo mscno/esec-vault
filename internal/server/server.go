@@ -102,6 +102,9 @@ func New(cfg *Config, db *DB, log *slog.Logger, opts ...Option) (*Server, error)
 		o(s)
 	}
 	s.started = s.now()
+	if err := s.initNamespaces(context.Background()); err != nil {
+		return nil, err
+	}
 	tmpl, err := template.New("").Funcs(template.FuncMap{
 		"short": func(s string) string {
 			if len(s) > 16 {
@@ -266,6 +269,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /orgs/{org}/live/{tab}", s.webOrgLive)
 	m.HandleFunc("POST /orgs/{org}/policy", s.webOrgPolicy)
 	m.HandleFunc("POST /orgs/{org}/claim", s.webOrgClaim)
+	m.HandleFunc("POST /personal/namespace", s.webChoosePersonal)
 	m.HandleFunc("POST /orgs/{org}/people", s.webOrgAddPerson)
 	m.HandleFunc("POST /orgs/{org}/people/remove", s.webOrgRemovePerson)
 	m.HandleFunc("POST /orgs/{org}/settings", s.webOrgSettings)
@@ -316,9 +320,18 @@ func (s *Server) routes() {
 	m.Handle("GET /v1/users/{id}", s.api(false, s.apiPerson))
 	m.Handle("PUT /v1/account/proof", s.api(false, s.apiPutProof))
 	m.Handle("GET /v1/projects", s.api(false, s.apiProjects))
+	m.Handle("GET /v1/namespaces", s.api(false, s.apiNamespaces))
+	m.Handle("GET /v1/namespaces/{name}", s.api(false, s.apiNamespace))
+	m.Handle("PUT /v1/personal/namespace", s.api(false, s.apiChoosePersonal))
+	m.Handle("GET /v1/transfers", s.api(false, s.apiTransfers))
+	m.Handle("POST /v1/transfers", s.api(false, s.apiRequestTransfer))
+	m.Handle("GET /v1/transfers/{id}", s.api(false, s.apiTransfer))
+	m.Handle("POST /v1/transfers/{id}/accept", s.api(false, s.apiAcceptTransfer))
+	m.Handle("POST /v1/transfers/{id}/cancel", s.api(false, s.apiCancelTransfer))
 	m.Handle("GET /v1/projects/{org}/{repo}/chain", s.api(false, s.apiProjectChain))
 	m.Handle("GET /v1/projects/{org}/{repo}/status", s.api(false, s.apiProjectStatus))
 	m.Handle("POST /v1/projects/{org}/{repo}/commit", s.api(false, s.apiProjectCommit))
+	m.Handle("POST /v1/projects/{org}/{repo}/transfer", s.api(false, s.apiProjectTransfer))
 	m.Handle("DELETE /v1/projects/{org}/{repo}", s.api(false, s.apiDeleteProject))
 	m.Handle("GET /v1/projects/{org}/{repo}/expiries", s.api(false, s.apiExpiries))
 	m.Handle("POST /v1/projects/{org}/{repo}/expiries", s.api(false, s.apiSetExpiry))

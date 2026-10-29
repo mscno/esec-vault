@@ -60,8 +60,10 @@ type ReviewStatus struct {
 // OrgChain is an organisation's chain with the user chains of everyone in
 // it, to verify signatures with.
 type OrgChain struct {
-	Links  []*envelope.Envelope            `json:"links"`
-	Chains map[string][]*envelope.Envelope `json:"chains,omitempty"`
+	// Canonical is the immutable signed chain name, which survives namespace renames.
+	Canonical string                          `json:"canonical,omitempty"`
+	Links     []*envelope.Envelope            `json:"links"`
+	Chains    map[string][]*envelope.Envelope `json:"chains,omitempty"`
 }
 
 // OrgCommit appends links to an organisation chain, signed by the caller.
@@ -76,9 +78,34 @@ type OrgCommitResult struct {
 
 // OrgSummary is an organisation with a chain that the caller belongs to.
 type OrgSummary struct {
-	Org     string `json:"org"`
-	Admin   bool   `json:"admin"`
-	People  int    `json:"people"`
-	Keys    int    `json:"keys"`
-	Changes int    `json:"changes"`
+	TenantID    string `json:"tenant_id"`
+	Namespace   string `json:"namespace"`
+	DisplayName string `json:"display_name"`
+	Owner       bool   `json:"owner"`
+	Kind        string `json:"kind"`
+	Org         string `json:"org"`
+	Admin       bool   `json:"admin"`
+	People      int    `json:"people"`
+	Keys        int    `json:"keys"`
+	Changes     int    `json:"changes"`
+}
+
+// Namespace resolves a mutable handle to a persistent tenant. Owner is the
+// personal owner or an uninitialized reservation's creator. Signed live
+// organisation ownership is reported in Owners, not inferred from CreatedBy.
+type Namespace struct {
+	CreatedBy   string   `json:"created_by"`
+	Owners      []string `json:"owners,omitempty"`
+	Root        string   `json:"root,omitempty"`
+	TenantID    string   `json:"tenant_id"`
+	Canonical   string   `json:"canonical"`
+	DisplayName string   `json:"display_name"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	Owner       string   `json:"owner"`
+}
+
+// PersonalNamespace selects an available personal address after a collision.
+type PersonalNamespace struct {
+	Name string `json:"name"`
 }

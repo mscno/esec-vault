@@ -44,6 +44,17 @@ func (s *Server) webTeamMove(w http.ResponseWriter, r *http.Request) {
 		if team.ValidProject(next) != nil || strings.EqualFold(next, st.Project) {
 			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "Name the new project id as org/repo.")
 		}
+		same, err := sameTenant(ctx, s.db.sql, next, st.Project)
+		if err != nil {
+			return "", err
+		}
+		if !same {
+			if err := s.transferTarget(ctx, s.db.sql, next, ws.user.ID); err != nil {
+				return "", err
+			}
+		} else if err := s.checkNamespace(ctx, s.db.sql, next, ws.user.ID, ws.user.Login); err != nil {
+			return "", err
+		}
 		if other, _, err := s.db.projectState(ctx, s.db.sql, next); err != nil || other != nil {
 			if err != nil {
 				return "", err
@@ -53,7 +64,7 @@ func (s *Server) webTeamMove(w http.ResponseWriter, r *http.Request) {
 		if err := s.propose(ctx, ws.user.ID, s.clientIP(r), wire.Change{Scope: wire.ScopeProject, Target: st.Project, Kind: wire.ChangeProjectMove, Project: next}); err != nil {
 			return "", err
 		}
-		return "Proposed. A device makes the move (esec vault changes): it creates " + next + " with the same keys and people, and archives " + st.Project + " pointing there. Then change project in the repository's esec.toml.", nil
+		return "Proposed. A device makes the atomic move (esec vault changes), preserving keys and archiving " + st.Project + ". Cross-tenant moves do not copy people, groups or machines; rotate keys afterwards to revoke former readers. Then change project in the repository's esec.toml to " + next + ".", nil
 	})
 }
 

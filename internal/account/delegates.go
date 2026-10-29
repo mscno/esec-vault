@@ -604,6 +604,9 @@ func (ch ChangeView) describeSettings() ([]string, bool) {
 	case wire.ChangeProjectUnarchive:
 		return []string{fmt.Sprintf("%s: unarchive it", ch.Target)}, true
 	case wire.ChangeProjectMove:
+		if team.OrgOf(ch.Target) != team.OrgOf(ch.Project) {
+			return []string{fmt.Sprintf("%s: TRANSFER it to %s (atomic, same keys; no source people, groups or machines copied; rotate keys to revoke former readers)", ch.Target, ch.Project)}, true
+		}
 		return []string{fmt.Sprintf("%s: MOVE it to %s (a new project with the same keys and people; this one archived)", ch.Target, ch.Project)}, true
 	case wire.ChangeProjectLeave:
 		return []string{fmt.Sprintf("leave the project %s", ch.Project)}, true

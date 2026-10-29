@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mscno/esec-vault/internal/account"
+	"github.com/mscno/esec-vault/internal/client"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/team"
 	"github.com/mscno/esec-vault/internal/wire"
@@ -24,22 +25,27 @@ type OrgShowCmd struct {
 
 // orgJSON is what org prints with --json.
 type orgJSON struct {
-	Org      string                `json:"org"`
-	Signed   bool                  `json:"signed"`
-	Trusted  bool                  `json:"trusted"`
-	Words    string                `json:"fingerprint,omitempty"`
-	Admins   []string              `json:"admins,omitempty"`
-	Members  []string              `json:"members,omitempty"`
-	Left     map[string][]string   `json:"left,omitempty"`
-	KMS      []*team.OrgKMSState   `json:"kms,omitempty"`
-	Settings *team.OrgSettings     `json:"settings,omitempty"`
-	Projects []wire.ProjectSummary `json:"projects"`
-	Groups   []wire.GroupSummary   `json:"groups"`
-	Policy   *wire.OrgPolicy       `json:"policy"`
+	TenantID    string                `json:"tenant_id"`
+	Namespace   string                `json:"namespace"`
+	DisplayName string                `json:"display_name"`
+	Owners      []string              `json:"owners,omitempty"`
+	Org         string                `json:"org"`
+	Kind        string                `json:"kind"`
+	Signed      bool                  `json:"signed"`
+	Trusted     bool                  `json:"trusted"`
+	Words       string                `json:"fingerprint,omitempty"`
+	Admins      []string              `json:"admins,omitempty"`
+	Members     []string              `json:"members,omitempty"`
+	Left        map[string][]string   `json:"left,omitempty"`
+	KMS         []*team.OrgKMSState   `json:"kms,omitempty"`
+	Settings    *team.OrgSettings     `json:"settings,omitempty"`
+	Projects    []wire.ProjectSummary `json:"projects"`
+	Groups      []wire.GroupSummary   `json:"groups"`
+	Policy      *wire.OrgPolicy       `json:"policy"`
 }
 
 // Run implements org.
-func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // a listing, then one organisation's sections
+func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo,maintidx // a listing, then one organisation's sections
 	a, err := openAccount(ctx)
 	if err != nil {
 		return err
@@ -67,11 +73,35 @@ func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // a listing, the
 			count[orgName(g.ID)] = n
 		}
 		signed := map[string]bool{}
+		kinds := map[string]string{}
+		currentCounts := map[string][2]int{}
+		for name, n := range count {
+			current := name
+			if info, err := a.Client.Namespace(bg, name); err == nil {
+				current = info.Name
+				kinds[current] = info.Kind
+			}
+			old := currentCounts[current]
+			currentCounts[current] = [2]int{old[0] + n[0], old[1] + n[1]}
+		}
+		count = currentCounts
+		if names, err := a.Client.Namespaces(bg); err == nil {
+			for _, n := range names {
+				kinds[n.Name] = n.Kind
+				if _, ok := count[n.Name]; !ok {
+					count[n.Name] = [2]int{}
+				}
+			}
+		}
 		if list, err := a.Orgs(bg); err == nil {
 			for _, o := range list {
-				signed[o.Org] = true
-				if _, ok := count[o.Org]; !ok {
-					count[o.Org] = [2]int{}
+				name := o.Namespace
+				if name == "" {
+					name = o.Org
+				}
+				signed[name] = true
+				if _, ok := count[name]; !ok {
+					count[name] = [2]int{}
 				}
 			}
 		}
@@ -89,25 +119,49 @@ func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // a listing, the
 			if signed[strings.ToLower(o)] {
 				tag = "  (signed chain)"
 			}
-			fmt.Printf("%-24s %d project(s), %d group(s)%s\n", safetext.Clean(o), count[o][0], count[o][1], tag)
+			fmt.Printf("%-24s %-8s %d project(s), %d group(s)%s\n", safetext.Clean(o), kinds[o], count[o][0], count[o][1], tag)
 		}
 		fmt.Println("Show one with: esec vault org ORG")
 		return nil
 	}
-	in := func(id string) bool { return strings.EqualFold(orgName(id), c.Org) }
-	projects = slices.DeleteFunc(projects, func(p wire.ProjectSummary) bool { return !in(p.ID) })
-	groups = slices.DeleteFunc(groups, func(g wire.GroupSummary) bool { return !in(g.ID) })
 	v, err := a.Org(bg, strings.ToLower(c.Org))
 	if err != nil {
 		return err
 	}
 	os := v.State
+	in := func(id string) bool {
+		if os != nil {
+			return os.ContainsProject(id)
+		}
+		return strings.EqualFold(orgName(id), c.Org)
+	}
+	projects = slices.DeleteFunc(projects, func(p wire.ProjectSummary) bool { return !in(p.ID) })
+	groups = slices.DeleteFunc(groups, func(g wire.GroupSummary) bool { return !in(g.ID) })
+	kind := "legacy"
+	info, err := a.Client.Namespace(bg, strings.ToLower(c.Org))
+	if err != nil && !client.IsCode(err, wire.ErrNotFound) {
+		return err
+	}
+	if err == nil {
+		kind = info.Kind
+	} else {
+		info = nil
+	}
+	if os != nil && os.TenantID != "" && info != nil && (os.TenantID != info.TenantID || os.Namespace != info.Name) {
+		return fmt.Errorf("tenant profile does not match its signed chain")
+	}
 	if c.JSON {
-		out := orgJSON{Org: strings.ToLower(c.Org), Projects: nonNil(projects), Groups: nonNil(groups), Policy: v.Policy}
+		out := orgJSON{Org: strings.ToLower(c.Org), Kind: kind, Projects: nonNil(projects), Groups: nonNil(groups), Policy: v.Policy}
+		if info != nil {
+			out.TenantID, out.Namespace, out.DisplayName = info.TenantID, info.Name, info.DisplayName
+		}
 		if os != nil {
 			out.Signed, out.Trusted, out.Words, out.KMS, out.Settings, out.Left = true, v.Trusted, os.Words(), os.ActiveKMS(), &os.Settings, v.Left
 			for _, p := range os.ActiveAdmins() {
 				out.Admins = append(out.Admins, p.Login)
+				if os.Owner(p.User) {
+					out.Owners = append(out.Owners, p.Login)
+				}
 			}
 			for _, p := range os.People() {
 				if !os.Admin(p.User) {
@@ -117,12 +171,13 @@ func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // a listing, the
 		}
 		return printJSON(out)
 	}
-	if os == nil && len(projects)+len(groups) == 0 {
+	if os == nil && len(projects)+len(groups) == 0 && kind == "legacy" {
 		return fmt.Errorf("you have no shared project or group in %s, and it has no organisation chain (esec vault org create %s)", c.Org, strings.ToLower(c.Org))
 	}
 	fmt.Printf("%s  (%s/orgs/%s)\n", safetext.Clean(c.Org), a.State.Server, safetext.Clean(strings.ToLower(c.Org)))
+	fmt.Printf("Tenant: %s\n", kind)
 	if os == nil {
-		fmt.Printf("No signed chain yet: anyone can create projects named %s/... Set one up with: esec vault org create %s\n", c.Org, strings.ToLower(c.Org))
+		fmt.Printf("No signed chain yet. A namespace reservation is required; its owner sets it up with: esec vault org create %s\n", strings.ToLower(c.Org))
 	} else {
 		fmt.Printf("Fingerprint: %s\n", os.Words())
 		if !v.Trusted {
@@ -133,6 +188,9 @@ func (c *OrgShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // a listing, the
 			role := "member"
 			if os.Admin(p.User) {
 				role = "admin"
+			}
+			if os.Owner(p.User) {
+				role = "owner"
 			}
 			fmt.Printf("  %-24s %s\n", safetext.Clean(p.Login), role)
 		}

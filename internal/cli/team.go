@@ -29,7 +29,7 @@ type TeamCmd struct {
 	Requests AccessRequestsCmd `cmd:"" help:"List access requests; grant, turn down or withdraw one."`
 	Review   AccessReviewCmd   `cmd:"" help:"Review who reads a project: keep those who need it, remove the rest, and record it."`
 	Handover AccessHandoverCmd `cmd:"" help:"Make another member an admin (and, with --step-down, yourself a member)."`
-	Move     AccessMoveCmd     `cmd:"" help:"Rename a project: move it to a new id with the same keys and people."`
+	Move     AccessMoveCmd     `cmd:"" help:"Atomically rename or transfer a project; cross-tenant moves do not copy access."`
 	Archive  AccessArchiveCmd  `cmd:"" help:"Archive a project (no keys are sent for it), or with --undo unarchive it."`
 	Delete   AccessDeleteCmd   `cmd:"" help:"Delete an archived project from the server; keys stay in keyrings."`
 	Add      TeamAddCmd        `cmd:"" help:"Add a member and send them the keys they may read."`

@@ -36,6 +36,7 @@ const (
 
 // orgPersonView is someone in an organisation.
 type orgPersonView struct {
+	Owner    bool
 	Login    string
 	User     string
 	Admin    bool
@@ -134,7 +135,16 @@ func (s *Server) orgPageData(ctx context.Context, ws *webSession, org, tab strin
 		return nil, clientErr(http.StatusNotFound, wire.ErrNotFound, "That is not an organisation name.")
 	}
 	viewer := ws.user.ID
-	in := func(id string) bool { return team.OrgOf(id) == org }
+	bound, _, err := s.db.orgState(ctx, s.db.sql, org)
+	if err != nil {
+		return nil, err
+	}
+	in := func(id string) bool {
+		if bound != nil {
+			return bound.ContainsProject(id)
+		}
+		return team.OrgOf(id) == org
+	}
 	teams, err := s.teamSummaries(ctx, viewer)
 	if err != nil {
 		return nil, err
@@ -182,6 +192,13 @@ func (s *Server) orgPageData(ctx context.Context, ws *webSession, org, tab strin
 	}
 	data := s.page(ws, "orgs")
 	data["Org"] = org
+	data["TenantKind"] = "legacy"
+	if n, err := namespace(ctx, s.db.sql, org); err != nil {
+		return nil, err
+	} else if n != nil {
+		data["TenantKind"] = n.Kind
+		data["TenantID"], data["Namespace"], data["DisplayName"] = n.TenantID, n.Name, n.DisplayName
+	}
 	data["Tab"] = tab
 	data["Teams"] = teams
 	data["Groups"] = groups
@@ -192,7 +209,7 @@ func (s *Server) orgPageData(ctx context.Context, ws *webSession, org, tab strin
 	data["CanSetPolicy"] = serverAdmin
 	data["Chain"] = os
 	if os == nil {
-		data["CanClaim"], data["ClaimWhy"] = s.canClaim(ctx, org, viewer, serverAdmin)
+		data["CanClaim"], data["ClaimWhy"] = s.canClaim(ctx, org, viewer)
 		data["Claiming"], err = s.claiming(ctx, org, viewer)
 		return data, err
 	}
@@ -208,6 +225,7 @@ func (s *Server) orgPageData(ctx context.Context, ws *webSession, org, tab strin
 	data["MyMember"] = os.Member(viewer)
 	data["Admins"] = os.ActiveAdmins()
 	data["Settings"] = os.Settings
+	data["MyOwner"] = os.Owner(viewer)
 	data["SettingsBy"] = logins[os.SettingsBy]
 	data["SettingsTime"] = os.SettingsTime
 	data["Created"] = os.Links[0].CTime
@@ -256,8 +274,8 @@ func (s *Server) orgPageData(ctx context.Context, ws *webSession, org, tab strin
 }
 
 // canClaim says whether viewer may set up org, and if not, why.
-func (s *Server) canClaim(ctx context.Context, org, viewer string, serverAdmin bool) (bool, string) {
-	err := s.db.tx(ctx, func(tx *sql.Tx) error { return s.checkClaim(ctx, tx, org, viewer, serverAdmin) })
+func (s *Server) canClaim(ctx context.Context, org, viewer string) (bool, string) {
+	err := s.db.tx(ctx, func(tx *sql.Tx) error { return s.checkClaim(ctx, tx, org, viewer) })
 	if err == nil {
 		return true, ""
 	}
@@ -317,7 +335,7 @@ func (s *Server) orgRoster(ctx context.Context, os *team.OrgState, logins map[st
 	}
 	var out []orgPersonView
 	for _, p := range os.People() {
-		v := orgPersonView{Login: p.Login, User: p.User, Admin: os.Admin(p.User), Verified: p.Verified, AddedBy: logins[p.AddedBy], Reads: reads[p.User]}
+		v := orgPersonView{Login: p.Login, User: p.User, Admin: os.Admin(p.User), Owner: os.Owner(p.User), Verified: p.Verified, AddedBy: logins[p.AddedBy], Reads: reads[p.User]}
 		if p.AddedSeq > 0 {
 			v.Added = os.Links[p.AddedSeq-1].CTime
 		}
@@ -502,7 +520,7 @@ func (s *Server) orgChanges(ctx context.Context, os *team.OrgState) ([]orgChange
 		return nil, err
 	}
 	for _, c := range rekeys {
-		if team.OrgOf(c.Target) == os.Org {
+		if os.ContainsProject(c.Target) {
 			cs = append(cs, c)
 		}
 	}
@@ -568,13 +586,17 @@ func orNone(list []string) string {
 // orgAdminProjects lists the projects of org viewer administers, with
 // their environments.
 func (s *Server) orgAdminProjects(ctx context.Context, org, viewer string) ([]orgProjectView, error) {
+	os, _, err := s.db.orgState(ctx, s.db.sql, org)
+	if err != nil {
+		return nil, err
+	}
 	ids, err := s.db.memberProjects(ctx, viewer)
 	if err != nil {
 		return nil, err
 	}
 	var out []orgProjectView
 	for _, id := range ids {
-		if team.OrgOf(id) != org {
+		if (os != nil && !os.ContainsProject(id)) || (os == nil && team.OrgOf(id) != org) {
 			continue
 		}
 		st, err := s.listedProject(ctx, id)
@@ -628,7 +650,7 @@ func (s *Server) webOrgClaim(w http.ResponseWriter, r *http.Request) {
 		if os != nil {
 			return "", clientErr(http.StatusConflict, wire.ErrConflict, "%s is set up already.", org)
 		}
-		if ok, why := s.canClaim(ctx, org, ws.user.ID, s.cfg.Admin(ws.user.GitHubID)); !ok {
+		if ok, why := s.canClaim(ctx, org, ws.user.ID); !ok {
 			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "%s", why)
 		}
 		c := wire.Change{Scope: wire.ScopeAccount, Target: ws.user.ID, Kind: wire.ChangeOrgCreate, Subject: org}
@@ -640,6 +662,11 @@ func (s *Server) webOrgAddPerson(w http.ResponseWriter, r *http.Request) {
 	s.orgForm(w, r, orgTabPeople, func(ctx context.Context, ws *webSession, org string, os *team.OrgState) (string, error) {
 		if err := requireOrgAdmin(os, ws, org); err != nil {
 			return "", err
+		}
+		if n, err := namespace(ctx, s.db.sql, org); err != nil {
+			return "", err
+		} else if n != nil && n.Kind == "personal" {
+			return "", clientErr(http.StatusForbidden, wire.ErrForbidden, "a personal tenant has one permanent owner; add collaborators to individual projects or use a team tenant")
 		}
 		login := strings.TrimSpace(r.PostForm.Get("login"))
 		if team.ValidLogin(login) != nil {
@@ -753,7 +780,7 @@ func (s *Server) webOrgKMSAdd(w http.ResponseWriter, r *http.Request) {
 			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%v", err)
 		}
 		for _, g := range strings.FieldsFunc(f("groups"), func(r rune) bool { return r == ',' || r == ' ' }) {
-			if team.ValidGroup(g) != nil || team.OrgOf(g) != org {
+			if team.ValidGroup(g) != nil || !os.ContainsProject(g) {
 				return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%s is not a group of %s", g, org)
 			}
 			req.Groups = append(req.Groups, g)
@@ -809,7 +836,7 @@ func (s *Server) webOrgFlyApp(w http.ResponseWriter, r *http.Request) {
 		if err := policy.Validate(); err != nil {
 			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "%v", err)
 		}
-		if team.ValidGroup(app.Group) != nil || team.OrgOf(app.Group) != org {
+		if team.ValidGroup(app.Group) != nil || !os.ContainsProject(app.Group) {
 			return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "The group is one of %s, such as %s/%s.", org, org, app.App)
 		}
 		k, ok := os.KMSByName(app.KMS)
@@ -822,7 +849,7 @@ func (s *Server) webOrgFlyApp(w http.ResponseWriter, r *http.Request) {
 		reads := map[string][]string{}
 		for _, v := range r.PostForm["read"] {
 			project, env, ok := strings.Cut(v, " ")
-			if !ok || team.ValidProject(project) != nil || team.OrgOf(project) != org || team.ValidEnv(env) != nil {
+			if !ok || team.ValidProject(project) != nil || !os.ContainsProject(project) || team.ValidEnv(env) != nil {
 				return "", clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid project or environment")
 			}
 			reads[project] = append(reads[project], env)
@@ -1020,7 +1047,9 @@ func (s *Server) webOrgExport(w http.ResponseWriter, r *http.Request) {
 
 // orgIndexRow is an organisation on the index page.
 type orgIndexRow struct {
+	Owner    bool
 	Org      string
+	Kind     string
 	Signed   bool
 	Admin    bool
 	People   int
@@ -1043,6 +1072,17 @@ func (s *Server) webOrgs(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows[org]
 	}
+	if err := scanAll(ctx, s.db.sql, `SELECT name, kind FROM namespaces WHERE owner = ? ORDER BY name`, []any{ws.user.ID}, func(r *sql.Rows) error {
+		var name, kind string
+		if err := r.Scan(&name, &kind); err != nil {
+			return err
+		}
+		get(name).Kind = kind
+		return nil
+	}); err != nil {
+		s.webFail(w, r, err)
+		return
+	}
 	sums, err := s.orgSummaries(ctx, ws.user.ID)
 	if err != nil {
 		s.webFail(w, r, err)
@@ -1051,6 +1091,8 @@ func (s *Server) webOrgs(w http.ResponseWriter, r *http.Request) {
 	for _, o := range sums {
 		row := get(o.Org)
 		row.Signed, row.Admin, row.People, row.Changes = true, o.Admin, o.People, o.Changes
+		row.Owner = o.Owner
+		row.Kind = o.Kind
 	}
 	projects, err := s.db.memberProjects(ctx, ws.user.ID)
 	if err != nil {
@@ -1068,9 +1110,23 @@ func (s *Server) webOrgs(w http.ResponseWriter, r *http.Request) {
 	for _, g := range groups {
 		get(team.OrgOf(g)).Groups++
 	}
+	rows, err = s.normalizeOrgRows(ctx, rows)
+	if err != nil {
+		s.webFail(w, r, err)
+		return
+	}
 	list := make([]*orgIndexRow, 0, len(rows))
 	for _, k := range mapKeysSorted(rows) {
 		row := rows[k]
+		if row.Kind == "" {
+			row.Kind = "legacy"
+			if n, err := namespace(ctx, s.db.sql, k); err != nil {
+				s.webFail(w, r, err)
+				return
+			} else if n != nil {
+				row.Kind = n.Kind
+			}
+		}
 		if !row.Signed {
 			if os, _, err := s.db.orgState(ctx, s.db.sql, k); err == nil && os != nil {
 				row.Signed = true
@@ -1080,7 +1136,64 @@ func (s *Server) webOrgs(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.page(ws, "orgs")
 	data["Orgs"] = list
+	if err := s.personalOnboarding(ctx, ws.user, data); err != nil {
+		s.webFail(w, r, err)
+		return
+	}
 	s.render(w, http.StatusOK, "orgs.html", data)
+}
+
+func (s *Server) personalOnboarding(ctx context.Context, user *userRow, data map[string]any) error {
+	var personal int
+	if err := s.db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenants WHERE kind='personal' AND owner=?`, user.ID).Scan(&personal); err != nil {
+		return err
+	}
+	data["PersonalPending"] = personal == 0
+	if personal > 0 {
+		return nil
+	}
+	var suggestions []string
+	for _, name := range team.PersonalCandidates(user.Login) {
+		n, err := namespace(ctx, s.db.sql, name)
+		if err != nil {
+			return err
+		}
+		if n == nil {
+			suggestions = append(suggestions, name)
+		}
+	}
+	data["PersonalSuggestions"] = suggestions
+	return nil
+}
+
+// Resources retain historical IDs; group aliases under the current handle.
+func (s *Server) normalizeOrgRows(ctx context.Context, rows map[string]*orgIndexRow) (map[string]*orgIndexRow, error) {
+	out := map[string]*orgIndexRow{}
+	for key, row := range rows {
+		name := key
+		n, err := namespace(ctx, s.db.sql, key)
+		if err != nil {
+			return nil, err
+		}
+		if n != nil {
+			name = n.Name
+			row.Kind = n.Kind
+		}
+		if target := out[name]; target != nil {
+			target.Signed = target.Signed || row.Signed
+			target.Admin = target.Admin || row.Admin
+			target.Owner = target.Owner || row.Owner
+			target.People = max(target.People, row.People)
+			target.Changes = max(target.Changes, row.Changes)
+			target.Projects += row.Projects
+			target.Groups += row.Groups
+		} else {
+			snapshot := *row
+			snapshot.Org = name
+			out[name] = &snapshot
+		}
+	}
+	return out, nil
 }
 
 // webOrgsNew opens the page of an organisation named in the form, where it

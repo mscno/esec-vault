@@ -240,6 +240,24 @@ func (c *Client) PutProof(ctx context.Context, p wire.AccountProof) error {
 	return c.do(ctx, http.MethodPut, "/v1/account/proof", authenticated, p, nil)
 }
 
+// Namespaces lists the personal and work tenant namespaces available here.
+func (c *Client) Namespaces(ctx context.Context) ([]wire.Namespace, error) {
+	var out []wire.Namespace
+	err := c.do(ctx, http.MethodGet, "/v1/namespaces", authenticated, nil, &out)
+	return out, err
+}
+
+// Namespace resolves a handle to its immutable tenant identity.
+func (c *Client) Namespace(ctx context.Context, name string) (*wire.Namespace, error) {
+	var out wire.Namespace
+	return &out, c.do(ctx, http.MethodGet, "/v1/namespaces/"+url.PathEscape(name), authenticated, nil, &out)
+}
+
+// ChoosePersonal selects a personal namespace without changing login identity.
+func (c *Client) ChoosePersonal(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodPut, "/v1/personal/namespace", authenticated, &wire.PersonalNamespace{Name: name}, nil)
+}
+
 // Projects lists this account's shared projects.
 func (c *Client) Projects(ctx context.Context) ([]wire.ProjectSummary, error) {
 	var out wire.Projects
@@ -268,6 +286,11 @@ func (c *Client) ProjectStatus(ctx context.Context, project string) (*wire.Proje
 func (c *Client) ProjectCommit(ctx context.Context, project string, cm *wire.ProjectCommit) (*wire.ProjectCommitResult, error) {
 	var out wire.ProjectCommitResult
 	return &out, c.do(ctx, http.MethodPost, projectPath(project)+"/commit", authenticated, cm, &out)
+}
+
+// TransferProject atomically moves a project using reciprocal signed links.
+func (c *Client) TransferProject(ctx context.Context, project string, req *wire.ProjectTransfer) error {
+	return c.do(ctx, http.MethodPost, projectPath(project)+"/transfer", authenticated, req, nil)
 }
 
 // Grants lists grants waiting for this account.

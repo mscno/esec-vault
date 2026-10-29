@@ -24,7 +24,8 @@ import (
 // administers the people who left the organisation.
 //
 // A server can make up a chain for an organisation, signed by accounts of
-// its own, and anyone can set one up for a name nothing is named after yet.
+// its own. The guarded server requires an operator-approved namespace, but
+// devices still do not trust the server to authenticate a chain's admins.
 // So what a chain lets this device do by itself, rather than only refuse,
 // waits until the chain is anchored: this account signed a link of it
 // (created it, or acted in it as an admin), or its person compared its
@@ -53,14 +54,21 @@ func (t *teamCtx) org(org string) (*team.OrgState, error) {
 		return nil, fmt.Errorf("the organisation %s: %w", org, err)
 	}
 	t.give(oc.Chains)
-	os, err := team.VerifyOrg(org, oc.Links, t.chains)
+	canonical := org
+	if oc.Canonical != "" {
+		canonical = oc.Canonical
+	}
+	os, err := team.VerifyOrg(canonical, oc.Links, t.chains)
 	if err != nil {
 		return nil, fmt.Errorf("the server's chain for the organisation %s does not verify: %w", org, err)
+	}
+	if !os.HasNamespace(org) {
+		return nil, fmt.Errorf("organisation chain does not bind namespace %s", org)
 	}
 	if os.LastTime.After(t.a.Now().Add(time.Hour)) {
 		return nil, fmt.Errorf("the organisation %s has a link dated in the future (%s); check this machine's clock", org, os.LastTime.Format(time.RFC3339))
 	}
-	pin, ok := t.pins.Orgs[org]
+	pin, ok := t.pins.Orgs[canonical]
 	describe := func(i uint64) (string, string) { return os.Links[i].Signer, team.DescribeOrgLink(os, os.Links[i]) }
 	if err := t.checkPin(pin, ok, org, "organisation", os, os.Hashes, describe); err != nil {
 		return nil, err
@@ -178,8 +186,8 @@ func (t *teamCtx) checkNamespace(id string) error {
 }
 
 // orgNote says, for a project this account was added to, whether its
-// creator belongs to the organisation it is named after: anyone can create
-// a project under any name where an organisation has no chain.
+// creator belongs to the organisation it is named after. Legacy project
+// names alone are not evidence of tenant ownership.
 func (t *teamCtx) orgNote(st *team.State) (note string, warn bool) {
 	os, err := t.orgOf(st.Project)
 	if err != nil || os == nil || len(st.Links) == 0 {
@@ -270,7 +278,22 @@ func (a *Account) CreateOrg(ctx context.Context, org string) (*team.OrgState, er
 		if existing != nil || err != nil {
 			return fmt.Errorf("the organisation %s exists already; ask one of its admins to add you", org)
 		}
-		e, next, err := t.olink(team.NewOrg(org), team.OrgInit, team.OrgInitBody{Creator: team.Person{User: a.State.User, Login: a.State.Login, Root: t.own.Root()}})
+		names, err := a.Client.Namespaces(ctx)
+		if err != nil {
+			return err
+		}
+		kind := "team"
+		tenantID, err := team.NewTenantID()
+		if err != nil {
+			return err
+		}
+		for _, n := range names {
+			if n.Name == org && n.Owner == a.State.User {
+				kind = n.Kind
+				tenantID = n.TenantID
+			}
+		}
+		e, next, err := t.olink(team.NewOrg(org), team.OrgInit, team.OrgInitBody{Creator: team.Person{User: a.State.User, Login: a.State.Login, Root: t.own.Root()}, Kind: kind, TenantID: tenantID, DisplayName: org, ExplicitOwners: true})
 		if err != nil {
 			return err
 		}
@@ -438,7 +461,7 @@ func (t *teamCtx) orgRemovals(os *team.OrgState, apply, narrow bool) ([]OrgRemov
 		return nil, err
 	}
 	for _, sum := range projects {
-		if team.OrgOf(sum.ID) != os.Org {
+		if !os.ContainsProject(sum.ID) {
 			continue
 		}
 		st, err := t.state(sum.ID)
@@ -486,7 +509,7 @@ func (t *teamCtx) orgRemovals(os *team.OrgState, apply, narrow bool) ([]OrgRemov
 		return nil, err
 	}
 	for _, sum := range groups {
-		if team.OrgOf(sum.ID) != os.Org {
+		if !os.ContainsProject(sum.ID) {
 			continue
 		}
 		gs, err := t.group(sum.ID)
@@ -669,12 +692,16 @@ func (a *Account) WithdrawKMS(ctx context.Context, org, name, reason string) ([]
 // the groups this account can see.
 func (t *teamCtx) kmsUsers(org string, key kms.Key) []string {
 	var out []string
+	os, err := t.org(org)
+	if err != nil {
+		return nil
+	}
 	list, err := t.a.Client.Groups(t.ctx)
 	if err != nil {
 		return nil
 	}
 	for _, g := range list {
-		if team.OrgOf(g.ID) != org {
+		if (os != nil && !os.ContainsProject(g.ID)) || (os == nil && team.OrgOf(g.ID) != org) {
 			continue
 		}
 		gs, err := t.group(g.ID)

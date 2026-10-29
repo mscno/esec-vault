@@ -225,6 +225,10 @@ func StartConfig(t *testing.T, opts []server.Option, edit func(*server.Config), 
 		Access:       server.AccessConfig{AllowedGitHubIDs: allowed},
 	}
 	cfg.BootstrapToken = BootstrapSecret
+	// The shared fixtures use acme as an operator-approved work tenant.
+	if len(allowed) > 0 {
+		cfg.Namespaces = []server.NamespaceConfig{{Name: "acme", OwnerGitHubID: allowed[0]}}
+	}
 	cfg.Sessions.Idle.Duration = 30 * 24 * time.Hour
 	cfg.Sessions.Absolute.Duration = 90 * 24 * time.Hour
 	if edit != nil {

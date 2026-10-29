@@ -18,6 +18,8 @@ import (
 // OrgCmd manages organisations: the "acme" of acme/store, with a signed
 // chain of its people, approved KMS keys and rules.
 type OrgCmd struct {
+	Owner     OrgOwnerCmd     `cmd:"" help:"Grant or remove tenant ownership; the last owner cannot be removed."`
+	Rename    OrgRenameCmd    `cmd:"" help:"Rename a namespace or display name, preserving tenant identity and history."`
 	Show      OrgShowCmd      `cmd:"" default:"withargs" help:"Show an organisation: people, approved KMS keys, rules, projects and groups (default)."`
 	Create    OrgCreateCmd    `cmd:"" help:"Set up an organisation's signed chain, with you as its admin."`
 	Trust     OrgTrustCmd     `cmd:"" help:"Confirm an organisation's fingerprint on this device, so it applies the organisation's removals and keys."`
@@ -54,6 +56,11 @@ func (c *OrgCreateCmd) Run(ctx *cliCtx) error {
 	}
 	fmt.Printf("✓ Created the organisation %s, with you as its admin.\n", st.Org)
 	fmt.Printf("  Fingerprint: %s\n", st.Words())
+	if st.Kind == "personal" {
+		fmt.Println("  Personal tenant: you are its permanent owner. Add collaborators to individual projects, or use a team tenant for shared ownership.")
+		fmt.Printf("Open: %s/orgs/%s\n", a.State.Server, st.Org)
+		return nil
+	}
 	fmt.Printf("  From now on only its people create projects and groups named %s/... on this server.\n", st.Org)
 	fmt.Printf("Next: add people (esec vault org add %s LOGIN [--admin]), approve a KMS key for workloads (esec vault org kms add %s NAME ...), and set its rules (esec vault org set %s --members-only).\n", st.Org, st.Org, st.Org)
 	fmt.Printf("Or do it all on %s/orgs/%s.\n", a.State.Server, st.Org)

@@ -40,6 +40,11 @@ func validOrg(org string) bool {
 // organisation (the zero policy when none is set).
 func (s *Server) serverPolicy(ctx context.Context, q queryer, org string) (wire.OrgPolicy, error) {
 	var p wire.OrgPolicy
+	if n, err := namespace(ctx, q, org); err != nil {
+		return p, err
+	} else if n != nil {
+		org = n.Canonical
+	}
 	var raw, by string
 	var at int64
 	err := q.QueryRowContext(ctx, `SELECT policy, updated_by, updated_at FROM org_policies WHERE org = ?`, strings.ToLower(org)).Scan(&raw, &by, &at)
