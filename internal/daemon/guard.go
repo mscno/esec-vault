@@ -287,8 +287,11 @@ func describeRead(req broker.GuardRequest, keyEnv, pub string) string {
 			fmt.Fprintf(&b, ", which says it is %s", field(req.Host))
 		}
 	}
+	if req.Command != "" {
+		fmt.Fprintf(&b, "\nCommand: %s", field(req.Command))
+	}
 	if req.Session != "" {
-		fmt.Fprintf(&b, "\nAgent session: %s", field(req.Session))
+		fmt.Fprintf(&b, "\nSession (as the program names itself): %s", field(req.Session))
 	}
 	what := keyEnv
 	if what == "" {

@@ -65,9 +65,10 @@ type GuardRequest struct {
 	// forward socket), never by the request.
 	Forwarded bool
 	UID, PID  uint32
-	// Caller is the asking program and its parents.
-	Caller  string
-	Session string
+	// Caller is the asking program and its parents; Command is the asking
+	// program's command line, which tells a run from a decrypt.
+	Caller, Command string
+	Session         string
 	// Seal is the sealed key a forwarded request carries.
 	Seal []byte
 }
@@ -123,6 +124,10 @@ type Server struct {
 	Forwarded bool
 	// Chain describes the program behind a pid; tests replace it.
 	Chain func(pid uint32) string
+	// Command returns the command line of the program behind a pid, for
+	// the guarded read's dialog only (it may hold what the audit log should
+	// not); nil shows none.
+	Command func(pid uint32) string
 }
 
 // NewServer returns a broker server.
@@ -493,10 +498,13 @@ func (s *Server) guardedKey(uid, pid uint32, req *Request, pub string) (string, 
 	if s.Chain != nil {
 		chain = s.Chain(pid)
 	}
+	command := ""
 	if s.Forwarded {
 		// The host name is the other machine's claim; the local chain is
 		// the ssh session carrying it.
 		chain = "forwarded (says " + strconv.Quote(safetext.CleanN(req.Host, 60)) + ") via " + chain
+	} else if s.Command != nil {
+		command = s.Command(pid)
 	}
 	entry := AuditEntry{UID: uid, PID: pid, Op: req.Op, Project: req.Project, Env: req.Env, Caller: chain, Session: req.Session}
 	if matched && action == policy.Deny {
@@ -508,7 +516,7 @@ func (s *Server) guardedKey(uid, pid uint32, req *Request, pub string) (string, 
 	if err := s.auditEntry(entry); err != nil {
 		return "", auditFailed()
 	}
-	key, how, err := s.Guard.Key(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Host: req.Host, Forwarded: s.Forwarded, UID: uid, PID: pid, Caller: chain, Session: req.Session, Seal: req.Seal})
+	key, how, err := s.Guard.Key(GuardRequest{Project: req.Project, Env: req.Env, PublicKey: pub, Path: req.Path, Host: req.Host, Forwarded: s.Forwarded, UID: uid, PID: pid, Caller: chain, Command: command, Session: req.Session, Seal: req.Seal})
 	if err != nil {
 		entry.Decision, entry.Detail = "deny", "guard: "+err.Error()
 		_ = s.auditEntry(entry)

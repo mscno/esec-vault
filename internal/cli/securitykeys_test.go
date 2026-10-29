@@ -132,3 +132,18 @@ func TestManualSecurityKey(t *testing.T) {
 		t.Fatalf("%+v %v", k, chain.ValidateSecurityKey(k))
 	}
 }
+
+// A YubiKey slot that never asks for a touch is not added: a guarded read
+// with it would need only the dialog.
+func TestSecurityKeysAddRefusesNoTouch(t *testing.T) {
+	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	t.Setenv("ESEC_SECRET_STORE", "file")
+	fakeYubiKeys(t, strings.Replace(testYubiKeys, "Touch policy: Always", "Touch policy: Never", 1))
+	err := (&SecurityKeysAddCmd{}).Run(&cliCtx{Keyring: keyring.NewMemory()})
+	if err == nil || !strings.Contains(err.Error(), "touch policy Never") {
+		t.Fatalf("added a slot that never asks for a touch: %v", err)
+	}
+	if r, _ := securitykey.Load(); len(r.Keys) != 0 {
+		t.Fatalf("registered %v", r.Keys)
+	}
+}

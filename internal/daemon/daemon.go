@@ -114,6 +114,8 @@ type Server struct {
 
 func describePID(pid uint32) string { return caller.Describe(caller.Chain(int(pid))) }
 
+func commandOf(pid uint32) string { return caller.Args(int(pid)) }
+
 // New constructs a locked daemon. Tests inject an in-memory keyring.
 func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	if err := paths.EnsureHome(); err != nil {
@@ -133,7 +135,7 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	// Plugins are found by name on PATH: put the checked ones first.
 	guard.PinPlugins()
 	g := newGuarder(localSecurityKeys, b.Session)
-	b.Guard, b.Chain = g, describePID
+	b.Guard, b.Chain, b.Command = g, describePID, commandOf
 	b.Unseal = func(project, env, pub, path string) (string, error) { return unseal(kr, project, env, pub, path) }
 	fwd := broker.NewServer(nil, p, audit, logger)
 	fwd.ControlOnlyApproval, fwd.Forwarded = true, true

@@ -218,6 +218,9 @@ func (c *SecurityKeysAddCmd) Run(ctx *cliCtx) error {
 			return fmt.Errorf("%d YubiKeys are plugged in: --name names one; unplug the others, or leave --name out to be asked", len(fresh))
 		}
 		for _, d := range fresh {
+			if strings.EqualFold(d.TouchPolicy, "Never") {
+				return fmt.Errorf("YubiKey %s slot %s has touch policy Never: a guarded read would need no touch, so esec does not use it. Make a slot that asks every time: esec vault security-keys setup --serial %s", d.Serial, d.Slot, d.Serial)
+			}
 			if !d.TouchAlways() && d.TouchPolicy != "" {
 				fmt.Fprintf(os.Stderr, "! YubiKey %s slot %s has touch policy %s: after one touch, other programs can decrypt for a while. For esec, make a slot with: esec vault security-keys setup --serial %s\n", d.Serial, d.Slot, d.TouchPolicy, d.Serial)
 			}

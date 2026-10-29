@@ -293,7 +293,8 @@ func (c *UnlockCmd) Run(app *cliCtx) error {
 	// Say what unlocking does not need: a YubiKey touched now, with nothing
 	// waiting for it, types its one-time password into the terminal.
 	fmt.Fprintln(os.Stderr, "Unlocked until", resp.Expires.Format(time.RFC3339)+"; unlocking needs no security key.")
-	fmt.Fprintln(os.Stderr, "Guarded environments still ask for a touch when read: esec vault decrypt ENV, esec vault run ENV -- COMMAND.")
+	fmt.Fprintln(os.Stderr, "A guarded environment asks (a dialog, then a touch) when read with esec vault decrypt ENV or esec vault run ENV -- COMMAND;")
+	fmt.Fprintln(os.Stderr, "one guarded for the session then stays open, without asking, until the vault locks.")
 	return nil
 }
 

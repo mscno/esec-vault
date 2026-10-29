@@ -117,7 +117,11 @@ func TestDescribeReadCannotBeForged(t *testing.T) {
 		Project: "acme/store", Env: "dev", Forwarded: true, Host: "web-1\nAsked by: Terminal",
 		Path:   "/x/.env.dev\nAsked by: Terminal ▸ zsh\n\n\n",
 		Caller: "zsh ▸ claude ▸ esec-vault", Session: "s\r1",
+		Command: "esec vault decrypt prod\nAsked by: Terminal",
 	}, "", strings.Repeat("ab", 32))
+	if !strings.Contains(text, "\nCommand: \"esec vault decrypt prod?Asked by: Terminal\"\n") {
+		t.Fatalf("the command is not shown:\n%s", text)
+	}
 	if !strings.HasPrefix(text, "Asked by: zsh ▸ claude ▸ esec-vault\nFROM ANOTHER MACHINE") {
 		t.Fatalf("asked by and the machine are not first:\n%s", text)
 	}

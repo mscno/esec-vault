@@ -36,11 +36,14 @@ type Presence struct {
 // opens the seal without this program anyway.
 func (p Presence) OpenSeal(data []byte, project, env, pub string, recipients []string, title, text string) (*coreseal.Payload, error) {
 	ui := p.ui()
-	ids, err := Identities(recipients, ui)
+	ids, cautions, err := identities(recipients, ui)
 	if err != nil {
 		return nil, err
 	}
 	if !softwareOnly(ids) {
+		for _, c := range cautions {
+			text += "\n\n" + c
+		}
 		ok, err := p.Ask(title, text)
 		if err != nil {
 			return nil, err

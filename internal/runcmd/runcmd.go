@@ -18,6 +18,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
@@ -25,6 +28,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/mscno/esec-vault/internal/broker"
+	"github.com/mscno/esec-vault/internal/seal"
 )
 
 // ExitError requests process termination with the child's exit code.
@@ -105,20 +109,54 @@ func Fetch(client *broker.Client, env, format string, opts Options) (map[string]
 	return secrets, nil
 }
 
-// guarded reports whether esec.toml above dir guards env.
+// guarded reports whether env is guarded in the project above dir: by its
+// esec.toml, or by its seal record (.esec/seals.toml), as the background
+// service decides.
 func guarded(dir, env string) bool {
-	pf, _, err := projectfile.Find(dir)
+	pf, path, err := projectfile.Find(dir)
 	if err != nil || pf == nil {
 		return false
 	}
-	e, ok := pf.Env[env]
-	return ok && e.GuardLevel() != projectfile.GuardNone
+	if e, ok := pf.Env[env]; ok && e.GuardLevel() != projectfile.GuardNone {
+		return true
+	}
+	recs, err := seal.LoadRecords(filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	rec := recs[env]
+	return rec != nil && seal.Guarded(rec.Guard)
+}
+
+// checkName refuses a secret name that cannot be a variable or a line of
+// its own: one that is empty, holds '=' or ';', or holds a character that
+// is not printable (a newline would start a forged line).
+func checkName(k string) error {
+	if k == "" || strings.ContainsAny(k, "=;") || strings.ContainsFunc(k, func(r rune) bool { return !unicode.IsPrint(r) }) || !utf8.ValidString(k) {
+		return fmt.Errorf("unsupported secret name %q", k)
+	}
+	return nil
+}
+
+// Unsafe reports whether v, printed as it is on a terminal, could do more
+// than show text: it holds a control character other than a newline or a
+// tab (an escape sequence can rewrite the screen or the clipboard), an
+// invisible formatting character, or bytes that are not UTF-8.
+func Unsafe(v string) bool {
+	return !utf8.ValidString(v) || strings.ContainsFunc(v, func(r rune) bool {
+		return r != '\n' && r != '\t' && r != ' ' && !unicode.IsPrint(r)
+	})
 }
 
 // Print writes secrets to w: key's value alone, or else KEY=value lines in
-// key order, a value spanning lines quoted so each line holds one secret.
-// asJSON writes a JSON object instead (of key alone, when given).
-func Print(w io.Writer, secrets map[string]string, key string, asJSON bool) error {
+// key order. A value is quoted (Go syntax) when it holds anything but
+// printable characters and spaces, or begins with a quote, so each line is
+// one secret and no value drives the terminal. The lines are not shell
+// syntax: give secrets to a command with run, never eval them. key's value
+// alone is written as it is, unless terminal is set and it is Unsafe: then
+// it is quoted too. asJSON writes a JSON object instead (of key alone, when
+// given), with every character that is not printable escaped.
+func Print(w io.Writer, secrets map[string]string, key string, asJSON, terminal bool) error {
 	if key != "" {
 		v, ok := secrets[key]
 		if !ok {
@@ -126,23 +164,33 @@ func Print(w io.Writer, secrets map[string]string, key string, asJSON bool) erro
 		}
 		secrets = map[string]string{key: v}
 	}
-	if asJSON {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(secrets)
-	}
-	if key != "" {
-		_, err := fmt.Fprintln(w, secrets[key])
-		return err
-	}
 	keys := make([]string, 0, len(secrets))
 	for k := range secrets {
+		if err := checkName(k); err != nil {
+			return err
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	if asJSON {
+		data, err := json.MarshalIndent(secrets, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(w, "%s\n", escapeJSON(string(data)))
+		return err
+	}
+	if key != "" {
+		v := secrets[key]
+		if terminal && Unsafe(v) {
+			v = strconv.Quote(v)
+		}
+		_, err := fmt.Fprintln(w, v)
+		return err
+	}
 	for _, k := range keys {
 		v := secrets[k]
-		if strings.ContainsAny(v, "\r\n") {
+		if strings.HasPrefix(v, `"`) || !utf8.ValidString(v) || strings.ContainsFunc(v, func(r rune) bool { return r != ' ' && !unicode.IsPrint(r) }) {
 			v = strconv.Quote(v)
 		}
 		if _, err := fmt.Fprintf(w, "%s=%s\n", k, v); err != nil {
@@ -150,6 +198,27 @@ func Print(w io.Writer, secrets map[string]string, key string, asJSON bool) erro
 		}
 	}
 	return nil
+}
+
+// escapeJSON escapes what encoding/json leaves as it is but a terminal may
+// act on (DEL, C1 controls, invisible formatting). Outside strings, JSON
+// holds only spaces, newlines and printable ASCII, so this changes strings
+// only and keeps their values.
+func escapeJSON(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == ' ' || unicode.IsPrint(r) {
+			b.WriteRune(r)
+			continue
+		}
+		if r > 0xffff {
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, "\\u%04x\\u%04x", hi, lo)
+			continue
+		}
+		fmt.Fprintf(&b, "\\u%04x", r)
+	}
+	return b.String()
 }
 
 // Run resolves the project from esec.toml, fetches decrypted secrets from
@@ -168,8 +237,8 @@ func Run(client *broker.Client, env, format string, command []string, opts Optio
 	for k, v := range secrets {
 		// Never drop a secret silently: the child would run successfully
 		// without the variable it was promised.
-		if strings.ContainsAny(k, "=;\n") || k == "" {
-			return fmt.Errorf("cannot inject secret with unsupported name %q", k)
+		if err := checkName(k); err != nil {
+			return fmt.Errorf("cannot inject secret: %w", err)
 		}
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

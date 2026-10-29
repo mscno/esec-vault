@@ -43,6 +43,22 @@ func Describe(chain []string) string {
 	return strings.Join(parts, " ▸ ")
 }
 
+// Args returns the command line of pid ("esec vault decrypt prod"), or ""
+// when it cannot be read. Like Chain it informs a person and decides
+// nothing: a process can rewrite its own arguments.
+func Args(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func parent(pid int) (ppid int, name string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

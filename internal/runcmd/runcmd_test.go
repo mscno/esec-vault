@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/policy"
+	"github.com/mscno/esec-vault/internal/seal"
 )
 
 func TestResolveSecretsFile(t *testing.T) {
@@ -136,21 +138,77 @@ func TestRunInjectsSecretsFromBroker(t *testing.T) {
 func TestPrint(t *testing.T) {
 	secrets := map[string]string{"B": "two", "A": "one", "PEM": "-----BEGIN-----\nabc\n-----END-----"}
 	var out strings.Builder
-	if err := Print(&out, secrets, "", false); err != nil {
+	if err := Print(&out, secrets, "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	if want := "A=one\nB=two\nPEM=\"-----BEGIN-----\\nabc\\n-----END-----\"\n"; out.String() != want {
 		t.Fatalf("all:\n%s\nwant:\n%s", out.String(), want)
 	}
 	out.Reset()
-	if err := Print(&out, secrets, "B", false); err != nil || out.String() != "two\n" {
+	if err := Print(&out, secrets, "B", false, false); err != nil || out.String() != "two\n" {
 		t.Fatalf("one: %q %v", out.String(), err)
 	}
 	out.Reset()
-	if err := Print(&out, secrets, "A", true); err != nil || out.String() != "{\n  \"A\": \"one\"\n}\n" {
+	if err := Print(&out, secrets, "A", true, false); err != nil || out.String() != "{\n  \"A\": \"one\"\n}\n" {
 		t.Fatalf("json: %q %v", out.String(), err)
 	}
-	if err := Print(&out, secrets, "MISSING", false); err == nil || !strings.Contains(err.Error(), "no secret named MISSING") {
+	if err := Print(&out, secrets, "MISSING", false, false); err == nil || !strings.Contains(err.Error(), "no secret named MISSING") {
 		t.Fatalf("missing: %v", err)
+	}
+}
+
+// Print refuses a name that would forge a line and shows a value with
+// control characters escaped, so a value planted in the secrets file cannot
+// fake a line or drive the terminal.
+func TestPrintEscapes(t *testing.T) {
+	var out strings.Builder
+	for _, k := range []string{"A\nB", "A=B", "", "A\x1bB"} {
+		if err := Print(&out, map[string]string{k: "v"}, "", false, false); err == nil {
+			t.Errorf("printed a secret named %q", k)
+		}
+	}
+	out.Reset()
+	esc := "x\x1b]52;c;aGk=\x07"
+	if err := Print(&out, map[string]string{"E": esc, "Q": `"q"`, "T": "a\tb"}, "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if want := "E=" + strconv.Quote(esc) + "\nQ=" + strconv.Quote(`"q"`) + "\nT=" + strconv.Quote("a\tb") + "\n"; out.String() != want {
+		t.Fatalf("lines %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	if err := Print(&out, map[string]string{"C1": "a\u009b31mb"}, "", true, false); err != nil || strings.ContainsRune(out.String(), '\u009b') || !strings.Contains(out.String(), `\u009b`) {
+		t.Fatalf("json %q %v", out.String(), err)
+	}
+	out.Reset()
+	if err := Print(&out, map[string]string{"E": esc}, "E", false, false); err != nil || out.String() != esc+"\n" {
+		t.Fatalf("piped value %q %v", out.String(), err)
+	}
+	out.Reset()
+	if err := Print(&out, map[string]string{"E": esc, "P": "a\nb"}, "E", false, true); err != nil || out.String() != strconv.Quote(esc)+"\n" {
+		t.Fatalf("value on a terminal %q %v", out.String(), err)
+	}
+	out.Reset()
+	if err := Print(&out, map[string]string{"P": "a\nb"}, "P", false, true); err != nil || out.String() != "a\nb\n" {
+		t.Fatalf("multi-line value on a terminal %q %v", out.String(), err)
+	}
+	if !Unsafe(esc) || Unsafe("-----BEGIN-----\nabc\n\tdef") {
+		t.Fatal("Unsafe")
+	}
+}
+
+// The touch notice knows an environment guarded by its seal record alone.
+func TestGuardedBySealRecord(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "esec.toml"), []byte("project = \"acme/web\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if guarded(dir, "prod") {
+		t.Fatal("guarded with no record")
+	}
+	if err := (seal.Records{"prod": {Guard: "touch"}}).Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	if !guarded(dir, "prod") || guarded(dir, "dev") {
+		t.Fatal("the seal record's guard was not seen")
 	}
 }

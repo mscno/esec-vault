@@ -18,3 +18,14 @@ func TestChainOfThisProcess(t *testing.T) {
 		t.Fatal("empty chain")
 	}
 }
+
+// Args is the command line of a process, for the dialog to tell one
+// command of a program from another.
+func TestArgsOfThisProcess(t *testing.T) {
+	if a := Args(os.Getpid()); !strings.Contains(a, "-test.") {
+		t.Fatalf("args: %q", a)
+	}
+	if Args(-1) != "" {
+		t.Fatal("args of no process")
+	}
+}

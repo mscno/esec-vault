@@ -1854,6 +1854,18 @@ them with `esec vault run`. `esec vault unlock` needs no touch; touching a
 YubiKey that nothing waits for types its one-time password into the terminal
 (`ykman config usb --disable OTP` turns that off if you do not use it).
 
+`esec vault decrypt` prints `KEY=value` lines, quoting a value that holds
+anything but printable characters, so a value planted in the file cannot
+forge a line or drive your terminal. The lines are not shell syntax: give
+secrets to a command with `esec vault run`, never `eval` them. The dialog
+shows the asking command's line (`esec vault decrypt prod` or
+`esec vault run prod -- ./deploy`): allow a read only if you ran it.
+
+A YubiKey slot with touch policy `never` is not used for guarded reads. One
+with `cached` keeps a touch for 15 seconds, so a second read soon after needs
+no touch; the dialog says so. `esec vault security-keys setup` makes a slot
+that asks every time.
+
 You never copy a recipient: plug a YubiKey in and the background service
 asks to add it. Your keys are in your signed chain, so everyone who seals for
 you uses them. After adding or removing one, guarded seals are made again:

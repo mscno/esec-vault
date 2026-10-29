@@ -62,11 +62,23 @@ func StandInRecipients() ([]string, error) {
 // security keys: the stand-ins, or else, for each plugin among recipients,
 // the identities of its keys here (the YubiKeys plugged in).
 func Identities(recipients []string, ui *plugin.ClientUI) ([]age.Identity, error) {
+	ids, _, err := identities(recipients, ui)
+	return ids, err
+}
+
+// identities is Identities, with cautions for the dialog about the keys
+// used: a YubiKey slot that keeps a touch for a while. A plugin that is
+// missing or finds no key here is passed over, so another reader's kind of
+// key cannot stop this one's; only when no plugin has a key is that an
+// error, with each plugin's reason.
+func identities(recipients []string, ui *plugin.ClientUI) ([]age.Identity, []string, error) {
 	if ids, err := StandIns(ui); err != nil || len(ids) > 0 {
-		return ids, err
+		return ids, nil, err
 	}
 	seen := map[string]bool{}
 	var out []age.Identity
+	var cautions []string
+	var reasons []error
 	for _, r := range recipients {
 		name := PluginName(r)
 		if name == "" || seen[name] {
@@ -75,64 +87,83 @@ func Identities(recipients []string, ui *plugin.ClientUI) ([]age.Identity, error
 		seen[name] = true
 		path, err := CheckPlugin(name)
 		if err != nil {
-			return nil, err
+			reasons = append(reasons, err)
+			continue
 		}
-		ids, err := pluginIdentities(name, path, recipients, ui)
+		ids, c, err := pluginIdentities(name, path, recipients, ui)
 		if err != nil {
-			return nil, err
+			reasons = append(reasons, err)
+			continue
 		}
 		out = append(out, ids...)
+		cautions = append(cautions, c...)
 	}
-	if len(out) == 0 {
-		return nil, errors.New("this seal has no security key to open it with: add one (esec vault security-keys add), or recover with the phrase (esec vault seal recover)")
+	if len(out) > 0 {
+		return out, cautions, nil
 	}
-	return out, nil
+	if len(reasons) > 0 {
+		return nil, nil, errors.Join(reasons...)
+	}
+	return nil, nil, errors.New("this seal has no security key to open it with: add one (esec vault security-keys add), or recover with the phrase (esec vault seal recover)")
 }
 
 // pluginIdentities returns the identities of plugin name (installed at
 // path) for recipients. age-plugin-yubikey refuses an identity that does
 // not say which YubiKey and slot to use, so the YubiKeys plugged in now
 // are listed and each one among recipients gets its stub. Other plugins
-// find their key by themselves.
-func pluginIdentities(name, path string, recipients []string, ui *plugin.ClientUI) ([]age.Identity, error) {
+// find their key by themselves. A slot that never asks for a touch is not
+// used: a guarded read would then need only the dialog.
+func pluginIdentities(name, path string, recipients []string, ui *plugin.ClientUI) ([]age.Identity, []string, error) {
 	if name != "yubikey" {
 		id, err := plugin.NewIdentityWithoutData(name, ui)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return []age.Identity{id}, nil
+		return []age.Identity{id}, nil, nil
 	}
 	list, err := securitykey.Run(context.Background(), path, "--list")
 	if err != nil {
-		return nil, fmt.Errorf("list the YubiKeys plugged in: %w", err)
+		return nil, nil, fmt.Errorf("list the YubiKeys plugged in: %w", err)
 	}
 	present, err := securitykey.Parse(string(list))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	readers := map[string]bool{}
 	for _, r := range recipients {
 		readers[strings.ToLower(r)] = true
 	}
 	var out []age.Identity
+	var cautions []string
+	var refused []string
 	for _, d := range present {
 		if !readers[strings.ToLower(d.Recipient)] {
 			continue
 		}
+		switch {
+		case strings.EqualFold(d.TouchPolicy, "Never"):
+			refused = append(refused, fmt.Sprintf("YubiKey %s slot %s has touch policy Never", d.Serial, d.Slot))
+			continue
+		case d.TouchPolicy != "" && !d.TouchAlways():
+			cautions = append(cautions, fmt.Sprintf("YubiKey %s slot %s keeps a touch for a while (touch policy %s): another read soon after this one needs no touch. For a slot that asks every time: esec vault security-keys setup --serial %s", d.Serial, d.Slot, d.TouchPolicy, d.Serial))
+		}
 		stub, err := YubiKeyStub(d.Serial, d.Slot, d.Recipient)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		id, err := plugin.NewIdentity(stub, ui)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, id)
 	}
-	if len(out) == 0 {
-		return nil, errors.New("no YubiKey plugged in opens this seal: plug in one of its readers' keys (esec vault security-keys), or recover with the phrase (esec vault seal recover)")
+	if len(out) == 0 && len(refused) > 0 {
+		return nil, nil, fmt.Errorf("%s: a guarded read must wait for a touch. Make a slot that asks every time (esec vault security-keys setup), or recover with the phrase (esec vault seal recover)", strings.Join(refused, "; "))
 	}
-	return out, nil
+	if len(out) == 0 {
+		return nil, nil, errors.New("no YubiKey plugged in opens this seal: plug in one of its readers' keys (esec vault security-keys), or recover with the phrase (esec vault seal recover)")
+	}
+	return out, cautions, nil
 }
 
 // YubiKeyStub returns the age-plugin-yubikey identity of the key in slot

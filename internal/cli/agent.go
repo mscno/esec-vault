@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/identity"
@@ -215,7 +217,8 @@ func (c *RunCmd) Run(ctx *cliCtx) error {
 
 // DecryptCmd prints an environment's broker-decrypted secrets: what esec
 // decrypt cannot show for a guarded environment, whose key opens only
-// through the background service and a touch.
+// through the background service and a touch. The lines are not shell
+// syntax: a command gets secrets from run, never from eval.
 type DecryptCmd struct {
 	Env     string `arg:"" help:"Environment to decrypt (e.g. prod)"`
 	Key     string `arg:"" optional:"" help:"Print only this secret's value"`
@@ -235,7 +238,11 @@ func (c *DecryptCmd) Run(_ *cliCtx) error {
 	if err != nil {
 		return err
 	}
-	return runcmd.Print(os.Stdout, secrets, c.Key, c.JSON)
+	terminal := term.IsTerminal(int(os.Stdout.Fd()))
+	if terminal && c.Key != "" && !c.JSON && runcmd.Unsafe(secrets[c.Key]) {
+		fmt.Fprintln(os.Stderr, "esec: the value holds control characters, so it is shown quoted; pipe it for the value as it is")
+	}
+	return runcmd.Print(os.Stdout, secrets, c.Key, c.JSON, terminal)
 }
 
 // ApproveCmd approves a pending broker request.

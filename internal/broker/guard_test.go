@@ -15,6 +15,7 @@ type fakeGuard struct {
 	allow     bool
 	asked     atomic.Int32
 	caller    string
+	command   string
 	forwarded bool
 }
 
@@ -22,7 +23,7 @@ func (g *fakeGuard) Has(req GuardRequest) (bool, error) { return req.Project == 
 
 func (g *fakeGuard) Key(req GuardRequest) (string, string, error) {
 	g.asked.Add(1)
-	g.caller = req.Caller
+	g.caller, g.command = req.Caller, req.Command
 	g.forwarded = req.Forwarded
 	if !g.allow {
 		return "", "", errors.New("the guarded read was denied")
@@ -38,13 +39,14 @@ func TestBrokerGuardedRead(t *testing.T) {
 	client, auditPath, srv := startTestBroker(t, nil, &policy.Policy{Default: policy.Deny})
 	g := &fakeGuard{priv: keys["ESEC_PRIVATE_KEY_DEV"], allow: true}
 	srv.Guard, srv.Chain = g, func(uint32) string { return "zsh ▸ claude ▸ esec" }
+	srv.Command = func(uint32) string { return "esec vault decrypt dev" }
 
 	secrets, err := client.GetSecretsRequest(&Request{Op: OpGetSecrets, Project: "acme/store", Env: "dev", Path: path, Format: ".ejson", Session: "claude-1"})
 	if err != nil || secrets["API_KEY"] != "s3cret" {
 		t.Fatalf("guarded read: %v %v", secrets, err)
 	}
-	if g.asked.Load() != 1 || g.caller != "zsh ▸ claude ▸ esec" {
-		t.Fatalf("guard asked %d times, caller %q", g.asked.Load(), g.caller)
+	if g.asked.Load() != 1 || g.caller != "zsh ▸ claude ▸ esec" || g.command != "esec vault decrypt dev" {
+		t.Fatalf("guard asked %d times, caller %q, command %q", g.asked.Load(), g.caller, g.command)
 	}
 	// Denied at the dialog: nothing served.
 	g.allow = false
@@ -75,6 +77,8 @@ func TestForwardedBrokerServesGuardedOnly(t *testing.T) {
 	srv.Forwarded = true
 	g := &fakeGuard{priv: keys["ESEC_PRIVATE_KEY_DEV"], allow: true}
 	srv.Guard, srv.Chain = g, func(uint32) string { return "sshd" }
+	// The local command is the ssh session's, not the other machine's.
+	srv.Command = func(uint32) string { return "sshd: me@notty" }
 	content := mustRead(t, path)
 	// The file comes in the request; the path is the other machine's. An
 	// empty host does not make it look local.
@@ -82,7 +86,7 @@ func TestForwardedBrokerServesGuardedOnly(t *testing.T) {
 	if err != nil || got["API_KEY"] != "s3cret" {
 		t.Fatalf("forwarded guarded read: %v %v", got, err)
 	}
-	if !g.forwarded || !strings.HasPrefix(g.caller, "forwarded") {
+	if !g.forwarded || !strings.HasPrefix(g.caller, "forwarded") || g.command != "" {
 		t.Fatalf("forwarded read not marked: %v %q", g.forwarded, g.caller)
 	}
 	if _, err := client.GetSecretsRequest(&Request{Op: OpGetSecrets, Project: "acme/other", Env: "dev", Path: "/srv/app/.ejson.dev", Format: ".ejson", Content: content}); err == nil || !strings.Contains(err.Error(), "not guarded") {

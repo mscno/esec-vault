@@ -1,3 +1,31 @@
+# v0.24.2
+
+Hardening of guarded reads and `esec vault decrypt`. Only clients change; the
+server stays at v0.24.0. Run `esec vault daemon upgrade` after installing.
+
+- **Fix: a reader's YubiKey stopped your Secure Enclave key.** When no
+  YubiKey of a seal was plugged in, the read failed even if another of your
+  security keys opens it. A plugin that is missing or finds no key here is
+  now passed over; the read fails only when nothing here opens the seal, and
+  says why for each kind of key.
+- **YubiKey slots with touch policy `never` are not used.** A guarded read
+  with one needed only the dialog. `esec vault security-keys add` refuses
+  them too. A slot with touch policy `cached` still works, and the dialog
+  says that another read soon after needs no touch.
+- **The guarded read's dialog shows the asking command**, such as
+  `esec vault decrypt prod` or `esec vault run prod -- ./deploy`, so a print
+  can be told from a run. The session label is marked as the program's own.
+- **`esec vault decrypt` cannot be made to forge lines or drive the
+  terminal.** A secret name that is not printable, or holds `=` or `;`, is
+  refused (by `run` too). A value with control characters, tabs, invisible
+  formatting or a leading quote is quoted; `--json` escapes them; one value
+  on a terminal is shown quoted when it holds control characters. The
+  output is not shell syntax: never `eval` it.
+- `esec vault run` and `decrypt` also say a read waits for a touch when the
+  environment is guarded by its seal record alone. `esec vault unlock` no
+  longer says guarded environments always ask: one guarded for the session
+  stays open until the vault locks.
+
 # v0.24.1
 
 Guarded environments open with a YubiKey again. Only clients change; the

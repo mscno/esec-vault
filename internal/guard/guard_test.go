@@ -143,3 +143,57 @@ func TestIdentitiesUsesPluggedInYubiKeys(t *testing.T) {
 		t.Fatalf("a seal for someone else's YubiKey: %v", err)
 	}
 }
+
+// fakeSEPlugin puts an age-plugin-se on PATH beside the fake YubiKey one.
+func fakeSEPlugin(t *testing.T) string {
+	t.Helper()
+	dir := filepath.SplitList(os.Getenv("PATH"))[0]
+	if err := os.WriteFile(filepath.Join(dir, "age-plugin-se"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // an executable test fixture
+		t.Fatal(err)
+	}
+	return plugin.EncodeRecipient("se", append([]byte{0x02}, bytes.Repeat([]byte{3}, 32)...))
+}
+
+// A seal read by someone's Secure Enclave and a colleague's YubiKey still
+// opens with the Secure Enclave when no YubiKey of the seal is plugged in.
+func TestIdentitiesKeepsOtherPluginsWithoutYubiKey(t *testing.T) {
+	fakeYubiKeyPlugin(t, "")
+	se := fakeSEPlugin(t)
+	colleague, _ := yubikeyRecipient(9)
+	ids, err := Identities([]string{se, colleague}, nil)
+	if err != nil {
+		t.Fatalf("the Secure Enclave reader was dropped: %v", err)
+	}
+	if id, ok := ids[0].(*plugin.Identity); len(ids) != 1 || !ok || id.Name() != "se" {
+		t.Fatalf("identities %v, want the Secure Enclave one", ids)
+	}
+	// Nothing here opens it: say why for each plugin.
+	if _, err := Identities([]string{colleague}, nil); err == nil || !strings.Contains(err.Error(), "no YubiKey plugged in") {
+		t.Fatalf("a seal nothing here opens: %v", err)
+	}
+}
+
+// A YubiKey slot that never asks for a touch does not open a guarded seal;
+// one that keeps a touch for a while does, and the dialog says so.
+func TestIdentitiesTouchPolicy(t *testing.T) {
+	mine, _ := yubikeyRecipient(1)
+	slot := func(policy string) string {
+		return "#       Serial: 15584441, Slot: 1\n# Touch policy: " + policy + " (…)\n" + mine + "\n"
+	}
+	fakeYubiKeyPlugin(t, slot("Never"))
+	if _, _, err := identities([]string{mine}, nil); err == nil || !strings.Contains(err.Error(), "touch policy Never") {
+		t.Fatalf("a slot that never asks for a touch: %v", err)
+	}
+	fakeYubiKeyPlugin(t, slot("Cached"))
+	ids, cautions, err := identities([]string{mine}, nil)
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("cached slot: %v %v", ids, err)
+	}
+	if len(cautions) != 1 || !strings.Contains(cautions[0], "15584441") || !strings.Contains(cautions[0], "security-keys setup") {
+		t.Fatalf("cautions %q", cautions)
+	}
+	fakeYubiKeyPlugin(t, slot("Always"))
+	if _, cautions, err := identities([]string{mine}, nil); err != nil || len(cautions) != 0 {
+		t.Fatalf("always slot: %q %v", cautions, err)
+	}
+}
