@@ -702,6 +702,12 @@ func linkText(st *team.State, l team.Link, seen map[string]bool) string {
 			return "left the project"
 		}
 		return "removed " + loginOf(st, b.User)
+	case team.TypeEnvRename:
+		var b team.EnvRenameBody
+		_ = json.Unmarshal(l.Body, &b)
+		delete(seen, b.Old)
+		seen[b.New] = true
+		return "renamed environment " + b.Old + " to " + b.New
 	case team.TypeEnvSet:
 		var b team.EnvSetBody
 		_ = json.Unmarshal(l.Body, &b)

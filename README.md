@@ -124,6 +124,40 @@ It records the review on the server. An organisation's policy can ask for
 one every so many days; the overview and the project's page then remind its
 admins. On the web: the project's page › **Review who reads it**.
 
+### Rename an environment
+
+From a project checkout:
+
+```sh
+esec vault env rename prod production
+esec vault env rename eu.prod eu.production --dir /path/to/checkout --yes
+```
+
+This renames the **vault environment**, not just its file: the key, exposure
+history, readers, machine/group access and guard level stay unchanged. Matching
+filenames such as `.env.prod` become `.env.production`, recursively, according
+to the project's configured patterns. No matching files is fine; their encrypted
+contents do not change. Aliases are not used to guess filenames. Nested projects,
+symlinks and dependency directories are not traversed; occupied destinations
+are refused rather than overwritten. Shared environments require a project admin.
+
+The checkout's `esec.toml`, named keyring entries and `.esec/` seals are updated.
+Seals are rebuilt for the **same exact recipients**, including recovery keys;
+guarded environments may require a security-key touch and never gain a plaintext
+cache. Comments and unknown marker fields are preserved; unusual inline-table
+layouts must be converted to separate `[env.NAME]` tables first.
+
+Upgrade the server and all clients before renaming a shared environment. Existing
+encrypted grants follow its signed rename; old shared names remain retired to
+prevent identity confusion. Update external CI/deployment references and other
+checkouts separately. This command is not a key rotation.
+
+If interrupted or the server response is lost, **rerun the same command**.
+Keep `.esec/env-rename.json` until it finishes; it holds the checked local plan
+and encrypted seals, never private keys. Do not edit files involved in a pending
+rename. Local file changes follow the server's atomic rename, so an interruption
+can leave local work pending, but does not roll back the vault or lose its keys.
+
 ### Set up an organisation
 
 #### Personal and work tenants (guarded server)

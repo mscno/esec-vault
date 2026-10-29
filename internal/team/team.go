@@ -45,6 +45,7 @@ const (
 	TypeMemberUpdate  = "member_update"
 	TypeMemberRemove  = "member_remove"
 	TypeEnvSet        = "env_set"
+	TypeEnvRename     = "env_rename"
 	TypeMachineAdd    = "machine_add"
 	TypeMachineRemove = "machine_remove"
 	TypeGroupSet      = "group_set"
@@ -282,7 +283,9 @@ type State struct {
 	LastTime time.Time
 	Members  map[string]*MemberState
 	Envs     map[string]*EnvState
-	Machines map[string]*MachineState
+	// EnvRenames binds retired names to their current signed identity.
+	EnvRenames map[string]string
+	Machines   map[string]*MachineState
 	// Groups maps group ids to the machine groups granted environments.
 	Groups map[string]*ProjectGroupState
 	// Archived says the project is stopped; Successor is where it moved,
@@ -749,7 +752,7 @@ func (s *State) signerRoot(l *Link, _ Chains) (string, error) {
 	return m.Root, nil
 }
 
-func (s *State) apply(l Link) error {
+func (s *State) apply(l Link) error { //nolint:gocyclo // exhaustive signed-link dispatch
 	if l.Type != TypeInit && l.Seq == 1 {
 		return fmt.Errorf("a project chain must start with an init link")
 	}
@@ -779,6 +782,8 @@ func (s *State) apply(l Link) error {
 			return err
 		}
 		return s.setEnv(b.Env, l, true)
+	case TypeEnvRename:
+		return s.renameEnv(l)
 	case TypeMachineAdd:
 		return s.applyMachineAdd(l)
 	case TypeMachineRemove:
@@ -1039,6 +1044,9 @@ func (s *State) applyGroupSet(l Link) error {
 // setEnv adds an environment or replaces its key. A replaced key is
 // retired, and the exposures of the old key no longer matter.
 func (s *State) setEnv(e Env, l Link, allowReplace bool) error {
+	if s.EnvRenames[e.Name] != "" {
+		return fmt.Errorf("environment name %s is retired", e.Name)
+	}
 	if err := validEnvKey(e); err != nil {
 		return err
 	}
@@ -1110,6 +1118,10 @@ func decodeBody(l Link, v any) error {
 
 func (s *State) clone() *State {
 	n := *s
+	n.EnvRenames = make(map[string]string, len(s.EnvRenames))
+	for k, v := range s.EnvRenames {
+		n.EnvRenames[k] = v
+	}
 	n.Hashes = append([]string(nil), s.Hashes...)
 	n.Links = append([]Link(nil), s.Links...)
 	n.signerSeqs = make(map[string]uint64, len(s.signerSeqs))
