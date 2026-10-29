@@ -116,8 +116,41 @@ func TestRunInjectsSecretsFromBroker(t *testing.T) {
 		t.Fatalf("child did not receive injected secret: %q", out)
 	}
 
+	// decrypt fetches the same secrets without a command.
+	secrets, err := Fetch(client, "dev", "", Options{})
+	if err != nil || secrets["GREETING"] != "hello-vault" {
+		t.Fatalf("fetch: %v %v", secrets, err)
+	}
+
 	// Denied environment must fail.
 	if err := Run(client, "prod", "", []string{"true"}, Options{}); err == nil {
 		t.Fatal("prod should be denied")
+	}
+	if _, err := Fetch(client, "prod", "", Options{}); err == nil {
+		t.Fatal("prod should be denied to fetch")
+	}
+}
+
+// Print shows one value bare, or every secret one per line in key order,
+// quoting a value that spans lines; JSON on request.
+func TestPrint(t *testing.T) {
+	secrets := map[string]string{"B": "two", "A": "one", "PEM": "-----BEGIN-----\nabc\n-----END-----"}
+	var out strings.Builder
+	if err := Print(&out, secrets, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if want := "A=one\nB=two\nPEM=\"-----BEGIN-----\\nabc\\n-----END-----\"\n"; out.String() != want {
+		t.Fatalf("all:\n%s\nwant:\n%s", out.String(), want)
+	}
+	out.Reset()
+	if err := Print(&out, secrets, "B", false); err != nil || out.String() != "two\n" {
+		t.Fatalf("one: %q %v", out.String(), err)
+	}
+	out.Reset()
+	if err := Print(&out, secrets, "A", true); err != nil || out.String() != "{\n  \"A\": \"one\"\n}\n" {
+		t.Fatalf("json: %q %v", out.String(), err)
+	}
+	if err := Print(&out, secrets, "MISSING", false); err == nil || !strings.Contains(err.Error(), "no secret named MISSING") {
+		t.Fatalf("missing: %v", err)
 	}
 }

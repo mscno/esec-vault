@@ -1845,7 +1845,14 @@ esec vault security-keys setup        # a YubiKey with no age key yet: touch pol
 esec vault security-keys add          # every plugged-in YubiKey: you name it, it goes in your chain
 esec vault guard enable --env prod    # or project init --guard prod
 esec vault run prod -- ./deploy       # dialog: what, which file, which programs asked; then the touch
+esec vault decrypt prod STRIPE_KEY    # one value, after the same dialog and touch (no KEY: all of them)
 ```
+
+`esec decrypt` cannot open a guarded environment: its key opens only through
+the background service, so read the values with `esec vault decrypt` or use
+them with `esec vault run`. `esec vault unlock` needs no touch; touching a
+YubiKey that nothing waits for types its one-time password into the terminal
+(`ykman config usb --disable OTP` turns that off if you do not use it).
 
 You never copy a recipient: plug a YubiKey in and the background service
 asks to add it. Your keys are in your signed chain, so everyone who seals for

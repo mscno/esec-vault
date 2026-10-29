@@ -213,6 +213,31 @@ func (c *RunCmd) Run(ctx *cliCtx) error {
 	return err
 }
 
+// DecryptCmd prints an environment's broker-decrypted secrets: what esec
+// decrypt cannot show for a guarded environment, whose key opens only
+// through the background service and a touch.
+type DecryptCmd struct {
+	Env     string `arg:"" help:"Environment to decrypt (e.g. prod)"`
+	Key     string `arg:"" optional:"" help:"Print only this secret's value"`
+	Format  string `help:"File format (e.g. .ejson); default: auto-detect" short:"f" env:"ESEC_FORMAT"`
+	JSON    bool   `name:"json" help:"Print a JSON object"`
+	Sock    string `help:"Broker socket path" default:"" env:"ESEC_VAULT_SOCK"`
+	Session string `help:"Label this request for the audit log and the dialog, such as the agent's name" env:"ESEC_VAULT_SESSION"`
+}
+
+// Run implements decrypt.
+func (c *DecryptCmd) Run(_ *cliCtx) error {
+	sock := c.Sock
+	if sock == "" {
+		sock = paths.SocketPath()
+	}
+	secrets, err := runcmd.Fetch(broker.NewClient(sock), c.Env, c.Format, runcmd.Options{Session: c.Session})
+	if err != nil {
+		return err
+	}
+	return runcmd.Print(os.Stdout, secrets, c.Key, c.JSON)
+}
+
 // ApproveCmd approves a pending broker request.
 type ApproveCmd struct {
 	ID   string `arg:"" help:"Pending request id"`

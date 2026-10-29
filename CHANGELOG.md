@@ -1,3 +1,22 @@
+# v0.24.1
+
+Guarded environments open with a YubiKey again. Only clients change; the
+server stays at v0.24.0.
+
+- **Fix: "yubikey plugin: Invalid YubiKey stub".** A guarded read handed
+  age-plugin-yubikey an identity that named no YubiKey, which it refuses, so
+  no YubiKey-guarded seal opened. The background service now lists the
+  YubiKeys plugged in and gives the plugin each one's stub (serial, slot and
+  the recipient's tag), for the YubiKeys among the seal's readers. Run
+  `esec vault daemon upgrade` after installing.
+- **`esec vault decrypt ENV [KEY]`** prints an environment's secrets, or one
+  value (`--json` for an object), through the background service: for a
+  guarded environment, after the dialog and a touch. `esec decrypt` cannot
+  open a guarded key.
+- `esec vault run` and `decrypt` say on the terminal when a read waits for a
+  touch. `esec vault unlock` says it needs none: a YubiKey touched when
+  nothing waits for it types its one-time password into the terminal.
+
 # v0.24.0
 
 Upgrade the vault server before using environment rename, and upgrade every

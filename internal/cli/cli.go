@@ -47,6 +47,7 @@ type cli struct {
 	Hook         HookCmd         `cmd:"" group:"secrets" help:"A git pre-commit hook that refuses secrets in the clear and files encrypted to the wrong key."`
 	Secrets      SecretsCmd      `cmd:"" group:"secrets" help:"Find, set and rotate values in secrets files; check them before a commit."`
 	Run          RunCmd          `cmd:"" group:"secrets" help:"Run a command with broker-decrypted secrets injected."`
+	Decrypt      DecryptCmd      `cmd:"" group:"secrets" help:"Print an environment's secrets, or one value, decrypted by the background service: a guarded one after a touch."`
 	Forward      ForwardCmd      `cmd:"" group:"secrets" help:"SSH to a machine that may then ask this one for guarded keys, each read after your touch here."`
 	Keyring      KeyringCmd      `cmd:"" group:"secrets" help:"Manage the global keyring store."`
 	Seal         SealCmd         `cmd:"" group:"secrets" help:"Environment keys sealed in the repository (.esec/), for their readers and a recovery key: status, sync, check."`

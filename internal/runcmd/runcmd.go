@@ -1,15 +1,20 @@
-// Package runcmd implements `esec-vault run`: decrypt secrets via the broker
-// and run a command with them injected as environment variables. Key material
-// never enters the client process — only the decrypted values cross the socket.
+// Package runcmd implements `esec-vault run` and `esec-vault decrypt`:
+// decrypt secrets via the broker, then run a command with them injected as
+// environment variables, or print them. Key material never enters the
+// client process — only the decrypted values cross the socket.
 package runcmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +22,7 @@ import (
 	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
 	coreseal "github.com/mscno/esec/pkg/seal"
+	"golang.org/x/term"
 
 	"github.com/mscno/esec-vault/internal/broker"
 )
@@ -53,45 +59,108 @@ type Options struct {
 	Host string
 }
 
-// Run resolves the project from esec.toml, fetches decrypted secrets from
-// the broker, and runs command with them in the environment.
-func Run(client *broker.Client, env, format string, command []string, opts Options) error {
-	if len(command) == 0 {
-		return errors.New("no command specified to run")
-	}
+// Fetch resolves the project from esec.toml and returns env's secrets,
+// decrypted by the broker. Reading a guarded environment waits for the
+// person's touch, which Fetch says on a terminal: otherwise the wait looks
+// like a hang, and a touch of a YubiKey that nothing waits for types its
+// one-time password into the terminal instead.
+func Fetch(client *broker.Client, env, format string, opts Options) (map[string]string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	project, marker, err := projectfile.FindProjectFile(cwd)
 	if err != nil {
-		return fmt.Errorf("no esec.toml found (needed to identify the project): %w", err)
+		return nil, fmt.Errorf("no esec.toml found (needed to identify the project): %w", err)
 	}
 	secretPath, fileFormat, err := resolveSecretsFile(cwd, env, format)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req := &broker.Request{Op: broker.OpGetSecrets, Project: project, Env: env, Path: secretPath, Format: fileFormat, Session: opts.Session}
 	if opts.Forwarded {
 		if req.Content, err = os.ReadFile(secretPath); err != nil { //nolint:gosec // the secrets file this command resolved
-			return err
+			return nil, err
 		}
 		req.Host = opts.Host
 		// The key sealed in the repository: the other machine opens it
 		// with a touch there, and the key never comes here.
 		if req.Seal, err = coreseal.Read(filepath.Dir(marker), env); err != nil {
-			return err
+			return nil, err
 		}
+	}
+	if guarded(cwd, env) && term.IsTerminal(int(os.Stderr.Fd())) {
+		fmt.Fprintf(os.Stderr, "esec: %s is guarded: allow the read if a dialog asks, then touch your security key when it blinks\n", env)
 	}
 
 	// Approval may take a while; allow the server's approval window plus slack.
 	client.Timeout = 6 * time.Minute
 	secrets, err := client.GetSecretsRequest(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(secrets) == 0 {
-		return fmt.Errorf("broker returned no secrets for %s env %q", project, env)
+		return nil, fmt.Errorf("broker returned no secrets for %s env %q", project, env)
+	}
+	return secrets, nil
+}
+
+// guarded reports whether esec.toml above dir guards env.
+func guarded(dir, env string) bool {
+	pf, _, err := projectfile.Find(dir)
+	if err != nil || pf == nil {
+		return false
+	}
+	e, ok := pf.Env[env]
+	return ok && e.GuardLevel() != projectfile.GuardNone
+}
+
+// Print writes secrets to w: key's value alone, or else KEY=value lines in
+// key order, a value spanning lines quoted so each line holds one secret.
+// asJSON writes a JSON object instead (of key alone, when given).
+func Print(w io.Writer, secrets map[string]string, key string, asJSON bool) error {
+	if key != "" {
+		v, ok := secrets[key]
+		if !ok {
+			return fmt.Errorf("no secret named %s in this environment", key)
+		}
+		secrets = map[string]string{key: v}
+	}
+	if asJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(secrets)
+	}
+	if key != "" {
+		_, err := fmt.Fprintln(w, secrets[key])
+		return err
+	}
+	keys := make([]string, 0, len(secrets))
+	for k := range secrets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := secrets[k]
+		if strings.ContainsAny(v, "\r\n") {
+			v = strconv.Quote(v)
+		}
+		if _, err := fmt.Fprintf(w, "%s=%s\n", k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Run resolves the project from esec.toml, fetches decrypted secrets from
+// the broker, and runs command with them in the environment.
+func Run(client *broker.Client, env, format string, command []string, opts Options) error {
+	if len(command) == 0 {
+		return errors.New("no command specified to run")
+	}
+	secrets, err := Fetch(client, env, format, opts)
+	if err != nil {
+		return err
 	}
 
 	cmd := exec.Command(command[0], command[1:]...)
