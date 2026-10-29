@@ -1,12 +1,16 @@
 package guard
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"filippo.io/age"
+	"filippo.io/age/plugin"
 	coreseal "github.com/mscno/esec/pkg/seal"
 )
 
@@ -52,5 +56,90 @@ func TestPluginName(t *testing.T) {
 	}
 	if _, err := ParseIdentities("# nothing\n", nil); err == nil || !strings.Contains(err.Error(), "no age identity") {
 		t.Fatalf("empty identities: %v", err)
+	}
+}
+
+// yubikeyRecipient is an age1yubikey1… recipient for a made-up compressed
+// point: the stub only hashes it.
+func yubikeyRecipient(fill byte) (string, []byte) {
+	point := append([]byte{0x02}, bytes.Repeat([]byte{fill}, 32)...)
+	return plugin.EncodeRecipient("yubikey", point), point
+}
+
+// A stub is what age-plugin-yubikey's Stub::to_bytes writes: the serial
+// little-endian, the retired PIV slot (R1 = 0x82) and the first four bytes
+// of the SHA-256 of the recipient's point. The plugin refuses an identity
+// without them ("Invalid YubiKey stub").
+func TestYubiKeyStub(t *testing.T) {
+	recipient, point := yubikeyRecipient(7)
+	tag := sha256.Sum256(point)
+	notYubiKey := plugin.EncodeRecipient("se", point)
+	for slot, want := range map[string]byte{"1": 0x82, "": 0x82, "20": 0x95} {
+		stub, err := YubiKeyStub("15584441", slot, recipient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name, data, err := plugin.ParseIdentity(stub)
+		if err != nil || name != "yubikey" {
+			t.Fatalf("slot %q: %s is not a yubikey identity: %v", slot, stub, err)
+		}
+		wantData := append([]byte{0xb9, 0xcc, 0xed, 0x00, want}, tag[:4]...)
+		if !bytes.Equal(data, wantData) {
+			t.Fatalf("slot %q: stub data %x, want %x", slot, data, wantData)
+		}
+	}
+	for _, bad := range [][3]string{
+		{"15584441", "0", recipient},
+		{"15584441", "21", recipient},
+		{"serial", "1", recipient},
+		{"15584441", "1", notYubiKey},
+	} {
+		if _, err := YubiKeyStub(bad[0], bad[1], bad[2]); err == nil {
+			t.Errorf("YubiKeyStub%q made a stub", bad)
+		}
+	}
+}
+
+// fakeYubiKeyPlugin puts an age-plugin-yubikey on PATH whose --list shows
+// the YubiKey slots in list.
+func fakeYubiKeyPlugin(t *testing.T, list string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake plugin is a shell script")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncat <<'EOF'\n" + list + "EOF\n"
+	if err := os.WriteFile(filepath.Join(dir, "age-plugin-yubikey"), []byte(script), 0o755); err != nil { //nolint:gosec // an executable test fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(IdentitiesEnv, "")
+}
+
+// A seal's YubiKey readers are opened with the stubs of the YubiKeys
+// plugged in, never with an identity that names no key.
+func TestIdentitiesUsesPluggedInYubiKeys(t *testing.T) {
+	mine, _ := yubikeyRecipient(1)
+	theirs, _ := yubikeyRecipient(2)
+	recovery, _ := age.GenerateX25519Identity()
+	fakeYubiKeyPlugin(t, "#       Serial: 15584441, Slot: 2\n#         Name: age identity 1a2b3c4d\n# Touch policy: Always (A physical touch is required for every decryption)\n"+mine+"\n")
+
+	ids, err := Identities([]string{recovery.Recipient().String(), theirs, mine}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := YubiKeyStub("15584441", "2", mine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("identities %v, want only %s", ids, want)
+	}
+	if id, ok := ids[0].(*plugin.Identity); !ok || id.String() != want {
+		t.Fatalf("identity %v, want %s", ids[0], want)
+	}
+
+	if _, err := Identities([]string{theirs}, nil); err == nil || !strings.Contains(err.Error(), "no YubiKey plugged in opens this seal") {
+		t.Fatalf("a seal for someone else's YubiKey: %v", err)
 	}
 }

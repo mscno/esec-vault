@@ -7,14 +7,20 @@
 package guard
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"filippo.io/age"
 	"filippo.io/age/plugin"
 	coreseal "github.com/mscno/esec/pkg/seal"
+
+	"github.com/mscno/esec-vault/internal/securitykey"
 )
 
 // IdentitiesEnv names a file of age identities that stand in for this
@@ -53,8 +59,8 @@ func StandInRecipients() ([]string, error) {
 }
 
 // Identities returns the identities that open a seal with this machine's
-// security keys: the stand-ins, or else one per plugin among recipients,
-// which finds its key by itself (a YubiKey plugged in).
+// security keys: the stand-ins, or else, for each plugin among recipients,
+// the identities of its keys here (the YubiKeys plugged in).
 func Identities(recipients []string, ui *plugin.ClientUI) ([]age.Identity, error) {
 	if ids, err := StandIns(ui); err != nil || len(ids) > 0 {
 		return ids, err
@@ -67,19 +73,95 @@ func Identities(recipients []string, ui *plugin.ClientUI) ([]age.Identity, error
 			continue
 		}
 		seen[name] = true
-		if _, err := CheckPlugin(name); err != nil {
+		path, err := CheckPlugin(name)
+		if err != nil {
 			return nil, err
 		}
+		ids, err := pluginIdentities(name, path, recipients, ui)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ids...)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("this seal has no security key to open it with: add one (esec vault security-keys add), or recover with the phrase (esec vault seal recover)")
+	}
+	return out, nil
+}
+
+// pluginIdentities returns the identities of plugin name (installed at
+// path) for recipients. age-plugin-yubikey refuses an identity that does
+// not say which YubiKey and slot to use, so the YubiKeys plugged in now
+// are listed and each one among recipients gets its stub. Other plugins
+// find their key by themselves.
+func pluginIdentities(name, path string, recipients []string, ui *plugin.ClientUI) ([]age.Identity, error) {
+	if name != "yubikey" {
 		id, err := plugin.NewIdentityWithoutData(name, ui)
+		if err != nil {
+			return nil, err
+		}
+		return []age.Identity{id}, nil
+	}
+	list, err := securitykey.Run(context.Background(), path, "--list")
+	if err != nil {
+		return nil, fmt.Errorf("list the YubiKeys plugged in: %w", err)
+	}
+	present, err := securitykey.Parse(string(list))
+	if err != nil {
+		return nil, err
+	}
+	readers := map[string]bool{}
+	for _, r := range recipients {
+		readers[strings.ToLower(r)] = true
+	}
+	var out []age.Identity
+	for _, d := range present {
+		if !readers[strings.ToLower(d.Recipient)] {
+			continue
+		}
+		stub, err := YubiKeyStub(d.Serial, d.Slot, d.Recipient)
+		if err != nil {
+			return nil, err
+		}
+		id, err := plugin.NewIdentity(stub, ui)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, id)
 	}
 	if len(out) == 0 {
-		return nil, errors.New("this seal has no security key to open it with: add one (esec vault security-keys add), or recover with the phrase (esec vault seal recover)")
+		return nil, errors.New("no YubiKey plugged in opens this seal: plug in one of its readers' keys (esec vault security-keys), or recover with the phrase (esec vault seal recover)")
 	}
 	return out, nil
+}
+
+// YubiKeyStub returns the age-plugin-yubikey identity of the key in slot
+// (1 to 20) of the YubiKey with serial, whose recipient is recipient: the
+// serial (little-endian), the PIV retired slot (R1 is 0x82) and the
+// recipient's tag, the first four bytes of the SHA-256 of its compressed
+// point. It holds no secret: the plugin uses it to find the YubiKey, the
+// slot and the stanza that key opens.
+func YubiKeyStub(serial, slot, recipient string) (string, error) {
+	sn, err := strconv.ParseUint(serial, 10, 32)
+	if err != nil {
+		return "", fmt.Errorf("YubiKey serial %q: %w", serial, err)
+	}
+	if slot == "" {
+		slot = "1"
+	}
+	n, err := strconv.Atoi(slot)
+	if err != nil || n < 1 || n > 20 {
+		return "", fmt.Errorf("YubiKey slot %q: want 1 to 20", slot)
+	}
+	name, point, err := plugin.ParseRecipient(recipient)
+	if err != nil || name != "yubikey" || len(point) != 33 {
+		return "", fmt.Errorf("not a YubiKey recipient: %s", recipient)
+	}
+	tag := sha256.Sum256(point)
+	data := binary.LittleEndian.AppendUint32(nil, uint32(sn))
+	data = append(data, byte(0x81+n))
+	data = append(data, tag[:4]...)
+	return plugin.EncodeIdentity("yubikey", data), nil
 }
 
 // PluginName returns the plugin of an age1<name>1… recipient, or "" for a
