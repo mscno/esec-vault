@@ -366,6 +366,7 @@ func validateEnvName(env string) error {
 
 // EnvCmd manages human-named environments.
 type EnvCmd struct {
+	Rename        EnvRenameCmd        `cmd:"" help:"Rename an environment and matching files, preserving its key, readers and guard."`
 	Add           EnvAddCmd           `cmd:"" help:"Create an environment key and encrypted secrets template."`
 	List          EnvListCmd          `cmd:"" help:"List environment public keys."`
 	ShowKey       EnvShowKeyCmd       `cmd:"" help:"Print an environment private key after confirmation."`

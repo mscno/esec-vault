@@ -203,7 +203,7 @@ func Execute(version string) {
 // isMutation reports whether a command changes keyrings, so it runs under the
 // keyring lock and is followed by a snapshot and a server push.
 func isMutation(command string) bool {
-	for _, prefix := range []string{"project init", "env add", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "group sync", "guard enable", "guard disable", "seal sync", "seal migrate", "seal recover", "share", "unshare", "ci add", "ci remove", "security-keys add", "security-keys remove"} {
+	for _, prefix := range []string{"project init", "env add", "env rename", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "group sync", "guard enable", "guard disable", "seal sync", "seal migrate", "seal recover", "share", "unshare", "ci add", "ci remove", "security-keys add", "security-keys remove"} {
 		if strings.HasPrefix(command, prefix) {
 			return true
 		}

@@ -1,3 +1,27 @@
+# v0.24.0
+
+Upgrade the vault server before using environment rename, and upgrade every
+client that reads a renamed project's signed chain.
+
+- **`esec vault env rename OLD NEW`** renames the real vault environment,
+  retaining its key, rotation/exposure history, and member, machine and group
+  access. Historical encrypted grants remain valid through signed name
+  mappings; retired shared names cannot be reused for a different identity.
+- Renames matching files recursively in the current checkout using configured
+  filename patterns, including dotted environment names. Files are optional;
+  ciphertext is not re-encrypted. Nested projects and dependency directories
+  are skipped. Existing destinations and symlinks fail closed.
+- Updates `esec.toml` without losing comments or unknown fields, moves named
+  keyring references while preserving public-key history, and reseals renamed
+  `.esec/OLD.age` payloads to exactly their original readers and recovery
+  recipients. Guarded keys are never cached in the clear.
+- Server projections, holdings and live timed/requested access follow the
+  rename in the same database transaction. Historical audit entries stay intact.
+- Local changes are journaled in `.esec/env-rename.json` before the vault is
+  changed. If interrupted, rerun the same command to finish; changed files and
+  occupied destinations are never silently overwritten. External deployment
+  references and other checkouts must be updated separately.
+
 # v0.23.0
 
 Upgrade the vault server and trusted-device clients together. No plans or

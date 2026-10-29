@@ -1134,6 +1134,10 @@ func describeLink(st *team.State, l team.Link) string {
 		return "removed " + loginOf(st, b.User)
 	case team.TypeEnvSet:
 		return "set a new key for " + b.Env.Name
+	case team.TypeEnvRename:
+		var b team.EnvRenameBody
+		_ = json.Unmarshal(l.Body, &b)
+		return "renamed environment " + b.Old + " to " + b.New
 	case team.TypeMachineAdd:
 		return "added the machine " + b.Machine.Name
 	case team.TypeMachineRemove:

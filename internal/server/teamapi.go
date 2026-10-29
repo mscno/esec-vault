@@ -384,6 +384,11 @@ func (s *Server) appendProjectLink(ctx context.Context, tx *sql.Tx, st *team.Sta
 	if err != nil {
 		return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "link rejected: %v", err)
 	}
+	if l.Type == team.TypeEnvRename {
+		if err := renameEnvironmentMetadata(ctx, tx, st.Project, l); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.checkNewMember(ctx, tx, l, chains); err != nil {
 		return nil, err
 	}
@@ -748,6 +753,10 @@ func linkSummary(before, after *team.State, l team.Link) string {
 		var b team.EnvSetBody
 		_ = json.Unmarshal(l.Body, &b)
 		return b.Env.Name + " " + b.Env.PublicKey
+	case team.TypeEnvRename:
+		var b team.EnvRenameBody
+		_ = json.Unmarshal(l.Body, &b)
+		return b.Old + " -> " + b.New
 	case team.TypeMachineAdd:
 		var b team.MachineAddBody
 		_ = json.Unmarshal(l.Body, &b)

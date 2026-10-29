@@ -155,7 +155,9 @@ func CheckGrant(e *envelope.Envelope, st *State, chains Chains) (*Grant, error) 
 		return nil, errors.New("invalid recipient key")
 	}
 	seen := map[string]bool{}
-	for _, env := range g.Envs {
+	for i, env := range g.Envs {
+		env.Name = st.CurrentEnv(env.Name)
+		g.Envs[i].Name = env.Name
 		cur, ok := st.Envs[env.Name]
 		if !ok || seen[env.Name] {
 			return nil, fmt.Errorf("the grant lists an unknown or repeated environment %q", env.Name)
@@ -196,7 +198,12 @@ func Open(e *envelope.Envelope, st *State, chains Chains, me Recipient, priv [32
 	if p.Project != g.Project || p.To != g.To || len(p.Keys) != len(g.Envs) {
 		return nil, nil, errors.New("the grant's content does not match it")
 	}
-	for _, env := range g.Envs {
+	original, err := PeekGrant(e)
+	if err != nil {
+		return nil, nil, err
+	}
+	keys := map[string]string{}
+	for _, env := range original.Envs {
 		k, ok := p.Keys[env.Name]
 		if !ok {
 			return nil, nil, errors.New("the grant's content does not match it")
@@ -205,6 +212,7 @@ func Open(e *envelope.Envelope, st *State, chains Chains, me Recipient, priv [32
 		if err != nil || pub != env.PublicKey {
 			return nil, nil, fmt.Errorf("the %s key in the grant does not match the project's public key", env.Name)
 		}
+		keys[st.CurrentEnv(env.Name)] = k
 	}
-	return g, p.Keys, nil
+	return g, keys, nil
 }
