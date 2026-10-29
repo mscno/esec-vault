@@ -625,7 +625,11 @@ func (s *Server) orgForm(w http.ResponseWriter, r *http.Request, tab string, fn 
 		if err != nil {
 			return "", err
 		}
-		return fn(ctx, ws, org, os)
+		canonical := org
+		if os != nil {
+			canonical = os.Org
+		}
+		return fn(ctx, ws, canonical, os)
 	}, func(ctx context.Context, ws *webSession) (map[string]any, []string, error) {
 		data, err := s.orgPageData(ctx, ws, org, tab)
 		return data, orgParts, err
@@ -827,7 +831,7 @@ func (s *Server) webOrgFlyApp(w http.ResponseWriter, r *http.Request) {
 			app.FlyOrg = os.Settings.FlyOrg
 		}
 		if app.Group == "" {
-			app.Group = org + "/" + app.App
+			app.Group = os.Namespace + "/" + app.App
 		}
 		if app.KMS == "" {
 			app.KMS = os.Settings.DefaultKMS
@@ -882,7 +886,11 @@ func mapKeysSorted[V any](m map[string]V) []string {
 // admins.
 func (s *Server) orgGroupForm(ctx context.Context, ws *webSession, org string, r *http.Request) (*team.GroupState, *team.CredState, error) {
 	g := r.PostForm.Get("group")
-	if team.ValidGroup(g) != nil || team.OrgOf(g) != org {
+	os, _, err := s.db.orgState(ctx, s.db.sql, org)
+	if err != nil {
+		return nil, nil, err
+	}
+	if team.ValidGroup(g) != nil || os == nil || !os.ContainsProject(g) {
 		return nil, nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "invalid group")
 	}
 	gs, _, err := s.db.groupState(ctx, s.db.sql, g)

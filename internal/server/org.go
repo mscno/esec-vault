@@ -208,8 +208,14 @@ func (s *Server) webOrgPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		now := s.now()
 		err = s.db.tx(ctx, func(tx *sql.Tx) error {
+			canonical := strings.ToLower(org)
+			if n, err := namespace(ctx, tx, canonical); err != nil {
+				return err
+			} else if n != nil {
+				canonical = n.Canonical
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO org_policies (org, policy, updated_by, updated_at) VALUES (?, ?, ?, ?)
-				ON CONFLICT(org) DO UPDATE SET policy = excluded.policy, updated_by = excluded.updated_by, updated_at = excluded.updated_at`, strings.ToLower(org), string(raw), ws.user.ID, now.Unix()); err != nil {
+				ON CONFLICT(org) DO UPDATE SET policy = excluded.policy, updated_by = excluded.updated_by, updated_at = excluded.updated_at`, canonical, string(raw), ws.user.ID, now.Unix()); err != nil {
 				return err
 			}
 			return s.db.audit(ctx, tx, ws.user.ID, "", s.clientIP(r), "org_policy", org+" "+string(raw), now)

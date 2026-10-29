@@ -59,6 +59,11 @@ func TestExplicitOwnersAndStableNamespaceIdentity(t *testing.T) {
 	if previous.HasNamespace("geoman-work") {
 		t.Fatal("profile application mutated the prior verified state")
 	}
+	k := testKMSKey(t, "tenant-alias")
+	o.add(bob, team.OrgKMSAdd, team.OrgKMSAddBody{Key: team.OrgKMSKey{Name: "aliased", Key: k, Groups: []string{"geoman-work/api"}}})
+	if err := o.st.CheckKMS(k, "geoman-work/api"); err != nil {
+		t.Fatalf("approved KMS policy rejected the current tenant namespace: %v", err)
+	}
 	other, _ := team.NewTenantID()
 	o.reject("identity cannot change", bob, team.OrgProfileSet, team.OrgProfileBody{TenantID: other, Namespace: "geoman-next"})
 	o.reject("only a tenant owner", alice, team.OrgProfileSet, team.OrgProfileBody{TenantID: id, Namespace: "stolen"})

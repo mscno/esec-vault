@@ -1,6 +1,8 @@
 package cli_test
 
 import (
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,7 +14,7 @@ import (
 	"github.com/mscno/esec-vault/internal/servertest"
 )
 
-func TestSelfServiceTenantsAndAcceptedTransfer(t *testing.T) {
+func TestSelfServiceTenantsAndAcceptedTransfer(t *testing.T) { //nolint:gocyclo // sequential two-owner and renamed-governance regression story
 	if testing.Short() {
 		t.Skip("builds binaries")
 	}
@@ -22,6 +24,7 @@ func TestSelfServiceTenantsAndAcceptedTransfer(t *testing.T) {
 	bin := buildBinaries(t)
 	h := servertest.StartConfig(t, []server.Option{server.WithRegistrationLimits(100, 1000)}, func(c *server.Config) {
 		c.Namespaces = append(c.Namespaces, server.NamespaceConfig{Name: "alice", OwnerGitHubID: 53101343})
+		c.Access.AdminGitHubIDs = []int64{53101343}
 	}, 53101343, 2002)
 	h.GitHub.AddUser(53101343, "mscno")
 	h.GitHub.AddUser(2002, "alice")
@@ -66,6 +69,33 @@ func TestSelfServiceTenantsAndAcceptedTransfer(t *testing.T) {
 	owner.run("", "access", "grant", "alice", "--env", "dev", "--project=geoman/api")
 	alice.run("y\n", "access", "sync")
 	owner.run("", "org", "rename", "geoman", "geoman-work", "--display-name", "Geoman Work")
+	// Forms use the active handle but persist proposals/policy against the
+	// immutable signed chain, so renamed tenants do not lose governance.
+	web := h.Browser("mscno")
+	_, page, err := web.Get("/orgs/geoman-work/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf := servertest.CSRF(page)
+	if status, _, err := web.Post("/orgs/geoman-work/settings", csrf, url.Values{"review_days": {"7"}}); err != nil || status != http.StatusOK {
+		t.Fatalf("renamed tenant settings: %d %v", status, err)
+	}
+	owner.run("y\n", "changes")
+	if status, _, err := web.Post("/orgs/geoman-work/policy", csrf, url.Values{"max_token_days": {"14"}}); err != nil || status != http.StatusOK {
+		t.Fatalf("renamed tenant server policy: %d %v", status, err)
+	}
+	var settings struct {
+		Settings struct {
+			ReviewDays int `json:"review_days"`
+		} `json:"settings"`
+		Policy struct {
+			MaxTokenDays int `json:"max_token_days"`
+		} `json:"policy"`
+	}
+	owner.runJSON(&settings, "org", "geoman-work")
+	if settings.Settings.ReviewDays != 7 || settings.Policy.MaxTokenDays != 14 {
+		t.Fatalf("renamed tenant lost its policy or signed proposal: %+v", settings)
+	}
 	if out := owner.run("", "org", "geoman-work"); !strings.Contains(out, "geoman/api") {
 		t.Fatalf("rename hid existing projects:\n%s", out)
 	}

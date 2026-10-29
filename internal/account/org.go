@@ -778,7 +778,11 @@ type FlyAppResult struct {
 // and a workload bound to the app, wrapped with an approved KMS key.
 func (a *Account) AddFlyApp(ctx context.Context, org string, app wire.FlyApp) (*FlyAppResult, error) { //nolint:gocyclo // checks, then each step in turn
 	org = strings.ToLower(org)
-	if team.OrgOf(app.Group) != org {
+	v, err := a.Org(ctx, org)
+	if err != nil {
+		return nil, err
+	}
+	if v.State == nil || !v.State.ContainsProject(app.Group) {
 		return nil, fmt.Errorf("the group %s is not in %s", app.Group, org)
 	}
 	if err := team.ValidGroup(app.Group); err != nil {

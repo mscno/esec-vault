@@ -27,17 +27,36 @@ type RotationNeed struct {
 	Admin bool `json:"admin"`
 }
 
+// orgContainsResource includes historical aliases in tenant-scoped reports.
+func orgContainsResource(os *team.OrgState, org, id string) bool {
+	if org == "" {
+		return true
+	}
+	if os != nil {
+		return os.ContainsProject(id)
+	}
+	return team.OrgOf(id) == org
+}
+
 // Rotations lists the environments to rotate across the shared projects
 // this account is in (of org only, when given), that it can read.
 func (a *Account) Rotations(ctx context.Context, org string) ([]RotationNeed, error) {
 	var out []RotationNeed
 	err := a.withTeam(ctx, func(t *teamCtx) error {
+		var os *team.OrgState
+		if org != "" {
+			var err error
+			os, err = t.org(org)
+			if err != nil {
+				return err
+			}
+		}
 		list, err := t.a.Client.Projects(t.ctx)
 		if err != nil {
 			return err
 		}
 		for _, p := range list {
-			if org != "" && team.OrgOf(p.ID) != org {
+			if !orgContainsResource(os, org, p.ID) {
 				continue
 			}
 			st, err := t.state(p.ID)
@@ -108,7 +127,7 @@ func (a *Account) Workloads(ctx context.Context, org string) ([]WorkloadView, er
 			return err
 		}
 		for _, sum := range list {
-			if team.OrgOf(sum.ID) != org {
+			if !orgContainsResource(os, org, sum.ID) {
 				continue
 			}
 			gs, err := t.group(sum.ID)
