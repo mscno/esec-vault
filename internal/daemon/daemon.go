@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mscno/esec"
 	"github.com/mscno/esec-vault/internal/broker"
-	"github.com/mscno/esec-vault/internal/caller"
 	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
@@ -112,10 +112,6 @@ type Server struct {
 	teamSeen map[string]time.Time
 }
 
-func describePID(pid uint32) string { return caller.Describe(caller.Chain(int(pid))) }
-
-func commandOf(pid uint32) string { return caller.Args(int(pid)) }
-
 // New constructs a locked daemon. Tests inject an in-memory keyring.
 func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	if err := paths.EnsureHome(); err != nil {
@@ -139,6 +135,7 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	b.Unseal = func(project, env, pub, path string) (string, error) { return unseal(kr, project, env, pub, path) }
 	fwd := broker.NewServer(nil, p, audit, logger)
 	fwd.ControlOnlyApproval, fwd.Forwarded = true, true
+	fwd.ReadGeneration = b.Epoch
 	fwd.Guard, fwd.Chain = g, describePID
 	cfg, err := remote.Load()
 	if err != nil {
@@ -148,7 +145,12 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	if interval <= 0 {
 		return nil, fmt.Errorf("daemon requires a positive policy.interval")
 	}
-	return &Server{Keyring: kr, Logger: logger, Broker: b, Forward: fwd, guard: g, UID: uint32(os.Getuid()), Interval: interval, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{}), serverWake: make(chan struct{}, 1)}, nil //nolint:gosec // supported platforms have a nonnegative uid
+	s := &Server{Keyring: kr, Logger: logger, Broker: b, Forward: fwd, guard: g, UID: uint32(os.Getuid()), Interval: interval, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{}), serverWake: make(chan struct{}, 1)} //nolint:gosec // supported platforms have a nonnegative uid
+	consent := newReadConsent(b)
+	b.Consent = consent.ask
+	b.OpenRead = s.openRead
+	b.Inspect = func(uid uint32, t *esec.ReadTarget) *esec.ReadInspection { return s.inspectRead(consent, uid, t) }
+	return s, nil
 }
 
 // Serve runs both endpoints and the scheduler until cancellation. The OS user

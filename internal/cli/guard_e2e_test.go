@@ -217,7 +217,16 @@ func buildEsec(t *testing.T) string {
 			return
 		}
 		esecBin = filepath.Join(dir, "esec")
-		out, err := exec.Command("go", "build", "-o", esecBin, "github.com/mscno/esec/cmd/esec").CombinedOutput()
+		// Build in core's module so its CLI-only dependencies use core's
+		// go.mod/go.sum rather than this module's pruned library graph.
+		moduleDir, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/mscno/esec").CombinedOutput()
+		if err != nil {
+			errEsecBuild = fmt.Errorf("locate esec module: %w\n%s", err, moduleDir)
+			return
+		}
+		cmd := exec.Command("go", "build", "-o", esecBin, "./cmd/esec")
+		cmd.Dir = strings.TrimSpace(string(moduleDir))
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			errEsecBuild = fmt.Errorf("build esec: %w\n%s", err, out)
 		}

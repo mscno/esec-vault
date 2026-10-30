@@ -1,3 +1,28 @@
+# v0.28.0
+
+Pairs with esec v0.18.0. Run `esec vault daemon upgrade` after installing.
+No cloud server deployment or key rotation is required for this change.
+
+- **Unified reads and inspection.** The shared core resolver binds files to
+  their exact environment, project, public key and guard. Filenames no
+  longer become policy environment labels. The daemon independently
+  validates that binding and the ciphertext digest before opening a key.
+- **Scoped local consent.** A managed ordinary broker read can request
+  desktop approval with no policy file: once, or one hour for the specific
+  checkout/project/environment/key. Lock or restart revokes session consent.
+  Only that read's key opens; the broker stays globally locked. Existing
+  explicit denials stay effective. No desktop or cancelled approval fails
+  with an actionable code and serves no secrets.
+- **Document reads** preserve file format for core `decrypt`, `get`, `export`
+  and `run`. The vault compatibility commands use the same reader while
+  keeping their existing presentation and masking options. Authorized age
+  workload identities remain unattended.
+- **Metadata-only inspection** reports broker state, local consent, reader
+  metadata and recent hardware observations without opening private keys,
+  starting a sync or asking for approval. Unverified availability is explicit.
+- **Guard and lock transitions** cannot reuse a weaker cached session for a
+  touch-protected read or return an in-flight document after lock revocation.
+
 # v0.27.0
 
 Pairs with esec v0.17.0. Run `esec vault daemon upgrade` after installing.

@@ -48,8 +48,8 @@ github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYW
 github.com/klauspost/pgzip v1.2.6/go.mod h1:Ch1tH69qFZu15pkjo5kYi6mth2Zzwzt50oCQKQE9RUs=
 github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
-github.com/mscno/esec v0.17.0 h1:5HEAMM1V7kyMg9Y4qoIT6hEg5aEV04Bcgu7gthhyt3Q=
-github.com/mscno/esec v0.17.0/go.mod h1:GHeK+X4iJKf1d+a53EUzOCr3Bf/8KGbIj6XivUUCfTo=
+github.com/mscno/esec v0.18.0 h1:5wQJ57IpGwgGwy9JnlyAxH4YuJ/GH+MNPNNSJOiwTTs=
+github.com/mscno/esec v0.18.0/go.mod h1:GHeK+X4iJKf1d+a53EUzOCr3Bf/8KGbIj6XivUUCfTo=
 github.com/ncruces/go-strftime v1.1.0 h1:vtPmPWMkb539RGV9WpWT9EwJGvrOCKvMNI4obWL47Hk=
 github.com/ncruces/go-strftime v1.1.0/go.mod h1:yVaq7iwCN09vHRrKBrrflXT0M9tTMG2KmZ9Fj7xeG/g=
 github.com/pelletier/go-toml/v2 v2.4.3 h1:GTRvJQutkOSftxIFD5xw9aepkYNuPWmVJpffdDPYVpY=

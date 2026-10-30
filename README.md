@@ -1622,93 +1622,76 @@ service tells you when machines wait to join or changes wait to be signed.
 
 ## Run applications through the broker
 
-Core `esec run` reads keys directly. `esec vault run` asks the daemon's broker.
-The broker needs an unlocked session and a matching policy rule.
-
-### Step 1: Add policy rules
-
-Edit `~/.config/esec/policy.toml`. These example rules allow selected development
-environments and require approval for the store's production environment:
-
-```toml
-default = "deny"
-
-[[rule]]
-project = "acme/store"
-env = ["dev", "staging", "qa"]
-action = "allow"
-
-[[rule]]
-project = "acme/store"
-env = ["prod"]
-action = "ask"
-
-[[rule]]
-project = "acme/platform"
-env = ["api.dev", "worker.dev"]
-action = "allow"
-
-[[rule]]
-project = "acme/mono/services/api"
-env = ["dev"]
-action = "allow"
-```
-
-The first matching rule wins. Environment names match exactly.
-An `env = ["dev"]` rule does not match `api.dev`.
-Use the nested project's full ID when it has its own esec.toml.
-
-### Step 2: Start, reload, and unlock
+Use the same read commands for ordinary and guarded environments:
 
 ```sh
-esec vault daemon install --start
-esec vault daemon reload
-esec vault unlock --ttl 4h
+esec inspect production
+esec inspect .env.production --json
+esec decrypt .env.production
+esec run production -- ./deploy
 ```
 
-Use `daemon reload` after editing policy. Use `unlock` again after adding or
-importing keys. Restarting the daemon starts a locked session.
+With esec v0.18.0 and esec-vault v0.28.0, both clients share the resolver and
+read planner. Filenames and exact environment names resolve to the same file,
+project, public key and guard; a filename is not used as a policy environment.
+Explicit files use their own project rather than the caller's working directory.
 
-### Step 3: Run from the correct directory
+An ordinary cached key reads directly. Your personal identity can also open
+an unguarded reader seal locally, without the cloud. A guarded key uses the
+daemon before any ordinary keyring entry, including an older software copy.
+An explicit authorized CI/deploy age identity opens its seal directly. Fresh
+public-key-addressed credentials from `machine run` also stay direct. Ordinary
+named variables and keyring entries alone never choose that workload route.
+`esec decrypt` returns the same document format on either route.
 
-```sh
-# From the store project root.
-esec vault run dev -f env -- npm run dev
+### Local approval without policy setup
 
-# From a repository root with separate component projects.
-(cd services/api && esec vault run dev -f env -- npm run dev)
-```
+Run `esec vault setup` once for your identity and background service. After
+updating an existing installation, run `esec vault daemon upgrade`.
+Ordinary interactive onboarding needs no manually authored `policy.toml`.
 
-For one project with dotted component environments, run from the file's directory:
+When a broker read needs local consent, the daemon's desktop dialog shows
+who requested it, the project, exact environment, file and public key. Choose
+**Allow once**, **Allow session** (one hour), or **Cancel**. The scope includes
+the checkout, project, environment and key; another key or environment needs
+its own approval. Locking the vault or restarting the daemon revokes session
+consent. Cancellation, timeout and unavailable desktop approval serve no data.
+Only the requested environment is opened: consent does not unlock every key.
 
-```sh
-(cd services/api && esec vault run api.dev -f env -- npm run dev)
-```
+Hardware guards retain their own approval and presence checks. A session guard
+can reuse its open session; a touch guard asks for hardware approval on each
+read. A stronger touch setting never consumes a previously cached session key.
+A repository cannot grant itself local consent or remove an explicit local deny.
 
-Use an environment name for broker commands. The current broker checks the
-environment argument as supplied. An explicit file path is not converted to
-`dev` for policy matching. The broker supports dotenv and EJSON injection.
+### Inspect before opening keys
 
-### Approve a request
+`esec inspect ENV --json` is metadata-only: no secret-store entries are read,
+no key or seal opens, no cloud sync runs, and no approval or hardware action
+is requested. It reports the file, project, reader metadata, public key, seal
+integrity, key availability, guard, read route, broker state, consent and blockers.
+Availability that has not been tested stays **unverified**. Reader names in
+project metadata are not proof that this device can decrypt the seal.
 
-An `ask` rule makes the requesting command wait for approval.
-In another terminal, inspect `~/.config/esec/audit.log`. The entry with
-`"decision":"ask"` contains the request ID in its `detail` field.
+Blocker codes include `environment_missing`, `environment_ambiguous`,
+`key_mismatch`, `consent_required`, `policy_denied`, `daemon_unavailable`,
+`daemon_upgrade_required` and `hardware_approval_required`. A read that races
+with a changed ciphertext or a vault lock fails explicitly.
 
-```sh
-tail -n 20 ~/.config/esec/audit.log
-esec vault approve REQUEST_ID
-```
+### Advanced broker policy and compatibility commands
 
-Replace `REQUEST_ID` with the ID you inspected. The request expires after five
-minutes if it is not approved. `lock` also cancels pending requests.
+`~/.config/esec/policy.toml` remains an optional administrative override.
+Existing deny rules and configured default denies remain effective for broker
+reads. Reload an edited policy with `esec vault daemon reload`. A deliberately
+configured allow rule plus an unlocked broker session retains its unattended
+behavior. Direct ordinary reads use their local credentials rather than broker
+policy; use hardware guard when hardware approval is required.
 
-```sh
-esec vault lock
-```
+`esec vault run` and `esec vault decrypt` are compatibility wrappers around the
+same reader. Existing masking, JSON and single-value output options remain.
+`vault decrypt` retains its historical NAME=value presentation; ordinary
+`esec decrypt` always prints the decrypted document. The low-level foreground
+broker and forwarded guarded-reader protocol remain available for advanced use.
 
-Locking ends broker access. It does not stop backups or revoke direct access
-to working keyring files on your computer.
 
 ## Keys live with the code: sealed in the repository
 
@@ -1767,10 +1750,10 @@ esec vault run prod -- ./deploy       # dialog: what, which file, which programs
 esec vault decrypt prod STRIPE_KEY    # one value, after the same dialog and touch (no KEY: all of them)
 ```
 
-A guarded key opens only through the background service: read the values
-with `esec vault decrypt`, or use them with `esec vault run`. From esec
-v0.13.0, `esec run`, `esec decrypt` and `esec get` hand a guarded read to
-them when esec-vault is installed, with the same dialog and touch.
+Use `esec decrypt` or `esec run` for guarded reads too: the shared planner
+selects the local daemon and its hardware approval flow. Explicit filenames
+work the same as exact environment names. CI and deploys use their separate
+authorized age identities for unattended reads.
 `esec vault unlock` needs no touch; touching a
 YubiKey that nothing waits for types its one-time password into the terminal
 (`ykman config usb --disable OTP` turns that off if you do not use it).
@@ -2390,3 +2373,8 @@ Development note: the local, ignored `go.work` links this checkout to the
 sibling `../esec` module for the new shared config/discovery API. Release that
 core API and update the required esec version in `go.mod` before publishing
 vault; standalone builds need the released dependency.
+
+Inside an `esec vault forward` session, the same guarded `esec decrypt` and
+`esec run` commands use the forwarded broker. Only ciphertext and the sealed
+key are sent to it; inspection reports local metadata and remote approval
+requirements without asking the remote machine to open a key.

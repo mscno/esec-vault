@@ -26,9 +26,9 @@ func TestBrokerInjectsTomlScalars(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, _, _ := startTestBroker(t,
-		map[string]map[string]string{"org/repo": {"ESEC_PRIVATE_KEY_PROD": priv}},
-		&policy.Policy{Default: policy.Deny, Rules: []policy.Rule{{Project: "org/repo", Env: []string{"prod"}, Action: policy.Allow}}})
-	values, err := client.GetSecrets("org/repo", "prod", file, ".etoml")
+		map[string]map[string]string{"org/repo": {"ESEC_PRIVATE_KEY_PRODUCTION": priv}},
+		&policy.Policy{Default: policy.Deny, Rules: []policy.Rule{{Project: "org/repo", Env: []string{"production"}, Action: policy.Allow}}})
+	values, err := client.GetSecrets("org/repo", "production", file, ".etoml")
 	if err != nil {
 		t.Fatal(err)
 	}

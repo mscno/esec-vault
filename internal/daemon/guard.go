@@ -128,7 +128,7 @@ func (g *guarder) Key(req broker.GuardRequest) (string, string, error) {
 	}
 	pub := strings.ToLower(req.PublicKey)
 	// A forwarded read is always one the person sees and touches.
-	if !req.Forwarded {
+	if !req.Forwarded && req.Protection != "touch" {
 		if priv, ok := g.cached(pub, req.Project, req.Env); ok {
 			return priv, "session (open)", nil
 		}
@@ -151,7 +151,7 @@ func (g *guarder) Key(req broker.GuardRequest) (string, string, error) {
 		}
 	}
 	defer release()
-	if !req.Forwarded {
+	if !req.Forwarded && req.Protection != "touch" {
 		if priv, ok := g.cached(pub, req.Project, req.Env); ok {
 			return priv, "session (open)", nil
 		}
@@ -160,8 +160,11 @@ func (g *guarder) Key(req broker.GuardRequest) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if p.Guard == "session" && !req.Forwarded && pub != "" {
+	if p.Guard == "session" && req.Protection != "touch" && !req.Forwarded && pub != "" {
 		g.keep(pub, req.Project, p)
+	}
+	if req.Protection == "touch" {
+		return p.Private, "touch", nil
 	}
 	return p.Private, p.Guard, nil
 }
@@ -303,4 +306,12 @@ func describeRead(req broker.GuardRequest, keyEnv, pub string) string {
 	}
 	b.WriteString("\n\nAllow, then touch your security key, only if you started this.")
 	return b.String()
+}
+
+// sessionOpen reads availability metadata only; inspection never returns a key.
+func (g *guarder) sessionOpen(pub, project, env string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	c, ok := g.cache[pub]
+	return ok && c.project == project && c.env == env && time.Now().Before(c.until)
 }

@@ -50,9 +50,16 @@ func buildBinaries(t *testing.T) string {
 			errBuild = err
 			return
 		}
-		for _, target := range [][2]string{{"esec-vault", "./cmd/esec-vault"}, {"esec", "github.com/mscno/esec/cmd/esec"}} {
+		moduleDir, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/mscno/esec").CombinedOutput()
+		if err != nil {
+			errBuild = fmt.Errorf("locate esec module: %w\n%s", err, moduleDir)
+			return
+		}
+		// Each CLI owns its module graph, including CLI-only dependencies
+		// that are pruned when esec is consumed as a library by vault.
+		for _, target := range [][3]string{{"esec-vault", "./cmd/esec-vault", root}, {"esec", "./cmd/esec", strings.TrimSpace(string(moduleDir))}} {
 			cmd := exec.Command("go", "build", "-o", filepath.Join(dir, target[0]), target[1])
-			cmd.Dir = root
+			cmd.Dir = target[2]
 			if out, err := cmd.CombinedOutput(); err != nil {
 				errBuild = fmt.Errorf("build %s: %v\n%s", target[0], err, out)
 				return
