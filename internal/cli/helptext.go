@@ -48,7 +48,13 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault project init acme/api                    # .env.dev with a dev key",
 		"esec vault project init acme/api --env dev,prod -f ejson",
 		"esec vault project init acme/api --env dev,prod --guard prod   # prod born behind your YubiKey",
+		"esec vault project init acme/api --env dev,production --guard production=session",
 		"esec vault project init --json                                 # what was set up, for agents (safe to run again)",
+	),
+	"project check": `Asks the vault server whether a project id is free. It creates nothing and prints no secret. relation is available, yours, taken, reserved, legacy, system or alias. Exit 0 includes a taken name; the JSON says so.
+
+` + examples(
+		"esec vault project check acme/store --json",
 	),
 	"env add": `Prints the key's public half (ESEC_PUBLIC_KEY=...) for the new secrets file. In a shared project it also becomes the project's key, sent to those who read it.
 

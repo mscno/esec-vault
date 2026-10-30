@@ -28,6 +28,7 @@ import (
 // ProjectCmd scaffolds projects.
 type ProjectCmd struct {
 	Init     ProjectInitCmd     `cmd:"" help:"Create project marker, environment keys and secrets templates."`
+	Check    ProjectCheckCmd    `cmd:"" help:"Ask the vault server whether a project id is free. Writes nothing."`
 	Transfer ProjectTransferCmd `cmd:"" help:"Transfer a project to a tenant you own, or request another owner's acceptance."`
 }
 
@@ -40,11 +41,12 @@ type ProjectInitCmd struct {
 	Format   string   `short:"f" default:"" help:"env, ejson, eyaml, eyml or etoml"`
 	Template bool     `default:"true" negatable:"" help:"Create secrets templates"`
 	Force    bool     `help:"Replace a different existing project id in esec.toml"`
-	Guard    []string `name:"guard" sep:"," help:"Environments whose keys are born guarded (every read needs a touch), such as prod"`
+	Guard    []string `name:"guard" sep:"," help:"Environments born guarded: prod (touch), or production=touch / production=session"`
 	JSON     bool     `help:"Print what was set up as JSON (the project, its environments and keys, files created, next steps), for scripts and agents"`
 
-	ctx     *cliCtx
-	created []string
+	ctx         *cliCtx
+	created     []string
+	guardLevels map[string]string
 }
 
 // initResult is project init's JSON.
@@ -138,7 +140,7 @@ func (c *ProjectInitCmd) nextSteps() []string {
 			steps = append(steps, "esec vault hook install                           # refuse commits with secrets in the clear")
 		}
 	}
-	if slices.Contains(c.Env, "prod") && !slices.Contains(c.Guard, "prod") {
+	if slices.Contains(c.Env, "prod") && c.guardLevels["prod"] == "" {
 		if st, err := readGuardStatus(); err == nil && st.SetUp {
 			steps = append(steps, "esec vault guard enable --env prod                 # every prod read needs your touch")
 		}
@@ -175,11 +177,11 @@ func (c *ProjectInitCmd) create(project string) error { //nolint:gocyclo // keys
 	if _, err := templateContent(format, "", ""); err != nil {
 		return err
 	}
-	for _, env := range c.Guard {
-		if !slices.Contains(c.Env, env) {
-			return fmt.Errorf("--guard %s: not one of --env", env)
-		}
+	levels, err := initGuardLevels(c.Env, c.Guard)
+	if err != nil {
+		return err
 	}
+	c.guardLevels = levels
 	s, err := newSealing(c.ctx)
 	if err != nil {
 		return err
@@ -253,9 +255,9 @@ func prepareEnvironments(c *ProjectInitCmd, s *sealing, pf *projectfile.File, fo
 		}
 		pub := pf.Env[env].Key
 		if _, serr := coreseal.Read(c.Dir, env); pub == "" || serr != nil {
-			level := projectfile.GuardNone
-			if slices.Contains(c.Guard, env) {
-				level = projectfile.GuardTouch
+			level := c.guardLevels[env]
+			if level == "" {
+				level = projectfile.GuardNone
 			}
 			priv, ok := s.cached(pf.Project, env, pub)
 			if !ok {
@@ -300,6 +302,32 @@ func prepareEnvironments(c *ProjectInitCmd, s *sealing, pf *projectfile.File, fo
 		}
 	}
 	return fresh, files, nil
+}
+
+// initGuardLevels reads --guard. A bare name means touch, the original
+// form. name=session and name=touch name the level.
+func initGuardLevels(envs, guards []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, g := range guards {
+		name, level, ok := strings.Cut(g, "=")
+		name = strings.TrimSpace(name)
+		if !ok {
+			level = projectfile.GuardTouch
+		} else {
+			level = strings.TrimSpace(level)
+		}
+		if !slices.Contains(envs, name) {
+			return nil, fmt.Errorf("--guard %s: not one of --env", g)
+		}
+		if err := projectfile.ValidateGuard(level); err != nil {
+			return nil, fmt.Errorf("--guard %s: %w", g, err)
+		}
+		if level == "" {
+			level = projectfile.GuardNone
+		}
+		out[name] = level
+	}
+	return out, nil
 }
 
 func templateContent(format, env, pub string) (string, error) {

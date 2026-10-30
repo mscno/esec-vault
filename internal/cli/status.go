@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
@@ -59,6 +60,22 @@ type status struct {
 	VaultServer  *serverStatus    `json:"vault_server,omitempty"`
 	SecretStore  *storeStatus     `json:"secret_store,omitempty"`
 	Problems     []string         `json:"problems,omitempty"`
+	// The fields below are for other tools (esec setup). identity stays the
+	// fingerprint; reader is the person, such as "mads (gh:583231)".
+	SignedIn   bool              `json:"signed_in"`
+	Server     string            `json:"server,omitempty"`
+	Login      string            `json:"login,omitempty"`
+	GitHubID   int64             `json:"github_id,omitempty"`
+	Reader     string            `json:"reader,omitempty"`
+	Personal   string            `json:"personal,omitempty"`
+	Namespaces []statusNamespace `json:"namespaces,omitempty"`
+}
+
+// statusNamespace is a tenant the signed-in user may create projects in.
+type statusNamespace struct {
+	Name         string `json:"name"`
+	Kind         string `json:"kind"`
+	YouMayCreate bool   `json:"you_may_create"`
 }
 
 // Run displays last verified upload and current snapshot state.
@@ -66,6 +83,12 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 	s := inspect(ctx)
 	s.SecretStore = inspectStore(ctx, &s.Problems)
 	s.VaultServer = inspectServer(ctx, &s.Problems)
+	if st, err := account.LoadState(); err == nil {
+		fillStatusAccount(&s, st)
+		if c.JSON {
+			s.Namespaces, s.Personal = statusNamespaces(ctx)
+		}
+	}
 	cctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil {
@@ -88,6 +111,53 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 		fmt.Println("!", p)
 	}
 	return (&RemoteListCmd{}).Run(ctx)
+}
+
+func fillStatusAccount(s *status, st *account.State) {
+	if st == nil || st.Login == "" {
+		return
+	}
+	s.SignedIn = true
+	s.Server = st.Server
+	s.Login = st.Login
+	s.GitHubID = st.GitHubID
+	if st.GitHubID != 0 {
+		s.Reader = fmt.Sprintf("%s (gh:%d)", st.Login, st.GitHubID)
+	} else {
+		s.Reader = st.Login
+	}
+}
+
+// statusNamespaces lists tenants this account can create in. A failure leaves
+// the list empty: status itself still prints.
+func statusNamespaces(ctx *cliCtx) ([]statusNamespace, string) {
+	a, err := openAccount(ctx)
+	if err != nil {
+		return nil, ""
+	}
+	bg, cancel := timeout(8 * time.Second)
+	defer cancel()
+	list, err := a.Client.Namespaces(bg)
+	if err != nil {
+		return nil, ""
+	}
+	var out []statusNamespace
+	personal := ""
+	for _, n := range list {
+		name := n.Name
+		if name == "" {
+			name = n.Canonical
+		}
+		if name == "" {
+			continue
+		}
+		kind := n.Kind
+		if kind == "personal" && personal == "" {
+			personal = name
+		}
+		out = append(out, statusNamespace{Name: name, Kind: kind, YouMayCreate: true})
+	}
+	return out, personal
 }
 
 func inspect(ctx *cliCtx) status {
