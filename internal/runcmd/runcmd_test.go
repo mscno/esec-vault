@@ -212,3 +212,29 @@ func TestGuardedBySealRecord(t *testing.T) {
 		t.Fatal("the seal record's guard was not seen")
 	}
 }
+
+func TestResolveSecretsFileEnvironmentNamesAreExact(t *testing.T) {
+	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	t.Setenv("ESEC_CONFIG", "")
+	for _, pair := range [][2]string{{"prod", "production"}, {"dev", "development"}, {"stage", "staging"}} {
+		for _, names := range [][2]string{pair, {pair[1], pair[0]}} {
+			t.Run(names[0]+"-is-not-"+names[1], func(t *testing.T) {
+				dir := t.TempDir()
+				other := filepath.Join(dir, ".env."+names[1])
+				if err := os.WriteFile(other, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := resolveSecretsFile(dir, names[0], ""); err == nil || !strings.Contains(err.Error(), "no secrets file") {
+					t.Fatalf("resolved another environment: %v", err)
+				}
+				exact := filepath.Join(dir, ".env."+names[0])
+				if err := os.WriteFile(exact, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if got, format, err := resolveSecretsFile(dir, names[0], ""); err != nil || got != exact || format != ".env" {
+					t.Fatalf("exact environment: %s %s %v", got, format, err)
+				}
+			})
+		}
+	}
+}

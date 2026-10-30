@@ -1,3 +1,16 @@
+# v0.27.0
+
+Pairs with esec v0.17.0. Run `esec vault daemon upgrade` after installing.
+
+- **Environment names match exactly.** Updated the shared esec library so
+  vault file discovery no longer substitutes `prod`/`production`,
+  `dev`/`development`, or `stage`/`staging` in either direction. Discovery
+  no longer aliases names that broker policy, guard, and seals treat as
+  distinct environments.
+- Remove any `[aliases]` section from the shared preferences before using
+  this release. Existing encrypted files and environment keys stay valid;
+  no key rotation or resealing is needed for this change.
+
 # v0.26.0
 
 Pairs with esec v0.16.0. Only the client changes; the server stays as it is.

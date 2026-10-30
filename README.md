@@ -2358,8 +2358,6 @@ default_format = "etoml"
 patterns = [".{format}.{env}", "{env}.{format}"]
 create = "{env}.{format}"
 templates = ["example.{format}", ".{format}.example"]
-[aliases]
-prod = "production"
 ```
 
 Put public defaults and dummy placeholders in `example.etoml`, `example.ejson`
@@ -2378,9 +2376,12 @@ esec vault run prod -- ./server
 ```
 
 Both core `run` and broker-based `vault run` support TOML scalar values and
-nested tables, using `DATABASE__HOST` for `database.host`. Discovery fails on
-zero or multiple matches; use a filename or `--format` to narrow it. Files are
-not searched recursively except through explicitly configured relative paths.
+nested tables, using `DATABASE__HOST` for `database.host`. Environment names
+match exactly: `prod` and `production`, `dev` and
+`development`, and `stage` and `staging` are different environments.
+Remove any existing `[aliases]` section from the shared config; aliases
+are no longer supported. Discovery fails on zero or multiple matches;
+use a filename or `--format` to narrow it. Files are not searched recursively except through explicitly configured relative paths.
 Use `--no-template` for key-only environment creation. If `env add --project`
 runs outside that project's repository without `--dir`, it creates only the
 key and explains how to specify a destination.
