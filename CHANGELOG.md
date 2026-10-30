@@ -1,3 +1,18 @@
+# v0.26.0
+
+Pairs with esec v0.16.0. Only the client changes; the server stays as it is.
+
+- **`esec vault project check ID --json`** asks whether a project id is free.
+  It creates nothing and prints no secret. `relation` is `available`, `yours`,
+  `taken`, `reserved`, `legacy`, `system` or `alias`. Exit 0 includes a taken
+  name; the JSON says so. Exit 80 is a bad id. `esec setup` calls this before
+  it writes.
+- **`project init --guard`** accepts `production=touch` and `production=session`
+  as well as a bare environment name (still touch).
+- **`share` accepts `--yes`**, so scripts can pass it. share does not ask.
+- **`status --json`** adds `signed_in`, `server`, `login`, `github_id`,
+  `reader` and `namespaces` for other tools. `identity` is still the fingerprint.
+
 # v0.25.0
 
 Fewer ways to do the same thing. Only clients change; the server stays at
