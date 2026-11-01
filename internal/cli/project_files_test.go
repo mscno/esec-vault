@@ -407,3 +407,71 @@ func TestInitNeverReactivatesHistoricalKey(t *testing.T) {
 		})
 	}
 }
+
+func TestInitReusesLegacyNamedKey(t *testing.T) {
+	c, ctx := initFixture(t, "env")
+	c.Yes = true
+	pub, priv, err := esec.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := keystore.New()
+	if err := os.MkdirAll(store.Dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Older keyrings may have only the named key, without a public-key index.
+	writeInitFixture(t, filepath.Join(store.Dir, projectfile.KeyringName(c.Project)), keystore.EnvEntry("dev")+"="+priv+"\n")
+	path := filepath.Join(c.Dir, ".env.dev")
+	original := "TOKEN=synthetic-token\n"
+	writeInitFixture(t, path, original)
+	if err := c.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pf, err := projectfile.Load(c.Dir)
+	if err != nil || pf.Env["dev"].Key != pub {
+		t.Fatal("legacy active key was not reused")
+	}
+	assertInitValues(t, c, path, original)
+}
+
+func TestInitPreservesGuardedCachedEnvironment(t *testing.T) {
+	for _, hasHeader := range []bool{false, true} {
+		t.Run(fmt.Sprint(hasHeader), func(t *testing.T) {
+			c, ctx := initFixture(t, "env")
+			c.Yes = true
+			guardPub, _, err := esec.GenerateKeypair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldPub, oldPriv, err := esec.GenerateKeypair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries := map[string]string{keystore.GuardEnvEntry("dev"): guardPub, keystore.GuardEntry(guardPub): "synthetic-guarded-payload", keystore.PubEntry(oldPub): oldPriv}
+			if err := keystore.New().Write(c.Project, entries, false); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(c.Dir, ".env.dev")
+			original := "TOKEN=synthetic-token\n"
+			if hasHeader {
+				original = "ESEC_PUBLIC_KEY=" + oldPub + "\n" + original
+			}
+			writeInitFixture(t, path, original)
+			err = c.Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), "already has a guarded key") {
+				t.Fatalf("guarded key was replaced: %v", err)
+			}
+			after, _ := os.ReadFile(path) //nolint:gosec // test-owned file
+			if string(after) != original {
+				t.Fatal("file changed")
+			}
+			stored, err := keystore.New().Read(c.Project)
+			if err != nil || !reflect.DeepEqual(entries, stored) {
+				t.Fatal("guarded cache changed")
+			}
+			if _, err := projectfile.Load(c.Dir); err == nil {
+				t.Fatal("project published despite guard mismatch")
+			}
+		})
+	}
+}

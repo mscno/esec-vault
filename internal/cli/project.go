@@ -307,10 +307,18 @@ func (c *ProjectInitCmd) prepareEnvironmentKey(s *sealing, pf *projectfile.File,
 	if _, err := coreseal.Read(c.Dir, env); pub != "" && err == nil {
 		return pub, nil, nil
 	}
+	entries, err := s.ks.Read(pf.Project)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", nil, err
+	}
+	if entries[keystore.GuardEnvEntry(env)] != "" {
+		return "", nil, fmt.Errorf("%s already has a guarded key; restore its project metadata and seal before initializing (nothing changed)", env)
+	}
 	// Repairing a missing seal or adopting a legacy checkout must never
 	// reactivate a historical key over the vault's current environment binding.
-	if active, ok := s.cached(pf.Project, env, ""); ok {
-		activePub, err := publicHex(active)
+	priv := entries[keystore.EnvEntry(env)]
+	if priv != "" {
+		activePub, err := publicHex(priv)
 		if err != nil {
 			return "", nil, err
 		}
@@ -328,8 +336,10 @@ func (c *ProjectInitCmd) prepareEnvironmentKey(s *sealing, pf *projectfile.File,
 		}
 		level = requested
 	}
-	priv, ok := s.cached(pf.Project, env, pub)
-	if !ok {
+	if priv == "" {
+		priv = entries[keystore.PubEntry(pub)]
+	}
+	if priv == "" {
 		if pub != "" {
 			return "", nil, fmt.Errorf("%s already has a public key, but its private key is not available to seal; import the matching key with esec vault storage add --project %s --file KEYRING, or restore its seal before initializing (no project files changed)", env, pf.Project)
 		}
@@ -338,7 +348,7 @@ func (c *ProjectInitCmd) prepareEnvironmentKey(s *sealing, pf *projectfile.File,
 			return "", nil, err
 		}
 	}
-	pub, err := publicHex(priv)
+	pub, err = publicHex(priv)
 	return pub, &freshKey{env: env, priv: priv, level: level}, err
 }
 

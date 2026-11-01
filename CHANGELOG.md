@@ -1,4 +1,4 @@
-# v0.29.6
+# v0.29.7
 
 - Make project initialization distinguish plaintext, encrypted, and mixed files.
   Ask before adding a missing public key and encrypting existing plaintext;
@@ -9,7 +9,7 @@
 - Preserve values and file permissions, reject concurrent edits and mismatched
   keys, and report files encrypted during init separately from newly created files.
 - Preserve the active environment key when an older file references a historical
-  key; initialization never silently changes that binding.
+  key, including guarded cache entries; initialization never silently changes that binding.
 - Preserve multiline dotenv values during initialization and fix concurrent
   plaintext detection for JSON files.
 
