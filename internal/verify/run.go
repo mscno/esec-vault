@@ -8,17 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mscno/esec/pkg/projectfile"
-	coreseal "github.com/mscno/esec/pkg/seal"
-
 	"github.com/mscno/esec-vault/internal/account"
-	"github.com/mscno/esec-vault/internal/identity"
-	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/remote"
-	"github.com/mscno/esec-vault/internal/seal"
-	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/workspace"
 )
 
@@ -27,7 +19,6 @@ const (
 	SourceSealed = "sealed in the repository"
 	SourceDevice = "this device"
 	SourceServer = "vault server"
-	SourceBackup = "backup"
 )
 
 // Options say what Run checks.
@@ -35,16 +26,14 @@ type Options struct {
 	// Roots are scanned for checkouts, which are then remembered.
 	Roots   []string
 	History bool
-	// Server and Backup check the vault server's copy and the newest
-	// backup; each needs network.
-	Server, Backup bool
-	Keyring        keyring.Keyring
+	// Server checks the signed vault-server copy; it needs network.
+	Server bool
 	// OpenAccount opens the signed-in account; nil skips the server.
 	OpenAccount func() (*account.Account, error)
 }
 
 // Run checks every checkout this machine knows (and Roots) against this
-// device, the vault server and the newest backup.
+// device and the vault server.
 func Run(ctx context.Context, opts Options) (*Report, error) {
 	if len(opts.Roots) > 0 {
 		now := time.Now().UTC().Truncate(time.Second)
@@ -75,16 +64,14 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	sources := []Source{{Name: SourceDevice, Projects: local}, sealedSource(checkouts)}
+	sealed, sealErr := sealedSource(ctx, checkouts, opts.History)
+	sources := []Source{{Name: SourceDevice, Projects: local}, sealed}
 	if opts.Server {
 		sources = append(sources, serverSource(ctx, opts))
 	}
-	if opts.Backup {
-		sources = append(sources, backupSource(ctx, opts))
-	}
 	rep := Build(uses, sources)
 	rep.Checkouts, rep.Files = len(checkouts), files
-	return rep, collectErr
+	return rep, errors.Join(collectErr, sealErr)
 }
 
 func serverSource(ctx context.Context, opts Options) Source {
@@ -104,45 +91,12 @@ func serverSource(ctx context.Context, opts Options) Source {
 	return s
 }
 
-func backupSource(ctx context.Context, opts Options) Source {
-	s := Source{Name: SourceBackup}
-	cfg, err := remote.Load()
-	if err != nil {
-		s.Err = err
-		return s
-	}
-	if cfg.Default == "" {
-		s.Err = errors.New("no backup destination (esec vault remote add)")
-		return s
-	}
-	id, err := identity.Load(opts.Keyring)
-	if err != nil {
-		s.Err = err
-		return s
-	}
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	_, blob, err := remote.Latest(cctx, cfg, "")
-	if err != nil {
-		s.Err = err
-		return s
-	}
-	v, err := vaultfile.Open(blob, &id.Public, &id.Private)
-	if err != nil {
-		s.Err = err
-		return s
-	}
-	s.Name = SourceBackup + " (" + cfg.Default + ")"
-	s.Projects = v.Projects
-	return s
-}
-
 // Saved is the last check, kept for status, the daemon and the Mac app.
 type Saved struct {
 	At     time.Time `json:"at"`
 	Report *Report   `json:"report,omitempty"`
 	Error  string    `json:"error,omitempty"`
-	// Drill is when the recovery phrase last opened the newest backup.
+	// Drill is when the recovery phrase last opened the server backup.
 	Drill time.Time `json:"drill,omitzero"`
 }
 
@@ -195,34 +149,4 @@ func save(s *Saved) error {
 		return err
 	}
 	return os.Rename(tmp, LastFile())
-}
-
-// sealedSource lists the keys sealed in the checkouts' repositories with a
-// recovery key: each opens with the recovery phrase and the repository
-// alone, so it counts as a place the key is kept.
-func sealedSource(checkouts []string) Source {
-	s := Source{Name: SourceSealed, Projects: map[string]map[string]string{}}
-	for _, dir := range checkouts {
-		pf, err := projectfile.Load(dir)
-		if err != nil {
-			continue
-		}
-		recs, err := seal.LoadRecords(dir)
-		if err != nil {
-			continue
-		}
-		for env, rec := range recs {
-			if rec.Key == "" || len(rec.Recovery) == 0 || rec.Verify(pf.Project, env) != nil {
-				continue
-			}
-			if _, err := coreseal.Read(dir, env); err != nil {
-				continue
-			}
-			if s.Projects[pf.Project] == nil {
-				s.Projects[pf.Project] = map[string]string{}
-			}
-			s.Projects[pf.Project][keystore.GuardEntry(rec.Key)] = "sealed"
-		}
-	}
-	return s
 }

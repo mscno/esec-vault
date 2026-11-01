@@ -1,8 +1,8 @@
-package remote
+// Package snapshot creates local encrypted exports. The vault server is the only sync destination.
+package snapshot
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -30,13 +30,13 @@ type Snapshot struct {
 // content reuses the exact ciphertext; changed content creates a new generation.
 // Only the recovery PUBLIC key is needed, so this works unattended.
 func BuildSnapshot(id *identity.Identity, ks *keystore.Store) (*Snapshot, error) {
-	unlock, err := storage.Lock(paths.Home())
+	unlock, err := storage.LockWait(paths.Home(), 30*time.Second, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
 	if !ks.Locked {
-		unlockKeys, err := storage.Lock(ks.Dir)
+		unlockKeys, err := storage.LockWait(ks.Dir, 30*time.Second, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -82,9 +82,6 @@ func BuildSnapshot(id *identity.Identity, ks *keystore.Store) (*Snapshot, error)
 	if err := storage.Write(paths.VaultFile(), raw); err != nil {
 		return nil, err
 	}
-	if err := MarkDirty("new snapshot", len(v.Projects)); err != nil {
-		return nil, err
-	}
 	return snapshot(v, raw), nil
 }
 
@@ -109,18 +106,13 @@ func collect(id *identity.Identity, ks *keystore.Store) (*vaultfile.Vault, *[32]
 		}
 		v.Projects[project] = entries
 	}
-	for _, name := range []string{"policy.toml", "trusted.toml", "remote.toml"} {
+	for _, name := range []string{"policy.toml", "trusted.toml"} {
 		data, err := os.ReadFile(filepath.Join(paths.Home(), name)) //nolint:gosec // fixed allowlist under configured home
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return nil, nil, err
-		}
-		if name == "remote.toml" {
-			if err := CheckNoSecrets(data); err != nil {
-				return nil, nil, err
-			}
 		}
 		if v.Files == nil {
 			v.Files = map[string][]byte{}
@@ -130,50 +122,7 @@ func collect(id *identity.Identity, ks *keystore.Store) (*vaultfile.Vault, *[32]
 	return v, master, nil
 }
 
-// MaybePush scans for changes, persists them locally, and uploads when due.
-func MaybePush(ctx context.Context, id *identity.Identity, ks *keystore.Store, name string) (*PushResult, error) {
-	cfg, err := Load()
-	if err != nil {
-		return nil, err
-	}
-	if !cfg.Policy.AutoPush() || (cfg.Default == "" && name == "" && os.Getenv("ESEC_VAULT_REMOTE") == "") {
-		return nil, nil
-	}
-	if _, err := BuildSnapshot(id, ks); err != nil {
-		return nil, err
-	}
-	if !DebounceElapsed(cfg.Policy.DebounceDuration()) {
-		return nil, nil
-	}
-	return PushNow(ctx, id, ks, name, false)
-}
-
-// PushNow always snapshots live keys before uploading, with read-back verification.
-func PushNow(ctx context.Context, id *identity.Identity, ks *keystore.Store, name string, prune bool) (*PushResult, error) {
-	cfg, err := Load()
-	if err != nil {
-		return nil, err
-	}
-	snap, err := BuildSnapshot(id, ks)
-	if err != nil {
-		return nil, err
-	}
-	res, err := Push(ctx, cfg, name, snap.Blob, snap.Generation, snap.Fingerprint, snap.CreatedAt, true)
-	if err != nil {
-		return nil, err
-	}
-	// Clear only if neither the snapshot nor source keys changed while uploading.
-	current, err := BuildSnapshot(id, ks)
-	if err != nil {
-		return res, err
-	}
-	if bytes.Equal(current.Blob, snap.Blob) {
-		if err := ClearDirty(); err != nil {
-			return res, err
-		}
-	}
-	if prune {
-		_, err = Prune(ctx, cfg, name, cfg.Policy.Retention())
-	}
-	return res, err
+// GenerationName names a retained local encrypted snapshot.
+func GenerationName(ts time.Time, generation uint64, fingerprint string) string {
+	return fmt.Sprintf("vaults/%s-gen%020d-%s.esec", ts.UTC().Format("20060102T150405.000000000Z"), generation, fingerprint)
 }

@@ -27,11 +27,11 @@ func TestFlyOIDCEndToEnd(t *testing.T) {
 	const p = "--project=acme/store"
 
 	owner := newMachine(t, bin, "owner").with("ESEC_VAULT_GITHUB_URL=" + h.GitHub.URL)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "prod", "--format", "env")
 	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "access", "create", p)
 
 	// --- A machine of the project, bound to the Fly.io app store. ---

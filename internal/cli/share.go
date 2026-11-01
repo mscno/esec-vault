@@ -13,12 +13,13 @@ import (
 // SyncCmd opens committed share blobs into the global keyring store, or with
 // --server syncs the vault with the vault server.
 type SyncCmd struct {
-	Server bool `help:"Sync your vault with the vault server instead of importing committed shares"`
+	Server bool `default:"true" help:"Sync keys and recovery data with the vault server"`
+	Shares bool `help:"Import legacy committed share blobs instead (sign-in still required)"`
 }
 
 // Run implements sync.
 func (c *SyncCmd) Run(ctx *cliCtx) error {
-	if c.Server {
+	if !c.Shares {
 		return serverSync(ctx, true)
 	}
 	id, err := identity.Load(ctx.Keyring)

@@ -22,9 +22,11 @@ import (
 	"time"
 
 	"github.com/mscno/esec"
+	"github.com/mscno/esec/pkg/fileutils"
 
 	"github.com/mscno/esec-vault/internal/policy"
 	"github.com/mscno/esec-vault/internal/safetext"
+	"github.com/mscno/esec-vault/internal/secretfile"
 )
 
 // Ops supported by the broker protocol.
@@ -37,12 +39,13 @@ const (
 
 // Request is a single JSON-lines protocol request.
 type Request struct {
-	Op      string `json:"op"`
-	Project string `json:"project,omitempty"`
-	Env     string `json:"env,omitempty"`
-	Path    string `json:"path,omitempty"`   // get_secrets: absolute path of the encrypted secrets file
-	Format  string `json:"format,omitempty"` // get_secrets: esec file format, e.g. ".ejson"
-	ID      string `json:"id,omitempty"`     // approve: pending request id
+	Op       string `json:"op"`
+	Project  string `json:"project,omitempty"`
+	Env      string `json:"env,omitempty"`
+	Path     string `json:"path,omitempty"`     // get_secrets: absolute path of the encrypted secrets file
+	Format   string `json:"format,omitempty"`   // get_secrets: esec file format, e.g. ".ejson"
+	Document bool   `json:"document,omitempty"` // return all document values, for the native viewer
+	ID       string `json:"id,omitempty"`       // approve: pending request id
 	// Session labels the agent session a request comes from (ESEC_VAULT_SESSION).
 	Session string `json:"session,omitempty"`
 	// Content is the encrypted secrets file itself, for a request forwarded
@@ -85,16 +88,20 @@ type Guarder interface {
 
 // Response is a single JSON-lines protocol response.
 type Response struct {
-	OK       bool              `json:"ok"`
-	Error    string            `json:"error,omitempty"`
-	Envs     []string          `json:"envs,omitempty"`    // list_envs
-	Secrets  map[string]string `json:"secrets,omitempty"` // get_secrets
-	VaultEnv map[string]string `json:"-"`                 // unused
-	Pending  string            `json:"pending,omitempty"` // informational
+	OK       bool                 `json:"ok"`
+	Error    string               `json:"error,omitempty"`
+	Envs     []string             `json:"envs,omitempty"`    // list_envs
+	Secrets  map[string]string    `json:"secrets,omitempty"` // get_secrets
+	Document *secretfile.Document `json:"document,omitempty"`
+	VaultEnv map[string]string    `json:"-"`                 // unused
+	Pending  string               `json:"pending,omitempty"` // informational
 }
 
 // Server is the broker daemon.
 type Server struct {
+	// RequireLogin is checked for each request, so logout also blocks cached reads.
+	RequireLogin func() error
+
 	// Keys maps project → keyring entries (ESEC_PRIVATE_KEY_DEV → hex).
 	Keys map[string]map[string]string
 
@@ -273,6 +280,11 @@ func (s *Server) auditEntry(e AuditEntry) error {
 }
 
 func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
+	if req.Op != OpPing && s.RequireLogin != nil {
+		if err := s.RequireLogin(); err != nil {
+			return &Response{OK: false, Error: err.Error()}
+		}
+	}
 	switch req.Op {
 	case OpPing:
 		return &Response{OK: true}
@@ -306,7 +318,14 @@ func (s *Server) dispatch(uid, pid uint32, req *Request) *Response {
 		return &Response{OK: true, Envs: envs}
 
 	case OpGetSecrets:
-		return s.handleGetSecrets(uid, pid, req)
+		response := s.handleGetSecrets(uid, pid, req)
+		// A read can wait for approval. Logout while it waits must stop delivery.
+		if response.OK && s.RequireLogin != nil {
+			if err := s.RequireLogin(); err != nil {
+				return &Response{Error: err.Error()}
+			}
+		}
+		return response
 
 	case OpApprove:
 		if s.ControlOnlyApproval {
@@ -430,6 +449,13 @@ func (s *Server) handleGetSecrets(uid, pid uint32, req *Request) *Response { //n
 	var plain bytes.Buffer
 	if _, err := esec.Decrypt(bytes.NewReader(data), &plain, "", format, ".", key); err != nil {
 		return &Response{OK: false, Error: fmt.Sprintf("decryption failed: %v", err)}
+	}
+	if req.Document {
+		values, err := secretfile.DocumentValues(plain.Bytes(), fileutils.FileFormat(format))
+		if err != nil {
+			return &Response{OK: false, Error: err.Error()}
+		}
+		return &Response{OK: true, Document: &secretfile.Document{Revision: secretfile.Revision(data), Values: values}}
 	}
 
 	secrets, err := esec.EnvVars(plain.Bytes(), format)

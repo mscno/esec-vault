@@ -22,8 +22,7 @@ people and apps allowed to read it.
 ### Your machine
 
 ```sh
-esec vault setup                                   # identity, recovery phrase, backup, background service
-esec vault login https://vault.parap.ly
+esec vault setup --server https://vault.parap.ly     # sign in, identity, recovery phrase, background service
 esec vault access prove                            # GitHub SSH proof, so others can add you
 ```
 

@@ -161,7 +161,7 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 		t.Fatalf("check: %d %s", code, out)
 	}
 	m := steps(fromJSON(out))
-	if m["identity"].Status != "todo" || !strings.Contains(m["identity"].Command, "esec vault init") {
+	if m["identity"].Status != "todo" || !strings.Contains(m["identity"].Command, "esec vault login") {
 		t.Fatalf("identity: %+v", m["identity"])
 	}
 	out, _ = r.run("", "", "setup", "--no-daemon", "--root", src)
@@ -171,7 +171,8 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 
 	// With an identity and a project whose prod is guarded, but whose key
 	// is still cached here from before it was guarded.
-	r.must("", "", "identity", "init", "--no-passphrase", "--skip-confirm")
+	r.initIdentity()
+	r.connect()
 	r.must(repo, "", "project", "init", "acme/store", "--env", "dev,prod", "--format", "env")
 	r.must("", "", "projects", "scan", src)
 	pf, _ := projectfile.Load(repo)
@@ -194,7 +195,7 @@ func TestSetupChecksThenSetsUp(t *testing.T) { //nolint:gocyclo // one story, st
 	}
 	out, _ = r.run("", "", "setup", "--yes", "--json", "--no-daemon", "--root", src)
 	m = steps(fromJSON(out))
-	if m["guard"].Status != "done" || m["checkouts"].Detail != "1 checkout(s) of 1 project(s)" || m["keys here"].Status != "ok" {
+	if (m["guard"].Status != "done" && m["guard"].Status != "ok") || m["checkouts"].Detail != "1 checkout(s) of 1 project(s)" || m["keys here"].Status != "ok" {
 		t.Fatalf("setup: %+v", m)
 	}
 	entries, _ = keystore.New().Read("acme/store")

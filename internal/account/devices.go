@@ -277,7 +277,25 @@ func (a *Account) rotate(ctx context.Context, st *chain.State, id *identity.Iden
 		}
 		boxes = append(boxes, b)
 	}
-	put, gen, err := a.vaultPut(rotated, next, wrapped, a.State.Vault.Version, a.State.Vault.Generation+1)
+	remote, err := a.Client.Vault(ctx)
+	if err != nil {
+		return 0, err
+	}
+	remoteVault, err := a.openRemote(st, id, remote)
+	if err != nil {
+		return 0, err
+	}
+	inventory, err := a.collectInventory(id, remoteVault)
+	if err != nil {
+		return 0, err
+	}
+	if err := a.writeLocalVault(PendingPath(), inventory); err != nil {
+		return 0, err
+	}
+	if err := a.uploadObjects(ctx, inventory, remoteVault); err != nil {
+		return 0, err
+	}
+	put, gen, err := a.vaultPut(rotated, next, wrapped, remote.Version, remoteVault.Generation+1, inventory)
 	if err != nil {
 		return 0, err
 	}
@@ -285,7 +303,7 @@ func (a *Account) rotate(ctx context.Context, st *chain.State, id *identity.Iden
 	if err != nil {
 		return 0, err
 	}
-	if err := saveBase(put.Blob); err != nil {
+	if err := a.saveBase(put.Blob, next); err != nil {
 		return 0, err
 	}
 	a.State.pin(rotated)
@@ -452,10 +470,11 @@ func (a *Account) disableAgentSlot(ctx context.Context, slotID string) error {
 // keys and account record, so the next login enrolls a new device.
 func (a *Account) Logout(ctx context.Context, forgetDevice bool) error {
 	var errs []error
+	// Block local reads immediately, even if the server is slow or offline.
+	errs = append(errs, a.KR.Delete(SessionTokenName))
 	if err := a.Client.Logout(ctx); err != nil && !client.IsCode(err, wire.ErrUnauthorized) && !client.IsCode(err, wire.ErrDeviceRevoked) {
 		errs = append(errs, fmt.Errorf("end server session: %w", err))
 	}
-	errs = append(errs, a.KR.Delete(SessionTokenName))
 	if forgetDevice {
 		errs = append(errs, devicekey.Delete(a.KR), Remove())
 	}

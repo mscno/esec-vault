@@ -1,4 +1,4 @@
-// Package daemon hosts the long-lived broker and backup scheduler.
+// Package daemon hosts the broker, server synchronization and vault-server sync.
 package daemon
 
 import (
@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/caller"
 	"github.com/mscno/esec-vault/internal/guard"
@@ -25,7 +26,6 @@ import (
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/policy"
-	"github.com/mscno/esec-vault/internal/remote"
 )
 
 // Request is the versioned local control protocol. It carries no private keys
@@ -34,8 +34,6 @@ type Request struct {
 	Version int           `json:"version"`
 	Op      string        `json:"op"`
 	TTL     time.Duration `json:"ttl,omitempty"`
-	Remote  string        `json:"remote,omitempty"`
-	Prune   bool          `json:"prune,omitempty"`
 	Async   bool          `json:"async,omitempty"`
 	ID      string        `json:"id,omitempty"`
 }
@@ -61,7 +59,7 @@ type Response struct {
 // the version string injected at link time.
 var BuildVersion = "dev"
 
-// Job records the result of a queued backup; durable dirty state survives restart.
+// Job records the result of a queued server sync.
 type Job struct {
 	ID         string `json:"id"`
 	State      string `json:"state"`
@@ -74,7 +72,7 @@ type queued struct {
 	done    chan Job
 }
 
-// Server owns one broker session and serializes uploads. Keyring access by the
+// Server owns one broker session and serializes server synchronization. Keyring access by the
 // backup worker is transient and does not extend the broker session TTL.
 type Server struct {
 	Keyring  keyring.Keyring
@@ -97,8 +95,6 @@ type Server struct {
 	watchReady chan struct{}
 	// serverWake asks the vault-server loop to sync now.
 	serverWake chan struct{}
-	// lastGeneration is the local snapshot generation last seen by automatic.
-	lastGeneration uint64
 	// noteWindow and notes rate-limit pending-device notifications.
 	noteWindow time.Time
 	notes      int
@@ -130,6 +126,7 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	b := broker.NewServer(nil, p, audit, logger)
+	b.RequireLogin = func() error { return account.RequireLogin(kr) }
 	b.ControlOnlyApproval = true
 	b.Lock()
 	// Plugins are found by name on PATH: put the checked ones first.
@@ -138,17 +135,10 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	b.Guard, b.Chain, b.Command = g, describePID, commandOf
 	b.Unseal = func(project, env, pub, path string) (string, error) { return unseal(kr, project, env, pub, path) }
 	fwd := broker.NewServer(nil, p, audit, logger)
+	fwd.RequireLogin = b.RequireLogin
 	fwd.ControlOnlyApproval, fwd.Forwarded = true, true
 	fwd.Guard, fwd.Chain = g, describePID
-	cfg, err := remote.Load()
-	if err != nil {
-		return nil, err
-	}
-	interval := cfg.Policy.IntervalDuration()
-	if interval <= 0 {
-		return nil, fmt.Errorf("daemon requires a positive policy.interval")
-	}
-	return &Server{Keyring: kr, Logger: logger, Broker: b, Forward: fwd, guard: g, UID: uint32(os.Getuid()), Interval: interval, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{}), serverWake: make(chan struct{}, 1)}, nil //nolint:gosec // supported platforms have a nonnegative uid
+	return &Server{Keyring: kr, Logger: logger, Broker: b, Forward: fwd, guard: g, UID: uint32(os.Getuid()), Interval: time.Minute, jobs: map[string]Job{}, queue: make(chan queued, 16), wake: make(chan struct{}, 1), boot: rand.Text(), watchReady: make(chan struct{}), serverWake: make(chan struct{}, 1)}, nil //nolint:gosec // supported platforms have a nonnegative uid
 }
 
 // Serve runs both endpoints and the scheduler until cancellation. The OS user
@@ -297,7 +287,12 @@ func (s *Server) dispatch(ctx context.Context, uid, pid uint32, r Request) Respo
 		}
 		s.wakeServer()
 		return Response{OK: true}
-	case "backup", "snapshot":
+	case "backup":
+		return failure(errors.New("external backup sync was removed; run esec vault sync --server"))
+	case "snapshot":
+		if err := account.RequireLogin(s.Keyring); err != nil {
+			return failure(err)
+		}
 		return s.enqueue(ctx, r)
 	case "job":
 		s.mu.Lock()
@@ -313,6 +308,9 @@ func (s *Server) dispatch(ctx context.Context, uid, pid uint32, r Request) Respo
 }
 
 func (s *Server) unlock(ttl time.Duration) Response {
+	if err := account.RequireLogin(s.Keyring); err != nil {
+		return failure(err)
+	}
 	if ttl <= 0 || ttl > 24*time.Hour {
 		return failure(fmt.Errorf("TTL must be between 0 and 24h"))
 	}
@@ -391,47 +389,31 @@ func (s *Server) work(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			id, err := identity.Load(s.Keyring)
+			err := account.StagePending(s.Keyring)
 			var generation uint64
-			if err == nil && q.request.Op == "snapshot" {
-				var snap *remote.Snapshot
-				snap, err = remote.BuildSnapshot(id, keystore.New())
-				if snap != nil {
-					generation = snap.Generation
-				}
-			} else if err == nil {
-				var result *remote.PushResult
-				result, err = remote.PushNow(jobCtx, id, keystore.New(), q.request.Remote, q.request.Prune)
-				if result != nil {
-					generation = result.Generation
+			if err == nil {
+				var a *account.Account
+				a, err = account.Open(s.Keyring, daemonUI{s})
+				if err == nil {
+					err = s.serverSync(ctx, a)
+					generation = a.State.Vault.Generation
 				}
 			}
-			cancel()
 			q.done <- s.complete(q.id, err, generation)
 		}
 	}
 }
 
 func (s *Server) automatic(parent context.Context) {
-	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-	defer cancel()
-	id, err := identity.Load(s.Keyring)
-	if err == nil {
-		var snap *remote.Snapshot
-		snap, err = remote.BuildSnapshot(id, keystore.New())
-		if err == nil {
-			if snap.Generation != s.lastGeneration {
-				if s.lastGeneration != 0 {
-					s.wakeServer()
-				}
-				s.lastGeneration = snap.Generation
-			}
-			_, err = remote.MaybePush(ctx, id, keystore.New(), "")
-		}
+	if account.RequireLogin(s.Keyring) != nil {
+		return
 	}
-	if err != nil && parent.Err() == nil {
-		s.Logger.Warn("backup pending; will retry", "error", err)
+	if err := account.StagePending(s.Keyring); err != nil && parent.Err() == nil {
+		s.Logger.Warn("server upload staging pending; will retry", "error", err)
+		return
+	}
+	if _, err := os.Stat(account.PendingPath()); err == nil {
+		s.wakeServer()
 	}
 }
 

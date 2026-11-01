@@ -65,6 +65,8 @@ const flagHasMasterCopy = 1
 type Vault struct {
 	Projects map[string]map[string]string `json:"projects"`
 	Files    map[string][]byte            `json:"files,omitempty"`
+	Catalog  *Catalog                     `json:"catalog,omitempty"`
+	Objects  map[string][]byte            `json:"objects,omitempty"`
 
 	// Identity is the master-wrapped identity private key, base64 encoded as
 	// stored in identity.esec. When present the blob is self-sufficient: the
@@ -90,6 +92,8 @@ type Vault struct {
 type payload struct {
 	Projects            map[string]map[string]string `json:"projects"`
 	Files               map[string][]byte            `json:"files,omitempty"`
+	Catalog             *Catalog                     `json:"catalog,omitempty"`
+	Objects             map[string][]byte            `json:"objects,omitempty"`
 	Identity            []byte                       `json:"identity,omitempty"`
 	IdentityFingerprint string                       `json:"identity_fingerprint,omitempty"`
 	Generation          uint64                       `json:"generation"`
@@ -156,6 +160,8 @@ func Seal(v *Vault, recipientPub *[32]byte, masterPub *[32]byte) ([]byte, error)
 	p := &payload{
 		Projects:            v.Projects,
 		Files:               v.Files,
+		Catalog:             v.Catalog,
+		Objects:             v.Objects,
 		Identity:            v.Identity,
 		IdentityFingerprint: v.IdentityFingerprint,
 		Generation:          v.Generation,
@@ -180,7 +186,11 @@ func Seal(v *Vault, recipientPub *[32]byte, masterPub *[32]byte) ([]byte, error)
 	var flags byte
 	out := make([]byte, 0, headerLen+len(boxed)*2)
 	out = append(out, magic...)
-	out = append(out, version)
+	formatVersion := byte(version)
+	if v.Catalog != nil {
+		formatVersion = 3
+	}
+	out = append(out, formatVersion)
 
 	var lenbuf [lenField]byte
 	if uint64(len(boxed)) > uint64(^uint32(0)) {
@@ -265,7 +275,7 @@ func framing(data []byte) (int, bool, error) {
 		return 0, false, fmt.Errorf("%w: bad magic", ErrCorrupt)
 	}
 	switch data[7] {
-	case version:
+	case version, 3:
 	case 1:
 		return 0, false, ErrLegacyFormat
 	default:
@@ -334,6 +344,8 @@ func decodePayload(plain []byte, hasRecovery bool, recoveryBox []byte) (*Vault, 
 	return &Vault{
 		Projects:            p.Projects,
 		Files:               p.Files,
+		Catalog:             p.Catalog,
+		Objects:             p.Objects,
 		Identity:            p.Identity,
 		IdentityFingerprint: p.IdentityFingerprint,
 		Generation:          p.Generation,

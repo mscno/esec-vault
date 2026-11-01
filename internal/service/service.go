@@ -89,6 +89,27 @@ func (m *Manager) Installed() bool {
 	return m.load() == nil
 }
 
+// BinaryCurrent compares builds without comparing the calling shell's
+// environment with the installed service environment. Status checks from the
+// GUI and Terminal must agree even when their PATHs differ.
+func (m *Manager) BinaryCurrent(source string) (bool, error) {
+	if !m.Installed() {
+		return false, nil
+	}
+	data, err := os.ReadFile(source) //nolint:gosec // caller-selected executable
+	if err != nil {
+		return false, err
+	}
+	managed, err := os.ReadFile(m.Manifest.Binary)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(data, managed), nil
+}
+
 // Current reports whether the managed executable and unit file already match
 // source, meaning an install would be a no-op and must not bounce the daemon.
 func (m *Manager) Current(source string) (bool, error) {
@@ -197,7 +218,7 @@ func (m *Manager) Install(ctx context.Context, source string, start bool) error 
 }
 
 func captureEnvironment(env map[string]string) error {
-	for _, key := range []string{"PATH", "ESEC_KEYRING_DIR", "RCLONE_CONFIG", "RESTIC_PASSWORD_FILE", "RESTIC_REPOSITORY", "AWS_PROFILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"} {
+	for _, key := range []string{"PATH", "ESEC_KEYRING_DIR"} {
 		value := os.Getenv(key)
 		if value == "" {
 			continue
@@ -213,15 +234,6 @@ func captureEnvironment(env map[string]string) error {
 				parts[i] = abs
 			}
 			value = strings.Join(parts, string(os.PathListSeparator))
-		case "AWS_PROFILE":
-		case "RESTIC_REPOSITORY":
-			if !strings.Contains(value, ":") {
-				abs, err := filepath.Abs(value)
-				if err != nil {
-					return err
-				}
-				value = abs
-			}
 		default:
 			abs, err := filepath.Abs(value)
 			if err != nil {

@@ -301,6 +301,5 @@ func describeRead(req broker.GuardRequest, keyEnv, pub string) string {
 	if req.Path != "" {
 		fmt.Fprintf(&b, "\nFile: %s", field(req.Path))
 	}
-	b.WriteString("\n\nAllow, then touch your security key, only if you started this.")
 	return b.String()
 }

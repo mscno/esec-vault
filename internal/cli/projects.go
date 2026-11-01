@@ -148,6 +148,16 @@ type checkoutView struct {
 	Path   string           `json:"path"`
 	Status workspace.Status `json:"status"`
 	Seen   time.Time        `json:"seen"`
+	Error  string           `json:"error,omitempty"`
+}
+
+// projectConfig names the checkout whose esec.toml supplies the displayed
+// environments. All metadata is public; no private keys or values are read.
+type projectConfig struct {
+	Path    string   `json:"path"`
+	Format  string   `json:"format,omitempty"`
+	Name    string   `json:"name,omitempty"`
+	Unknown []string `json:"unknown,omitempty"`
 }
 
 type projectView struct {
@@ -157,7 +167,8 @@ type projectView struct {
 	// KeysHere is whether this device has a keyring for it.
 	KeysHere bool `json:"keys_here"`
 	// Files is set by projects show.
-	Files []secretfile.File `json:"files,omitempty"`
+	Files  []secretfile.File `json:"files,omitempty"`
+	Config *projectConfig    `json:"config,omitempty"`
 }
 
 // projectViews merges the registry, the keyrings on this device and each
@@ -184,7 +195,14 @@ func projectViews() ([]projectView, error) {
 	for id, cs := range r.Projects() {
 		v := get(id)
 		for _, c := range cs {
-			v.Checkouts = append(v.Checkouts, checkoutView{Path: c.Path, Status: workspace.Check(c), Seen: c.Seen})
+			cv := checkoutView{Path: c.Path, Status: workspace.Check(c), Seen: c.Seen}
+			if cv.Status == workspace.StatusInvalid {
+				_, loadErr := projectfile.Load(c.Path)
+				if loadErr != nil {
+					cv.Error = loadErr.Error()
+				}
+			}
+			v.Checkouts = append(v.Checkouts, cv)
 		}
 	}
 	for _, id := range keyrings {
@@ -204,6 +222,7 @@ func projectViews() ([]projectView, error) {
 			if c.Status == workspace.StatusOK {
 				if f, err := projectfile.Load(c.Path); err == nil {
 					pf = f
+					v.Config = &projectConfig{Path: filepath.Join(c.Path, projectfile.ProjectFileName), Format: f.FilesFormat(), Name: f.Files.Name, Unknown: f.Unknown()}
 					recs, _ = seal.LoadRecords(c.Path)
 					break
 				}

@@ -13,11 +13,8 @@ import (
 
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/daemon"
-	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
-	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/storage"
 )
 
@@ -33,7 +30,7 @@ type cliCtx struct {
 
 type cli struct {
 	Setup    SetupCmd    `cmd:"" group:"start" help:"Set this machine up in one go (identity, keys, backup, service, checkouts, guard), or --check what is left."`
-	Init     InitCmd     `cmd:"" group:"start" help:"Set up an identity and first backup in one go."`
+	Init     InitCmd     `cmd:"" hidden:"" group:"start" help:"Sign in to your vault server (legacy alias for login)."`
 	Login    LoginCmd    `cmd:"" group:"start" help:"Sign in to a vault server and get your keys on this machine."`
 	Logout   LogoutCmd   `cmd:"" group:"start" help:"End this machine's vault server session."`
 	Status   StatusCmd   `cmd:"" group:"start" help:"Show identity, vault and backup status."`
@@ -50,12 +47,13 @@ type cli struct {
 	Decrypt      DecryptCmd      `cmd:"" group:"secrets" help:"Print an environment's secrets, or one value, decrypted by the background service: a guarded one after a touch."`
 	Forward      ForwardCmd      `cmd:"" group:"secrets" help:"SSH to a machine that may then ask this one for guarded keys, each read after your touch here."`
 	Keyring      KeyringCmd      `cmd:"" group:"secrets" help:"Manage the global keyring store."`
+	Storage      VaultStorageCmd `cmd:"" group:"backup" help:"Server inventory, local caches, independent key exports, and project recovery."`
 	Seal         SealCmd         `cmd:"" group:"secrets" help:"Environment keys sealed in the repository (.esec/), for their readers and a recovery key: status, sync, check."`
 	Share        ShareCmd        `cmd:"" group:"secrets" help:"Share environments with GitHub users (pinned by id), groups or keys: their keys are sealed in."`
 	Unshare      UnshareCmd      `cmd:"" group:"secrets" help:"Stop sharing environments with someone, and optionally rotate."`
 	CI           CICmd           `cmd:"" name:"ci" group:"secrets" help:"Give CI jobs and deploys their own age key, sealed into environments; they need only esec."`
-	Guard        GuardCmd        `cmd:"" group:"secrets" help:"Guard environments: sealed to your YubiKeys only, every read needs your touch, which no agent can make."`
-	SecurityKeys SecurityKeysCmd `cmd:"" name:"security-keys" aliases:"keys" group:"secrets" help:"Your YubiKeys: register the plugged-in ones, set one up, test, remove. Nobody types a recipient."`
+	Guard        GuardCmd        `cmd:"" group:"secrets" help:"Guard environments with your security keys or native passkeys; reads require your approval."`
+	SecurityKeys SecurityKeysCmd `cmd:"" name:"security-keys" aliases:"keys" group:"secrets" help:"Security keys and native passkeys: register, set up, test or remove."`
 
 	Access      TeamCmd        `cmd:"" name:"access" aliases:"team" group:"team" help:"Who reads which environments of a shared project: share it, grant, revoke, offboard."`
 	Group       GroupCmd       `cmd:"" group:"team" help:"Groups of people or machines that read the same environments (acme/backend, acme/production)."`
@@ -73,11 +71,10 @@ type cli struct {
 	App     AppCmd     `cmd:"" group:"machines" help:"Set up an app to read its secrets with no secret of its own, and check it before each deploy."`
 	KMS     KMSCmd     `cmd:"" name:"kms" group:"machines" help:"Set up a cloud KMS key for workloads that hold no secret."`
 
-	Backup   BackupCmd   `cmd:"" group:"backup" help:"Seal all keyrings and your identity into the vault blob."`
+	Backup   BackupCmd   `cmd:"" group:"backup" help:"Sync the server; optionally export a portable encrypted recovery file."`
 	Restore  RestoreCmd  `cmd:"" group:"backup" help:"Restore keyrings from the vault blob."`
 	Recover  RecoverCmd  `cmd:"" group:"backup" help:"Full cold recovery: phrase + backup -> identity -> keyrings."`
-	Drill    DrillCmd    `cmd:"" group:"backup" help:"Prove a cold recovery works: the newest backup opens with the phrase alone and holds every key."`
-	Remote   RemoteCmd   `cmd:"" group:"backup" help:"Manage cloud backup destinations."`
+	Drill    DrillCmd    `cmd:"" group:"backup" help:"Test phrase recovery of the server backup and repository key seals."`
 	Identity IdentityCmd `cmd:"" group:"backup" help:"Manage your identity keypair (mnemonic-backed)."`
 
 	Daemon    DaemonCmd    `cmd:"" group:"service" help:"Manage the OS-supervised user daemon."`
@@ -88,7 +85,7 @@ type cli struct {
 	Uninstall UninstallCmd `cmd:"" group:"service" help:"Remove service; optionally purge local vault data."`
 
 	Members MembersCmd `cmd:"" group:"git" help:"Manage team member identity proofs."`
-	Sync    SyncCmd    `cmd:"" group:"git" help:"Open your committed share blobs into the global keyring store."`
+	Sync    SyncCmd    `cmd:"" group:"start" help:"Sync keys and recovery data with the vault server."`
 
 	Version kong.VersionFlag `help:"Show version"`
 	Debug   bool             `help:"Enable debug logging" env:"ESEC_DEBUG"`
@@ -103,14 +100,14 @@ var commandGroups = []kong.Group{
 	{Key: "machines", Title: "On machines, CI jobs and servers:"},
 	{Key: "backup", Title: "Backup and recovery:"},
 	{Key: "service", Title: "Background service:"},
-	{Key: "git", Title: "Sharing through git, without a server:"},
+	{Key: "git", Title: "Legacy Git shares (sign-in required):"},
 }
 
-const description = `Identity, backup and team sharing for esec keyrings. Every command also runs as "esec vault ...".
+const description = `Manage esec keys through your vault server. Sign in first. The server stores encrypted keys and identity recovery data. Every command also runs as "esec vault ...".
 
 Start here:
 
-    esec vault setup                          # identity, backup and background service
+    esec vault setup                          # server sign-in and background service
     esec vault login https://vault.example.com
     esec vault project init acme/api          # in a repository: project file and env keys
     esec vault access create                  # share it; you become its admin
@@ -157,18 +154,21 @@ func Execute(version string) {
 	app := &cliCtx{Logger: logger, Keyring: keyring.NewOS(), Quiet: c.Quiet, Version: version}
 	mutation := isMutation(ctx.Command())
 	app.keyringLocked = mutation
-	err = runCommand(func() error { return ctx.Run(app) }, mutation)
-	if mutation && !daemon.Notify() {
-		// Persist even partially successful imports; offline upload failures leave
-		// the local snapshot and pending marker intact for the watch worker.
-		if id, loadErr := identity.Load(app.Keyring); loadErr == nil {
-			if _, backupErr := remote.BuildSnapshot(id, keystore.New()); backupErr != nil {
-				logger.Warn("keys saved, but backup is pending", "error", backupErr)
-			}
-			maybeAutoPush(app)
+	loginErr := requireLogin(app, ctx.Command())
+	if c.offlineStorageCommand(ctx.Command()) {
+		loginErr = nil
+	}
+	err = loginErr
+	if err == nil {
+		err = runCommand(func() error { return ctx.Run(app) }, mutation)
+	}
+	fileChange := isSecretFileMutation(ctx.Command())
+	if (mutation || fileChange) && loginErr == nil {
+		if pendingErr := account.StagePending(app.Keyring); pendingErr != nil {
+			logger.Warn("changes saved locally, but staging the server upload failed", "error", pendingErr)
 		}
 		// Without a daemon, push key changes to the vault server right away.
-		if err == nil && !strings.HasPrefix(ctx.Command(), "sync") {
+		if !daemon.Notify() && err == nil && !strings.HasPrefix(ctx.Command(), "sync") {
 			if syncErr := serverSync(&cliCtx{Logger: logger, Keyring: app.Keyring, Quiet: true}, false); syncErr != nil && !errors.Is(syncErr, account.ErrNotLoggedIn) {
 				logger.Warn("keys saved, but the vault server sync is pending", "error", syncErr)
 			}
@@ -179,7 +179,7 @@ func Execute(version string) {
 	// with no output at all.
 	//
 	// Suppression is keyed on a sentinel type, never on the error text: many
-	// real failures (rclone, launchctl, git) legitimately embed "exit status"
+	// real failures (launchctl, git) legitimately embed "exit status"
 	// in a message that carries the only diagnostic we have.
 	var forwarded *forwardedExitError
 	if errors.As(err, &forwarded) {
@@ -202,7 +202,7 @@ func Execute(version string) {
 }
 
 // isMutation reports whether a command changes keyrings, so it runs under the
-// keyring lock and is followed by a snapshot and a server push.
+// keyring lock and is followed by durable staging and a server push.
 func isMutation(command string) bool {
 	for _, prefix := range []string{"project init", "env add", "env rename", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "group sync", "guard enable", "guard disable", "seal sync", "seal migrate", "seal recover", "share", "unshare", "ci add", "ci remove", "security-keys add", "security-keys remove"} {
 		if strings.HasPrefix(command, prefix) {
@@ -249,3 +249,18 @@ func (e *exitCodeError) Error() string {
 type forwardedExitError struct{ code int }
 
 func (e *forwardedExitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+
+func (c *cli) offlineStorageCommand(command string) bool {
+	switch command {
+	case "storage restore-project":
+		return c.Storage.RestoreProject.File != ""
+	case "storage list":
+		return c.Storage.List.File != ""
+	case "storage restore-settings":
+		return c.Storage.RestoreSettings.File != ""
+	}
+	return false
+}
+func isSecretFileMutation(command string) bool {
+	return strings.HasPrefix(command, "secrets update") || strings.HasPrefix(command, "secrets set") || strings.HasPrefix(command, "secrets rotate")
+}

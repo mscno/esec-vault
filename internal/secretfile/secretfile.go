@@ -69,7 +69,11 @@ func EnvOf(name string) (string, fileutils.FileFormat, error) {
 	if err != nil {
 		return "", "", err
 	}
-	rest := strings.TrimPrefix(filepath.Base(name), string(f))
+	base := filepath.Base(name)
+	if base != string(f) && strings.HasSuffix(base, string(f)) {
+		return strings.TrimSuffix(base, string(f)), f, nil
+	}
+	rest := strings.TrimPrefix(base, string(f))
 	if rest != "" && !strings.HasPrefix(rest, ".") {
 		return "", "", fmt.Errorf("%s is not a secrets file name", name)
 	}
@@ -140,6 +144,16 @@ func Parse(path string, data []byte) (*File, error) {
 	}
 	if project, marker, err := projectfile.FindProjectFile(filepath.Dir(path)); err == nil {
 		out.Project, out.Root = project, filepath.Dir(marker)
+		// A custom name such as secrets/app.{env}.etoml takes precedence
+		// over the generic suffix when identifying its environment/guard.
+		if pf, err := projectfile.Load(out.Root); err == nil && pf.Files.Name != "" {
+			if rel, err := filepath.Rel(out.Root, path); err == nil {
+				prefix, suffix, _ := strings.Cut(pf.Files.Name, "{env}")
+				if strings.HasPrefix(rel, prefix) && strings.HasSuffix(rel, suffix) && len(rel) >= len(prefix)+len(suffix) {
+					out.Env = rel[len(prefix) : len(rel)-len(suffix)]
+				}
+			}
+		}
 	}
 	return out, nil
 }
@@ -166,6 +180,21 @@ func handler(f fileutils.FileFormat) (format.Handler, error) {
 		return &esecyaml.Formatter{}, nil
 	}
 	return nil, fmt.Errorf("unsupported format %s", f)
+}
+
+// HasEncrypted reports whether any value needs a private key to be read.
+// A public-key header alone (often in old templates) does not establish that.
+func HasEncrypted(data []byte, f fileutils.FileFormat) (bool, error) {
+	h, err := handler(f)
+	if err != nil {
+		return false, err
+	}
+	found := false
+	_, err = h.TransformScalarValues(data, func(v []byte) ([]byte, error) {
+		found = found || crypto.IsBoxedMessage(v)
+		return v, nil
+	})
+	return found, err
 }
 
 // Plain lists the paths of values that should be encrypted and are not: a

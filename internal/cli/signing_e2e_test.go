@@ -71,20 +71,20 @@ func TestWebSigningEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one seq
 	const p = "--project=acme/store"
 
 	owner := newMachine(t, bin, "owner").with(gh, "ESEC_VAULT_SIGNER="+e2eSigner)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")
 	writeSecret(t, owner, repo, "dev", "DATABASE_URL=postgres://db-dev")
 	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "team", "create", p)
 
 	alice := newMachine(t, bin, "alice").with(gh, "SSH_AUTH_SOCK="+sock)
-	alice.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	alice.seedIdentity()
 	loginAs(t, h, "alice", alice.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, 2002)), "").wait(true)
 	alice.run("", "team", "prove")
 	bob := newMachine(t, bin, "bob").with(gh)
-	bob.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	bob.seedIdentity()
 	loginAs(t, h, "bob", bob.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, 2003)), "").wait(true)
 
 	// The owner registers a passkey on the web; a device adds it.

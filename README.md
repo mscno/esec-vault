@@ -19,13 +19,13 @@ Both forms run the same program.
 - [Share a project with your team through the server](#share-a-project-with-your-team).
 - [Give CI jobs and apps their own key](#give-ci-jobs-and-apps-their-own-key).
 - [Run a fleet of machines in groups](#run-a-fleet-of-machines-in-groups).
-- [Share keys with a teammate without a server](#share-project-keys-with-a-teammate).
+- [Share keys with a teammate from legacy Git shares](#share-project-keys-with-a-teammate).
 - [Run an application through the broker](#run-applications-through-the-broker).
 - [Keys live with the code: sealed in the repository, shared by GitHub username, prod behind your YubiKey](#keys-live-with-the-code-sealed-in-the-repository).
 - [Work with agents and many machines safely](#work-with-agents-and-many-machines).
 - [Keep track of every project, and make sure no key is lost](#every-project-on-this-machine).
 - [The Mac app](#the-mac-app).
-- [Set up a remote backup](#remote-configuration-file--wizard).
+- [Server backup and recovery](#server-backup-and-recovery).
 - [Operate the daemon](#automatic-backups).
 - [Recover your keys](#recovery).
 - [Find and fix common problems](#find-and-fix-common-problems).
@@ -579,7 +579,7 @@ esec vault projects scan ~/src      # remember every checkout, like a git client
 esec vault projects                 # every project: checkouts, environments, keys here
 esec vault verify                   # every key in two places, none shared between projects
 esec vault activity                 # which programs and agents asked for keys
-esec vault drill                    # the newest backup opens with your phrase alone
+esec vault drill                    # the server backup opens with your phrase
 ```
 
 ## Install both tools
@@ -598,49 +598,33 @@ It also keeps the binaries outside a Go version manager's toolchain directory.
 
 ## First setup
 
-Set up your personal identity once. Use it for all your projects.
-Your personal identity opens vault backups and shares sent to you.
-Project environment keys encrypt and decrypt the files in your projects.
+esec-vault requires a signed-in vault server account for normal operations.
+The server stores your encrypted key backup and identity recovery data.
+Git stores your encrypted secrets files and `.esec/` key seals.
 
-On every machine, your first or your fifth, run:
-
-```sh
-esec vault setup                                      # does what it can, says what is left
-esec vault setup --server https://vault.example.com   # a machine joining your account
-esec vault setup --check                              # only report; --json for scripts and agents
-```
-
-It goes through each step and skips what is done, so run it again any time:
-
-| Step | What it does |
-|---|---|
-| identity | signs in to your vault server (a machine joining your account), recovers from a backup and your phrase, or creates your first; never a second one unasked, which would split your keys |
-| vault server | syncs your keys |
-| second place | offers a backup destination when keys would be on this machine only |
-| background service | installs it, or upgrades an old one |
-| checkouts | finds your projects in `~/src`, `~/code`, `~/projects`, `~/dev`, `~/Developer`, `~/work`, `~/repos` (or `--root`) |
-| keys here | lists environments of your checkouts whose key is not here |
-| guard | guards here the keys you guard elsewhere (a touch each); suggests a spare YubiKey |
-| keys safe | runs `verify`, and reminds you of a recovery drill |
-
-On your first machine, write down the 24-word recovery phrase and confirm it
-when asked. You can also set a recovery passphrase.
-
-For an existing vault, check its state first:
+On your first machine or a machine joining your account:
 
 ```sh
+esec vault setup --server https://vault.example.com
+esec vault setup --check                  # report what is left
 esec vault status
 ```
 
-If the identity uses the format from before v0.3.0, migrate it once:
+Sign in with GitHub. For a new account, login creates your identity and asks
+ you to record and confirm its 24-word recovery phrase. For an existing
+account, a trusted device approves the new device, or you use `login --recover`.
+Do not create a second identity for each project or each machine.
 
-```sh
-esec vault identity migrate
-```
+Keep the recovery phrase offline, and keep its optional passphrase.
+Your normal vault operations require the enrolled account and a stored session.
+Server requests check session expiry and revocation. Login, setup, diagnostics,
+legacy file recovery and service shutdown remain available before sign-in.
+Machines and workloads authenticate to the vault server with their own credentials.
 
-Use `project init` for a new project. Do not create a new personal identity for
-each project. See [upgrading existing installations](#upgrading-existing-installations)
-for details about the older backup format.
+If you used an older standalone vault, sign in from that machine. Login keeps
+and syncs its keys. Legacy `remote.toml` is ignored; external destinations and
+credentials are no longer needed by the client. Existing remote objects are
+not deleted. See [server backup and recovery](#server-backup-and-recovery).
 
 ## Sync keys with a vault server
 
@@ -984,15 +968,15 @@ git add esec.toml .gitignore .env.dev .env.staging .env.prod
 
 If your repository ignores `.env.*`, add exceptions for the specific encrypted
 files you want to track. Your Git repository stores the encrypted data.
-Your vault backup stores the private keys.
+Your vault server stores the keys and encrypted revisions of registered project files.
 
-After you configure a backup remote, run:
+After signing in, run:
 
 ```sh
-esec vault backup --verify --push
+esec vault sync --server
 ```
 
-Without a remote, `esec vault backup --verify` creates a local backup.
+For an independent recovery file, use `esec vault backup --verify --out recovery.esec`.
 
 ### Work in several projects
 
@@ -1309,7 +1293,7 @@ Private-key environment variables still take priority over this file selection.
 Then back up the imported keys:
 
 ```sh
-esec vault backup --verify --push
+esec vault sync --server
 esec vault unlock --ttl 4h
 ```
 
@@ -1574,11 +1558,11 @@ service tells you when machines wait to join or changes wait to be signed.
 
 ## Share project keys with a teammate
 
-This section shares keys without a vault server, through files committed to
-the repository. With a server, [share the project with your team](#share-a-project-with-your-team)
-instead.
+This legacy workflow shares keys through committed files. Both people must
+be signed in to a vault server. Prefer [sharing through server access](#share-a-project-with-your-team)
+or repository key seals for new projects.
 
-Sharing is different from cloud backup. A backup protects your copy of the keys.
+Server sync preserves your encrypted key backup. Sharing gives another reader access.
 A share gives another person's vault identity a copy of selected project keys.
 
 In this example, Alice receives `dev` and `staging` for `acme/store`.
@@ -1652,13 +1636,13 @@ On Alice's computer:
 
 ```sh
 git pull
-esec vault sync
+esec vault sync --shares
 esec vault env list
 esec get dev DATABASE_URL -f env
-esec vault backup --verify --push
+esec vault sync --server
 ```
 
-`sync` imports shares addressed to Alice's current identity. It keeps existing
+`sync --shares` imports shares addressed to Alice's current identity. It keeps existing
 entries and asks before replacing conflicting values. Alice can now use core
 esec directly, or [configure broker access](#run-applications-through-the-broker).
 If her broker is already unlocked, she must run `unlock` again to load the keys.
@@ -1807,7 +1791,8 @@ esec.toml            readers of each environment, by GitHub id
 ```
 
 - **No key is ever lost.** The repository and your phrase open every key,
-  in every commit, offline, with no server (`esec vault drill` proves it).
+  in every commit, without server-side decryption. `esec vault drill` checks
+  phrase recovery while signed in.
   The pre-commit hook refuses a commit whose seal lacks a recovery key.
 - **Nobody handles a key string.** Readers are people by GitHub username,
   pinned to their numeric id (`alice (gh:91022)`): a renamed or re-registered
@@ -1964,178 +1949,231 @@ holds no secret.
 Every key is sealed in its repository, with your recovery key, before any
 file is encrypted to it: `project init`, `env add` and `env rotate` seal
 first, and stop before writing files when sealing fails. The keyring on each
-device is a cache of what you open; sync and backups keep working as a
+device is a cache of what you open; vault-server sync keeps a
 second copy.
 
 ```sh
-esec vault verify            # checkouts, git history, this device, the server, the newest backup
+esec vault verify            # checkouts, git history, this device and the server
 esec vault verify --last     # what the background service found (it checks daily)
-esec vault drill             # the phrase alone opens every seal (and the newest backup)
+esec vault drill             # the phrase alone opens every seal (and the server backup)
 esec vault keyring repair    # file keys from older keyrings under their public key
 ```
 
-`verify` reads every secrets file in every checkout and every one in their
-git history, and reports each key that is not on this device, held in only
-one place, held nowhere (lost), or used by two projects. History is read once
-per repository (worktrees share it), each file counted for the checkout whose
-directory holds it (so a monorepo's subprojects stay apart), and cached until
-a ref changes. A key of a project you hold no key of anywhere (someone else's
-repository, an environment you cannot read) is listed apart, not as lost.
+`verify` checks current files and encrypted values in Git history against
+signed `.esec/` seals with recovery recipients, including seals from before
+key rotations. A valid seal preserves its key without a local cache or a
+separate vault backup; guarded keys should stay out of ordinary keyrings.
+For keys without seals, it checks this device and the server. Historical keys not found are reported separately from missing current
+keys; public-key headers without encrypted values do not need historical key
+recovery. It also reports keys used by multiple projects. File history is
+read once per repository (worktrees share it), attributed to each checkout
+in a monorepo, and cached until a ref changes. A key of a project you hold no
+key of anywhere is listed separately as an access question.
 The background service runs it daily and notifies only when something is
 wrong; `doctor` reports it, and suggests a drill when the last is older than
 six months. Only a full check (no `--no-…` flags) is kept for them.
 
 ## The Mac app
 
-`macos/EsecVault` is a menu bar app with a window. It reads metadata only and
-never asks for a value; every action is an `esec-vault` command you could
-type, and it shows which.
+`macos/EsecVault` is a menu bar app with project and secret-file windows.
+Background refreshes read metadata only. Opening a secrets file explicitly
+decrypts its values into memory. Unguarded files use this machine's local
+keys, just like `esec decrypt`; guarded files use the broker's approval path.
+Both kinds of reads are audited without recording secret values.
 
-- **Overview**: a setup checklist (recovery phrase, background service, a
-  second place for keys, the YubiKey guard and a spare, a recovery drill),
-  each step with a button that does it, or opens Terminal for steps that ask
-  for a phrase, a PIN or a touch; then key health from `verify`.
+- **Overview**: key health and setup, service installation/running state,
+  the app/service build match, and a separate broker session with a duration,
+  unlock and lock controls. Starting or upgrading the service starts it locked;
+  locking does not stop backups. Status failures and unchecked/pending seals
+  stay visible instead of appearing healthy.
 - **Activity**: every request for keys, newest first: allowed, asked or
-  refused, by which programs (`zsh ▸ claude ▸ esec-vault`) and which agent
-  session. The menu bar lists the last day's reads of guarded keys.
-- **Projects** by namespace: checkouts (Finder, Terminal), environments with
-  their guard, whether this Mac holds the key and the command that fixes it;
-  secrets files with values left in the clear; recent requests. Add an
-  environment, rotate a key or guard one from there.
-- **New Project** (⌘N): pick a folder, name the environments, guard prod;
-  it runs `project init`.
+  refused, by which programs and agent session. The menu bar lists the last
+  day's guarded reads and offers broker lock/unlock.
+- **Projects** by namespace: the source `esec.toml`, its file format and
+  filename pattern, unrecognized settings and invalid-checkout diagnostics,
+  environments, readers, seals, and files across checkouts. Add or rename an
+  environment, rotate a key, or change its guard policy. Environment names
+  follow `esec.toml`: dot-separated lowercase letters and digits (`api.prod`).
+- **Security Keys**: native passkeys and legacy PIV keys. Ordinary refreshes
+  read the background service's YubiKey scan cache; **Scan Connected YubiKeys**
+  requests a new scan. Adding a detected row registers that specific slot.
+- **Secrets files**: click any file in a project, or use **Open Secrets File…**
+  (⌘O). Each file opens in its own window with visible values on one line per key, per-key show/hide,
+  show/hide all, and key-name search. **Edit → Save Encrypted** writes the
+  encrypted value atomically, preserving file permissions; simply opening or
+  revealing values never changes the file. Empty and multiline values work.
+  Dotenv and YAML files also support **Add Key**. Nested keys are displayed;
+  array elements, metadata, non-string scalars and ambiguous paths are read-only.
+  **Compare Environments** opens a matrix of every key across the project’s
+  files: dev/development, staging, prod/production, then other environments
+  alphabetically. Missing keys, differing values, duplicate sources and failed
+  reads are shown explicitly. Each source can open in the file editor.
+  Policy denials show the actual reason in each environment column. A locked
+  session offers **Unlock for 4 Hours and Retry** directly in either window.
+  Unguarded local files need no broker session or policy rule when this Mac
+  has their keys. Broker policies still control `esec vault run`, and explicit
+  deny rules still apply to guarded reads.
+  A file changed elsewhere must be reloaded before saving. Values are hidden
+  when the window loses focus, and discarded on close, lock or sleep. Swift
+  does not guarantee erasure of all runtime copies from memory.
+- **New Project** (⌘N): pick a folder, choose environments and which should
+  require approval for every read; it runs `project init`.
 
-It updates when `esec-vault` changes its files (an agent running a command
-shows up at once), and can open at login (menu bar › Open at Login).
+`touch` means approval for every read; `session` means approval once per
+broker session, with the key discarded on lock/expiry. **Guard It Here**
+removes cached guarded keys while preserving each environment's configured
+level. Keep `esec.toml` and `.esec/` changes together in version control.
 
-```sh
-cd macos/EsecVault && ./bundle.sh install   # ~/Applications/esec Vault.app
-```
-
-It finds `esec-vault` in `~/go/bin`, Homebrew or `PATH` (or
-`ESEC_VAULT_BIN`).
-
-## Remote configuration: file + wizard
-
-`remote add` asks for a destination and writes `~/.config/esec/remote.toml`.
-Supplying `--type` makes it non-interactive: missing required flags are errors.
-The wizard prints the equivalent command for repeatable bootstrapping.
-
-```sh
-esec-vault remote add
-
-# Or use explicit flags. Configure rclone credentials separately first.
-esec-vault remote add r2 --type rclone --rclone-remote r2-account \
-  --bucket esec-vault --prefix personal/v2 --set-default
-esec-vault remote test r2
-esec-vault backup --verify --push
-```
-
-Use a dedicated private bucket, with versioning/retention where your provider
-supports it. Objects are encrypted locally before upload. The CLI does not
-provision buckets or change cloud permissions. Rclone supports R2, S3, B2 and
-many other destinations; esec-vault needs no provider SDK.
-
-```toml
-default = "r2"
-
-[policy]
-push = "on-change"     # or "manual"
-debounce = "15m"       # wait from first pending change; 0s = immediate
-interval = "1m"        # worker scans for changes and retries offline uploads
-keep = 30             # applied only by explicit prune commands/flags
-
-[remotes.r2]
-type = "rclone"
-rclone_remote = "r2-account"
-bucket = "esec-vault"
-prefix = "personal/v2"
-description = "Personal recovery backups"
-```
-
-Selection: explicit remote argument / `backup --remote` → `ESEC_VAULT_REMOTE`
-→ config default. Settings are global, outside project repositories.
+The app watches vault metadata, checkout `esec.toml` files and seals, coalesces
+file changes, and checks daemon/session status every five seconds. Its own
+**Open EsecVault at Login** toggle is independent of the LaunchAgent that
+runs backups, sync and guarded reads; quitting the GUI leaves that service
+running.
 
 ```sh
-esec-vault remote list
-esec-vault remote set-default r2
-esec-vault remote remove r2             # configuration only
-esec-vault remote test r2               # random PUT → GET → LIST → DELETE probe
-esec-vault remote push r2               # snapshots live keys before uploading
-esec-vault remote pull r2 --out backup.esec
-esec-vault remote prune r2 --keep 30     # explicitly delete older generations
-esec-vault status --json
+cd macos/EsecVault && ./bundle.sh install   # ~/Applications/EsecVault.app
 ```
 
-**Credentials stay with the transport.** Rclone reads its own credential config;
-restic uses its normal environment/credential chain. Remote TOML rejects inline
-credential-named fields and unknown settings. Do not put credentials in adapter
-arguments or repository URLs. Keep transport access independently recoverable:
-cloud login or restic repository passwords cannot exist only inside the vault
-they are needed to download.
+The app prefers its bundled `esec-vault` CLI; `ESEC_VAULT_BIN` can override
+it for development. An unbundled build also searches `~/go/bin`, Homebrew
+and `PATH`.
 
-### Other backends
+Native passkey unlocking uses Apple's system sheet with Apple Passwords,
+enabled password managers such as Strongbox, and FIDO2 security keys. It
+requires a signed build with an associated domain; see
+[native passkey setup and migration](docs/design/native-passkeys.md).
+The signed app bundles its matching CLI and age plugin. Existing PIV seals
+keep their current unlock method until explicitly resealed to a passkey.
+After updating, use **Update Service** in Overview to run the matching broker
+for guarded secret-file reads. Unguarded local reads work independently of
+the broker. The viewer's
+CLI contract is `secrets show --file PATH --json`; `secrets update --file PATH`
+accepts `{ "revision": "…", "key": "API_KEY", "value": "…", "create": false }`
+on stdin and returns only the saved ciphertext revision. Secret values never
+appear in command arguments.
+
+## Server backup and recovery
+
+The vault server is the only sync and backup destination used by esec-vault.
+There is no client rclone, Cloudflare R2, restic, file-destination or custom
+adapter sync. Cloud credentials and `remote.toml` are not used.
 
 ```sh
-esec-vault remote add usb --type file --dir /Volumes/Backup/esec --prefix personal
-
-# Initialize the restic repository yourself first; password stays external.
-export RESTIC_PASSWORD_FILE=/path/to/restic-password
-esec-vault remote add archive --type restic --repository /path/to/restic-repo
+esec vault sync --server             # sync keys and encrypted recovery data
+esec vault status                   # account and last server sync
+esec vault drill                    # open the server backup with your phrase
+esec vault login SERVER --recover    # recover on a new machine
 ```
 
-The file backend is also suitable for a synced folder. Only encrypted snapshots
-are placed there: do not sync the entire live vault home, which contains
-plaintext working keyrings.
+The server holds ciphertext. GitHub sign-in identifies you; your phrase and
+optional passphrase decrypt the recovery material locally. The server cannot
+read your private keys. Guarded keys may exist only in repository seals, so
+push `.esec/`, `esec.toml` and your encrypted secrets files to Git.
 
-Restic stores one tagged snapshot per object. Get uses `dump`; delete uses
-`forget`. Run restic's own `prune` separately to reclaim repository space.
+Optional local exports remain available:
 
-For custom transports:
-
-```toml
-[remotes.custom]
-type = "exec"
-command = "/usr/local/bin/my-vault-adapter"
-args = ["--profile", "personal"]
-prefix = "personal/v2"
+```sh
+esec vault backup --verify --out vault-backup.esec
+esec vault recover --file vault-backup.esec
 ```
 
-No shell is used. The adapter receives fixed arguments followed by
-`<operation> <namespaced-key>`:
+`backup` syncs the server. With `--out`, it also creates a self-contained encrypted
+recovery export containing keys, device settings, and encrypted project-file history. An existing backup file still recovers your identity and keys.
+An old backup's external sync configuration is ignored during restore.
+Download old external backups with the provider's own tools before importing them.
+The upgrade never deletes remote objects, cloud credentials or old snapshots.
 
-| Operation | Contract |
-|---|---|
-| `put` | Read encrypted bytes from stdin; store at key |
-| `get` | Write exact encrypted bytes to stdout |
-| `list` | Write a JSON array of full namespaced keys matching the prefix |
-| `delete` | Delete exactly the named object |
+The server operator backs up the server database separately. Client sync does
+not replace database backup. See the [server runbook](docs/operations/server.md).
 
-Exit 44 means object not found; other nonzero codes mean failure. Credentials
-belong in the adapter's own credential mechanism. All four operations are
-required, so verification, recovery and retention work with every backend.
+## Server storage and local caches
+
+Use **Server Vault** in the Mac app to import a keyring, choose offline access,
+remove a managed local copy, export standalone keys, restore a project revision,
+or restore a device’s policy and trust settings. Decrypting in the secret viewer
+still happens in memory. `esec encrypt` and `esec decrypt` continue to work with
+ordinary local keys and keyrings.
+
+```sh
+esec vault storage list --json
+esec vault storage add --project acme/api --file existing.keyring
+esec vault storage add --project acme/api --file existing.keyring --move
+esec vault storage cache --project acme/api --mode none
+esec vault storage cache --project acme/api --mode offline
+esec vault storage export --project acme/api --out independent.keyring
+esec vault storage restore-project --project acme/api --to ../api-restored
+esec vault storage restore-project --project acme/api --checkout CHECKOUT --revision REVISION --to ../api-older
+esec vault storage restore-settings --profile DEVICE_ID --map-user
+```
+
+`--move` verifies the uploaded keys before removing the imported source and
+managed keyring. Cache eviction waits for successful sync, removes keys from the
+managed keyring and encrypted merge cache, and locks the broker. It preserves
+server history, existing exports, and legacy snapshots. Independently exported
+keys remain usable outside the broker and cannot be remotely revoked.
+
+The server manifest includes historical keys, device-scoped `policy.toml` and
+`trusted.toml`, project configuration, repository seals, and encrypted secret
+files from **registered checkouts**. Files are stored as immutable, independently
+encrypted objects. Each complete project revision lists exactly its files,
+so deletion and rollback are restored consistently. Restore always requires a
+new directory, authenticates all files before creating it, and never rewrites
+an existing checkout. Guarded keys remain sealed; restoring files does not
+bypass a passkey, hardware key, or recovery-phrase requirement. Device credentials,
+active broker sessions, and approvals are never cloned.
+
+Policies are restored explicitly. Numeric user IDs must be reviewed and mapped
+when the source owner differs; rules for another local user require manual
+review. New machines do not inherit these grants automatically.
+
+`storage retire --project acme/api --key PUBLIC_KEY` removes aliases but keeps
+the historical key. `storage delete-key --project acme/api --key PUBLIC_KEY --yes`
+records a permanent deletion so stale devices cannot re-upload that key. Deletion
+does not erase earlier server revisions, exports, or copies on other devices.
+Rotate secrets to invalidate copies that were already disclosed.
+
+A portable export can be restored without the server:
+
+```sh
+esec vault backup --verify --out recovery.esec
+esec vault recover --file recovery.esec
+esec vault storage list --file recovery.esec --json
+esec vault storage restore-settings --file recovery.esec --profile DEVICE_ID --map-user
+esec vault storage restore-project --file recovery.esec --project acme/api --to ../api-restored
+```
+
+Limits are explicit: individual archived files are at most 4 MiB; each account
+has at most 1 GiB / 50,000 encrypted objects; the single-file recovery export is
+limited to 256 MiB of file objects. Export fails before creating a destination
+if it exceeds that limit; project restore remains available. Archive objects are
+not garbage-collected automatically, because retained revisions reference them.
+An archive or sync failure is shown as pending/failed, never as completed backup.
+
+Upgrade the server before clients. The first new sync upgrades the encrypted
+manifest to format 3. Older clients cannot open it, and the upgraded server
+rejects an older-format overwrite, including during identity rotation. Keep old
+external backups until you have tested an independent recovery export. Existing
+rclone credentials, remote data, and old snapshots are not deleted by migration.
+See [the server storage design](docs/design/server-storage.md) for recovery and
+operator verification details.
 
 ## Automatic backups
 
-Successful key-mutating CLI commands create a local encrypted snapshot when an
-identity is configured. Unchanged content reuses the exact snapshot; changes
-create a new immutable generation. Identity changes, default keyrings and nested
-project keyrings are included. Policy, trust pins and remote configuration are
-also included inside the encryption; sockets, audit logs and transport secrets
-are excluded.
+Key changes notify the background service, which syncs keys and wrapped identity
+recovery data with the vault server. Without the service, mutating commands
+sync directly. New changes wait in a device-encrypted pending revision;
+acknowledged uploads remove that queue. Automatic local snapshot history is no longer created.
 
 ```sh
 esec-vault daemon install --start
 esec-vault daemon status
 esec-vault daemon logs
-esec-vault daemon upgrade               # after upgrading the CLI
+esec-vault daemon upgrade               # also stops the old external upload worker
 ```
 
 The OS owns the process: a macOS LaunchAgent or Linux systemd user service starts
 at login and restarts after a crash. Installation copies the current executable
-to a stable, private path and records an ownership manifest. No root service or
-terminal session is needed. `daemon run` and `remote watch` remain foreground
-debugging tools.
+to a stable, private path. A broker lock does not stop vault-server sync.
 
 ### Upgrading the CLI and the daemon
 
@@ -2164,7 +2202,7 @@ esec-vault unlock --ttl 4h
 esec-vault lock
 ```
 
-Expiration discards the broker key cache; snapshots and uploads continue. Backup
+Expiration discards the broker key cache; encrypted staging and uploads continue. Backup
 operations use the OS keyring transiently and do not unlock or extend the broker
 session. Locking does not encrypt the existing plaintext working keyring files.
 The user's OS keyring must be available to the service. Unavailable keyring or
@@ -2177,25 +2215,18 @@ credentials authenticate the caller; this is not isolation between arbitrary
 processes running under the same unrestricted OS account.
 
 CLI writes persist first, then notify the control socket. Filesystem notifications
-also catch external edits and atomic file replacements. The worker coalesces
-notifications and scans periodically/startup to recover missed events. It
-serializes uploads; normal backups wait for verification.
-Explicit asynchronous uploads return inspectable job ids:
+also catch external keyring edits; registered project files are checked periodically.
+The daemon stages encrypted changes and syncs with the vault server. Pending changes
+are not proof of a completed server sync;
+check `status` and resolve reported sync failures.
 
 ```sh
-esec-vault backup --push --async
-esec-vault daemon job JOB_ID
+esec-vault sync --server
 esec-vault daemon reload              # reload broker policy
 ```
 
-Job history is bounded and in-memory; durable snapshot/pending/upload records
-survive daemon restarts. Manual backup and recovery still work without the
-daemon. `remote watch --once` remains available for external schedulers.
-
-Installation captures only transport paths/profile references and PATH, including
-`RCLONE_CONFIG`, `RESTIC_PASSWORD_FILE`, `AWS_PROFILE`, and the keyring directory.
-Credential values are never copied into the manifest or service definition.
-Configure those references in the shell before installation.
+The service records PATH and the keyring directory. External transport profiles
+and cloud credential paths are no longer captured.
 
 ### Stop, disable, uninstall and purge
 
@@ -2222,38 +2253,32 @@ purging, and do not run concurrent key-management commands during destruction.
 installations, rclone/restic credentials and remote backups are not deleted;
 systemd journal history remains subject to OS retention.
 
-Uploads are read back and SHA-256 compared before recording success. Offline
-failures preserve local snapshots and pending state. `status` reports stale local
-snapshots and last uploaded generations. Explicit `backup --push` bypasses the
-debounce. Local history is kept under `snapshots/`; remote pruning is opt-in.
-
-Use one namespace per personal vault. This is backup, not automatic multi-device
-merge: a second device should explicitly restore before adding keys. Generation
-numbers and local receipts detect ordinary staleness; they do not prove freshness
-against a malicious server on a completely fresh device.
-
 ## Recovery
 
-**A new machine needs one backup file, its recovery phrase and the optional
-passphrase used for that generation. It does not need `identity.esec` or the old
-OS keychain.**
+On a new machine, recover from your vault server:
 
 ```sh
-# Configure transport access independently, then:
-esec-vault remote pull r2 --out backup.esec
-esec-vault recover --file backup.esec
-esec-vault backup --verify
+esec vault login https://vault.example.com --recover
 ```
 
-`recover` prompts without echoing the phrase/passphrase. It opens the recovery
-copy, reconstructs the identity, then restores keyrings. Restore conflicts are
-checked before keys are written. `restore --dry-run` lists projects, `--force`
-replaces conflicts, and `--settings` explicitly restores backed-up policy, trust
-pins and remote config. Downloads never overwrite the active vault implicitly.
+Sign in with GitHub, then enter your 24 words and optional recovery passphrase.
+The client verifies the account chain and decrypts the wrapped identity locally.
+It restores synced keyrings. Clone your repositories to obtain encrypted secrets
+and repository key seals. A guarded key is recovered from its seal when needed.
 
-Cloud backups and local snapshots are encrypted. The working `keyrings/*.keyring`
-files are still plaintext with mode 0600 for compatibility with core esec.
-The broker can load ciphertext directly using `agent --from-vault`.
+An old encrypted backup file remains an emergency import route:
+
+```sh
+esec vault recover --file vault-backup.esec
+esec vault login https://vault.example.com
+```
+
+Restoring a file does not sign the device in. Normal operations still require
+login. `restore --dry-run` lists projects; `--settings` restores policy and trust
+pins. Obsolete external sync settings in old backups are ignored.
+
+Pending changes and explicit recovery exports are encrypted. Working keyring files can be sealed to a
+machine-local cache key; older plaintext keyrings use mode 0600.
 
 ### Encryption and identity
 
@@ -2272,10 +2297,11 @@ header records the derivation, protection flag and public keys, with a matching
 authenticated copy inside its sealed payload. Only public recovery material is
 cached, allowing unattended encrypted backups without storing the phrase.
 
-Vault format 2 is `ESECVLT | version | flags | identity-box-length (BE uint32) |
+Vault format 3 retains the format-2 envelope layout: `ESECVLT | version | flags | identity-box-length (BE uint32) |
 identity-sealed box | optional recovery-sealed box`. Both NaCl sealed boxes carry
-the same payload: identity recovery material, keyrings, settings, generation and
-timestamp. The identity copy also authenticates a hash of the recovery ciphertext,
+the same payload: identity recovery material, keyrings, device profiles, project
+revision metadata, generation and timestamp. Explicit portable exports also
+embed encrypted file objects. Format-2 recovery files remain readable. The identity copy also authenticates a hash of the recovery ciphertext,
 so ordinary verification catches a damaged or removed recovery copy; recovery
 cross-checks both payloads before installing the identity. Sealed boxes provide
 ciphertext integrity/confidentiality, not sender
@@ -2344,13 +2370,13 @@ Migration is explicit; installing the binary does not alter live keys.
 | Passkeys and server removals | `esec vault delegate` |
 | On a machine: what am I, what do I read | `esec-vault machine whoami` |
 | List proofs in the current project | `esec vault members list` |
-| Import a share after `git pull` | `esec vault sync` |
+| Import a legacy share after `git pull` | `esec vault sync --shares` |
 | Reload policy after editing it | `esec vault daemon reload` |
 | Load current keys and unlock for four hours | `esec vault unlock --ttl 4h` |
 | Lock broker access | `esec vault lock` |
 | Create a local backup | `esec vault backup --verify` |
-| Back up and upload now | `esec vault backup --verify --push` |
-| Check remote upload state | `esec vault remote list` |
+| Back up and upload now | `esec vault sync --server` |
+| Check server backup state | `esec vault status` |
 | Read recent daemon logs | `esec vault daemon logs` |
 
 Use the managed daemon for normal work. `agent --from-vault --ttl 4h` is an
@@ -2377,8 +2403,8 @@ same socket as an active managed daemon.
 | A filtered share omits an unnamed key | `share --env` selects named entries. Use named environment keys for selective sharing. |
 | `sync` cannot open a share | Pull the latest share and check the current directory. If your identity changed, ask the owner to verify the new proof and share again. |
 | A backup does not contain a repo-local key | Import the `.esec-keyring` first. Backups collect keys from the global store. |
-| An upload is pending | Check `remote list` and `daemon logs`. Use `backup --push` to request an immediate upload. |
-| A new clone has encrypted files but cannot decrypt | Restore your personal backup or use `sync` to import a share. The project file alone does not provide private keys. |
+| Server sync is pending | Check `status` and `daemon logs`. Run `esec vault sync --server` to retry. |
+| A new clone has encrypted files but cannot decrypt | Restore your personal backup or use `seal sync` to open its repository seals. The project file alone does not provide private keys. |
 
 ### Check key lookup without changing the shell
 
@@ -2408,8 +2434,6 @@ ambiguity.
   keyrings/*.keyring            # working project keys (0600); ESEC_KEYRING_DIR override
   vault.esec                    # current self-contained encrypted snapshot
   snapshots/*.esec              # local encrypted generation history
-  remote.toml                   # declarative destinations and upload policy
-  remote-state.json             # last verified upload per destination
   push-dirty.json               # first pending-change timestamp
   policy.toml, trusted.toml     # broker policy and member pins
   daemon-install.json           # exact ownership manifest for uninstall

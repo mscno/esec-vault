@@ -14,7 +14,6 @@ import (
 
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/identity"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/verify"
@@ -26,7 +25,7 @@ type VerifyCmd struct {
 	Root    []string `type:"path" help:"Also find (and remember) the checkouts under these directories, such as ~/src"`
 	History bool     `default:"true" negatable:"" help:"Also check every key the checkouts' git history used"`
 	Server  bool     `default:"true" negatable:"" help:"Check the vault server's copy"`
-	Backup  bool     `default:"true" negatable:"" help:"Check the newest backup"`
+	Backup  bool     `default:"true" negatable:"" hidden:"" help:"Obsolete: backups are stored on the vault server"`
 	JSON    bool     `help:"Print JSON, for scripts, agents and the Mac app"`
 	Last    bool     `help:"Print the last check (the background service runs one daily) instead of checking now"`
 }
@@ -53,15 +52,14 @@ func (c *VerifyCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	opts := verify.Options{Roots: c.Root, History: c.History, Server: c.Server, Backup: c.Backup, Keyring: ctx.Keyring,
+	opts := verify.Options{Roots: c.Root, History: c.History, Server: c.Server,
 		OpenAccount: func() (*account.Account, error) { return openAccount(ctx) }}
 	rep, runErr := verify.Run(bg, opts)
 	if rep == nil {
 		return runErr
 	}
-	// Only a full check is kept for doctor, the daemon and the Mac app: one
-	// that skipped places would report every key as held in one place.
-	if c.History && c.Server && c.Backup {
+	// Only a full check is kept for doctor, the daemon and the Mac app.
+	if c.History && c.Server {
 		_ = verify.SaveLast(rep, runErr, time.Now().UTC())
 	}
 	if c.JSON {
@@ -75,7 +73,7 @@ func (c *VerifyCmd) Run(ctx *cliCtx) error {
 		fmt.Fprintln(os.Stderr, "! "+runErr.Error())
 	}
 	if !rep.OK() {
-		return fmt.Errorf("%d key(s) need attention (%d lost)", rep.Problems, rep.Lost)
+		return fmt.Errorf("%d key(s) need attention (%d current keys not found, %d historical keys not found)", rep.Problems, rep.Lost, rep.HistoryMissing)
 	}
 	return nil
 }
@@ -86,6 +84,9 @@ func printVerify(rep *verify.Report) {
 		switch {
 		case s.Checked:
 			fmt.Printf("  ✓ checked %s\n", s.Name)
+			if s.Error != "" {
+				fmt.Printf("    ! incomplete: %s\n", safetext.Clean(s.Error))
+			}
 		default:
 			fmt.Printf("  - not checked: %s (%s)\n", s.Name, safetext.Clean(s.Error))
 		}
@@ -118,10 +119,10 @@ func printVerify(rep *verify.Report) {
 				fmt.Printf("  %s… %s %s\n", k.Public[:12], safetext.Clean(k.Uses[0].Project), safetext.Clean(k.Uses[0].Env))
 			}
 		}
-		fmt.Println("  If one of them is yours, its key is lost: esec vault restore, or ask whoever holds it.")
+		fmt.Println("  If one of them is yours, check its repository seals or ask a reader who can open it.")
 	}
 	if rep.OK() {
-		fmt.Printf("✓ Every key is in at least two places, and none serves two projects.\n")
+		fmt.Printf("✓ Every checked key is preserved in a repository seal with recovery recipients or in multiple keyring copies; none serves two projects.\n")
 	}
 }
 
@@ -129,28 +130,27 @@ func printVerify(rep *verify.Report) {
 // recovery phrase alone, holds every key the checkouts use, and the
 // recovery key opens the guard.
 type DrillCmd struct {
-	Remote  string `help:"Backup destination (default: the default one)"`
+	Remote  string `hidden:"" help:"Removed external backup destination"`
 	History bool   `default:"true" negatable:"" help:"Also require the keys the checkouts' git history used"`
 }
 
 // Run implements drill.
-func (c *DrillCmd) Run(_ *cliCtx) error { //nolint:gocyclo // one sequential drill: backup, phrase, seals, coverage
-	cfg, err := remote.Load()
-	if err != nil {
-		return err
+func (c *DrillCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // keep the ordered recovery proof and its failure boundaries together
+	if c.Remote != "" {
+		return errors.New("external backup sync was removed; drill checks your vault server backup")
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	var key string
-	var blob []byte
-	if c.Remote != "" || cfg.Default != "" {
-		if key, blob, err = remote.Latest(bg, cfg, c.Remote); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "Downloaded %s. Nothing is written to disk; the phrase opens it in memory.\n", key)
-	} else {
-		fmt.Fprintln(os.Stderr, "No backup destination: checking that the phrase opens the keys sealed in your checkouts.")
+	a, err := openAccount(ctx)
+	if err != nil {
+		return err
 	}
+	blob, err := a.Backup(bg)
+	if err != nil {
+		return fmt.Errorf("download the vault server backup: %w", err)
+	}
+	key := "vault server backup"
+	fmt.Fprintln(os.Stderr, "Downloaded your encrypted vault server backup. The phrase opens it in memory; nothing is written.")
 	mnemonic, err := promptMnemonic("Paste your 24-word recovery phrase: ")
 	if err != nil {
 		return err
@@ -166,13 +166,16 @@ func (c *DrillCmd) Run(_ *cliCtx) error { //nolint:gocyclo // one sequential dri
 	if err != nil {
 		return err
 	}
-	var v *vaultfile.Vault
-	if blob != nil {
-		if v, err = vaultfile.OpenWithMaster(blob, &keys.Public, &keys.Private); err != nil {
-			return fmt.Errorf("the phrase does not open the newest backup: %w", err)
-		}
-		fmt.Printf("✓ The phrase opens %s (generation %d, %s).\n", key, v.Generation, v.CreatedAt.Format(time.DateOnly))
+	v, err := vaultfile.OpenWithMaster(blob, &keys.Public, &keys.Private)
+	if err != nil {
+		return fmt.Errorf("the phrase does not open the vault server backup: %w", err)
 	}
+	fmt.Printf("✓ The phrase opens %s (generation %d, %s).\n", key, v.Generation, v.CreatedAt.Format(time.DateOnly))
+	archived, err := a.VerifyArchive(bg, v)
+	if err != nil {
+		return fmt.Errorf("drill failed: archived project data is incomplete or corrupt: %w", err)
+	}
+	fmt.Printf("✓ All %d archived encrypted file revisions authenticate.\n", archived)
 
 	n, failed := drillSeals(keys.Private)
 	for _, f := range failed {
@@ -182,11 +185,6 @@ func (c *DrillCmd) Run(_ *cliCtx) error { //nolint:gocyclo // one sequential dri
 		return fmt.Errorf("drill failed: the phrase does not open %d sealed key(s); seal them again (esec vault seal sync in each checkout) and drill again", len(failed))
 	}
 	fmt.Printf("✓ The phrase alone opens all %d key(s) sealed in your checkouts, guarded ones too.\n", n)
-	if v == nil {
-		_ = verify.SaveDrill(time.Now().UTC())
-		fmt.Println("Drill passed. Do it again every few months, and after changing the passphrase.")
-		return nil
-	}
 
 	reg, err := workspace.Load()
 	if err != nil {
@@ -199,19 +197,23 @@ func (c *DrillCmd) Run(_ *cliCtx) error { //nolint:gocyclo // one sequential dri
 		}
 	}
 	uses, _, collectErr := verify.Collect(bg, checkouts, c.History)
-	rep := verify.Build(uses, []verify.Source{{Name: "backup", Projects: v.Projects}})
+	sealed, sealErr := verify.RepositorySource(bg, checkouts, c.History)
+	if sealErr != nil {
+		return sealErr
+	}
+	rep := verify.Build(uses, []verify.Source{{Name: "vault server backup", Projects: v.Projects}, sealed})
 	if rep.Lost > 0 {
 		for _, k := range rep.Keys {
 			if k.Places == 0 && !k.Unheld {
 				fmt.Printf("  ✗ %s… (%s %s) is not in the backup\n", k.Public[:12], safetext.Clean(k.Uses[0].Project), safetext.Clean(k.Uses[0].Env))
 			}
 		}
-		return fmt.Errorf("drill failed: %d key(s) your checkouts use are not in the backup; push a new one (esec vault backup --verify --push) and drill again", rep.Lost)
+		return fmt.Errorf("drill failed: %d key(s) your checkouts use are not in the server backup or repository seals; sync a new one (esec vault sync --server) and drill again", rep.Lost)
 	}
 	if collectErr != nil {
 		fmt.Fprintln(os.Stderr, "! "+collectErr.Error())
 	}
-	fmt.Printf("✓ It holds all %d key(s) your %d checkout(s) use.\n", len(rep.Keys), len(checkouts))
+	fmt.Printf("✓ The server backup and repository seals preserve all %d checked key(s) in %d checkout(s).\n", len(rep.Keys), len(checkouts))
 	_ = verify.SaveDrill(time.Now().UTC())
 	fmt.Println("Drill passed. Do it again every few months, and after changing the passphrase.")
 	return nil

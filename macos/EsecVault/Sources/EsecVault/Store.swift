@@ -4,9 +4,8 @@ import Observation
 import ServiceManagement
 
 /// The app's state: what esec-vault reports, refreshed when its files change
-/// and every few minutes. Actions run esec-vault commands; a guarded action
-/// shows esec's own dialog and waits for a touch of the security key, as on
-/// the command line. Commands that ask for a phrase or a PIN open Terminal.
+/// and through a lightweight daemon poll. Actions run the same CLI as the
+/// Terminal. macOS handles passkey approval; recovery phrases stay in Terminal.
 @MainActor
 @Observable
 final class Store {
@@ -16,6 +15,8 @@ final class Store {
     var guardStatus: GuardStatus?
     var verify: VerifySaved?
     var status: Status?
+    var daemonState: DaemonStatus?
+    var refreshErrors: [String: String] = [:]
     var activity: [ActivityEntry] = []
     /// Every environment's seal across the checkouts here.
     var seals: [SealView] = []
@@ -26,13 +27,86 @@ final class Store {
     var lastError: String?
     var search = ""
 
+    @ObservationIgnored private var secretWindows: [String: SecretFileWindow] = [:]
+    @ObservationIgnored private var comparisonWindows: [String: SecretComparisonWindow] = [:]
+
+    func openSecretComparison(_ project: Project) {
+        guard let cli else {
+            lastError = "The esec-vault CLI was not found. Reinstall EsecVault."
+            return
+        }
+        let controller: SecretComparisonWindow
+        if let existing = comparisonWindows[project.id] {
+            controller = existing
+        } else {
+            controller = SecretComparisonWindow(project: project, cli: cli) { [weak self] path in self?.openSecretFile(path) }
+            controller.onClose = { [weak self] in self?.comparisonWindows[project.id] = nil }
+            comparisonWindows[project.id] = controller
+        }
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    private func lockSecretWindows() {
+        secretWindows.values.forEach { $0.model.lock() }
+        comparisonWindows.values.forEach { $0.model.lock() }
+    }
+
+    func openSecretFile(_ path: String) {
+        guard let cli else {
+            lastError = "The esec-vault CLI was not found. Reinstall EsecVault."
+            return
+        }
+        let path = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        if let existing = secretWindows[path] {
+            existing.showWindow(nil)
+            existing.window?.makeKeyAndOrderFront(nil)
+        } else {
+            let controller = SecretFileWindow(path: path, cli: cli)
+            controller.onClose = { [weak self] in self?.secretWindows[path] = nil }
+            secretWindows[path] = controller
+            controller.showWindow(nil)
+            controller.window?.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate()
+    }
+
+    func chooseSecretFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Open Secrets File"
+        panel.message = "Choose an esec file in a project. Its values will be decrypted in memory."
+        panel.showsHiddenFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url { openSecretFile(url.path) }
+    }
+
     private var timer: Timer?
+    private var runtimeTimer: Timer?
+    private var started = false
+    private var refreshing = false
+    private var runtimeRefreshing = false
+    private var refreshAgain = false
+    private var fullRefreshAgain = false
     private var watchers: [DispatchSourceFileSystemObject] = []
     private var pending: Task<Void, Never>?
     private var needsRewatch = false
     private var lastStatus = Date.distantPast
 
-    var health: Health { verify?.health ?? .unknown("Keys not checked yet") }
+    var health: Health {
+        let keys = verify?.health ?? .unknown("Keys not checked yet")
+        if case .lost = keys { return keys }
+        if guardStatus?.projects.contains(where: { !($0.clear ?? []).isEmpty }) == true {
+            return .attention("Guarded keys are still cached on this Mac")
+        }
+        if !refreshErrors.isEmpty { return .attention("Some status checks could not complete") }
+        if daemonState?.needsAttention == true { return .attention("Background service needs attention") }
+        if !(status?.problems ?? []).isEmpty { return .attention("Vault status needs attention") }
+        if !sealsToFix.isEmpty { return .attention("Sealed keys need attention") }
+        if projects.contains(where: \.hasProblem) { return .attention("Project configuration needs attention") }
+        return keys
+    }
 
     /// What esec-vault setup --check reports.
     var setup: [SetupItem] = []
@@ -66,60 +140,108 @@ final class Store {
     }
 
     func start() {
+        guard !started else { return }
+        started = true
         Task { await refresh(full: true) }
         watch()
-        timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh(full: true) }
         }
+        runtimeTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.refreshRuntime() }
+        }
     }
 
-    /// Refreshes what the app shows. status talks to the vault server, so
-    /// it runs only on a full refresh or every few minutes.
+    /// Failed reads retain their last data but are marked as unavailable;
+    /// they can never silently turn into an empty, healthy result.
+    private func read<T>(_ source: String, _ operation: () async throws -> T) async -> T? {
+        do {
+            let value = try await operation()
+            refreshErrors[source] = nil
+            return value
+        } catch {
+            refreshErrors[source] = error.localizedDescription
+            return nil
+        }
+    }
+
+    func refreshRuntime() async {
+        guard let cli, !runtimeRefreshing else { return }
+        runtimeRefreshing = true
+        defer { runtimeRefreshing = false }
+        let wasOpen = daemonState?.unlocked == true
+        daemonState = await read("Background service") { try await cli.daemonStatus() }
+        if wasOpen && daemonState?.sessionIsOpen() != true {
+            lockSecretWindows()
+        }
+    }
+
+    /// Metadata refreshes are serialized; file notifications during a read
+    /// request one more pass rather than spawning overlapping CLI processes.
     func refresh(full: Bool = false) async {
         guard let cli else {
-            lastError = "esec-vault was not found. Install it (go install github.com/mscno/esec-vault/cmd/esec-vault@latest) or set ESEC_VAULT_BIN."
+            lastError = "The bundled esec-vault CLI was not found. Reinstall EsecVault or check ESEC_VAULT_BIN."
             return
         }
-        do {
-            async let p = cli.projects()
-            async let g = cli.guardStatus()
-            async let v = cli.lastVerify()
-            async let a = cli.activity()
-            async let k = cli.securityKeys()
-            projects = try await p
-            guardStatus = try? await g
-            verify = try? await v
-            activity = (try? await a) ?? activity
-            securityKeys = (try? await k) ?? securityKeys
-            lastError = nil
-        } catch {
-            lastError = error.localizedDescription
+        if refreshing {
+            refreshAgain = true
+            fullRefreshAgain = fullRefreshAgain || full
+            return
         }
-        if full || Date().timeIntervalSince(lastStatus) > 300 {
-            lastStatus = Date()
-            status = try? await cli.status()
-            setup = (try? await cli.setup()) ?? setup
-            // seal resolves readers through the vault server: not on every
-            // file change.
-            seals = (try? await cli.seals()) ?? seals
-        }
+        refreshing = true
+        defer { refreshing = false }
+        var full = full
+        repeat {
+            refreshAgain = false
+            fullRefreshAgain = false
+            async let p = read("Projects") { try await cli.projects() }
+            async let g = read("Guard") { try await cli.guardStatus() }
+            async let v = read("Key verification") { try await cli.lastVerify() }
+            async let a = read("Activity") { try await cli.activity() }
+            if let value = await p { projects = value }
+            if let value = await g { guardStatus = value }
+            if let value = await v { verify = value }
+            if let value = await a { activity = value }
+            // The daemon already scans connected cards. A GUI refresh reads
+            // its cache; only Scan Connected YubiKeys opens a card explicitly.
+            if let value = await read("Security keys", { try await cli.securityKeys() }) { securityKeys = value }
+            await refreshRuntime()
+            if full || Date().timeIntervalSince(lastStatus) > 300 {
+                lastStatus = Date()
+                async let st = read("Vault status") { try await cli.status() }
+                async let su = read("Setup") { try await cli.setup() }
+                async let se = read("Seals") { try await cli.seals() }
+                if let value = await st { status = value }
+                if let value = await su { setup = value }
+                if let value = await se { seals = value }
+            }
+            for id in Array(details.keys) { await loadDetail(id) }
+            if started { watch() }
+            full = fullRefreshAgain
+        } while refreshAgain
     }
 
-    /// Watches the vault's home (projects.toml, verify.json, keyrings) and
-    /// its audit log, so a command run in a terminal or by an agent shows up
-    /// at once.
+    /// Watch project files as well as vault metadata. Editors and CLI actions
+    /// save esec.toml and seals atomically, so their parent directories matter.
     private func watch() {
         watchers.forEach { $0.cancel() }
         watchers = []
-        for path in [Self.home, Self.home + "/audit.log", Self.home + "/keyrings"] {
+        let env = ProcessInfo.processInfo.environment
+        var paths = [Self.home, Self.home + "/audit.log", Self.home + "/run",
+                     env["ESEC_KEYRING_DIR"] ?? Self.home + "/keyrings"]
+        let checkouts = projects.flatMap(\.checkouts).filter { $0.status != "gone" }
+        for checkout in checkouts {
+            paths += [checkout.path, checkout.path + "/esec.toml", checkout.path + "/.esec"]
+        }
+        let projectPaths = Set(checkouts.flatMap { [$0.path, $0.path + "/esec.toml", $0.path + "/.esec"] })
+        for path in Set(paths) {
             let fd = open(path, O_EVTONLY)
             guard fd >= 0 else { continue }
             let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .rename, .delete], queue: .main)
+            let projectChanged = projectPaths.contains(path)
             src.setEventHandler { [weak self, weak src] in
-                // A replaced file (rotated log, atomic save) needs a new watch.
                 let replaced = src.map { !$0.data.isDisjoint(with: [.delete, .rename]) } ?? false
-                MainActor.assumeIsolated { self?.changed(rewatch: replaced) }
+                MainActor.assumeIsolated { self?.changed(rewatch: replaced, full: projectChanged) }
             }
             src.setCancelHandler { close(fd) }
             src.resume()
@@ -127,19 +249,23 @@ final class Store {
         }
     }
 
+    private var needsFullRefresh = false
+
     /// Coalesces a burst of file changes into one refresh.
-    private func changed(rewatch: Bool) {
-        if rewatch { needsRewatch = true }
+    private func changed(rewatch: Bool, full: Bool) {
+        needsRewatch = needsRewatch || rewatch
+        needsFullRefresh = needsFullRefresh || full
         pending?.cancel()
         pending = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
+            let full = needsFullRefresh
+            needsFullRefresh = false
             if needsRewatch {
                 needsRewatch = false
                 watch()
             }
-            await refresh()
-            for id in details.keys { await loadDetail(id) }
+            await refresh(full: full)
         }
     }
 
@@ -153,25 +279,25 @@ final class Store {
 
     func loadDetail(_ id: String) async {
         guard let cli else { return }
-        do {
-            details[id] = try await cli.project(id)
-        } catch {
-            lastError = error.localizedDescription
-        }
+        if let value = await read("Project " + id, { try await cli.project(id) }) { details[id] = value }
     }
 
     /// Runs one esec-vault command as an action, then refreshes. It returns
     /// whether the command succeeded.
     @discardableResult
     func perform(_ label: String, _ args: [String], in dir: String? = nil, then: String? = nil) async -> Bool {
+        await perform(label, commands: [args], in: dir, then: then)
+    }
+
+    @discardableResult
+    private func perform(_ label: String, commands: [[String]], in dir: String? = nil, then: String? = nil) async -> Bool {
         guard let cli, busy == nil else { return false }
         busy = label
         defer { busy = nil }
         var ok = false
         do {
-            let out = try await cli.run(args, in: dir)
-            let text = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            message = text.split(separator: "\n").last.map(String.init) ?? label
+            for args in commands { _ = try await cli.run(args, in: dir) }
+            message = label.trimmingCharacters(in: CharacterSet(charactersIn: "…")) + " — done"
             lastError = nil
             ok = true
         } catch {
@@ -186,6 +312,16 @@ final class Store {
     func runInTerminal(_ args: [String], in dir: String? = nil) {
         guard let cli else { return }
         var script = "#!/bin/sh\n"
+        let environment = ProcessInfo.processInfo.environment
+        // Preserve the vault/config routing of this GUI when Terminal starts
+        // a new login shell. Only public routing paths are written here.
+        script += "export ESEC_VAULT_HOME=\(CLI.quote(Self.home))\n"
+        for key in ["ESEC_KEYRING_DIR", "ESEC_CONFIG", "ESEC_VAULT_SOCK"] {
+            if let value = environment[key], !value.isEmpty { script += "export \(key)=\(CLI.quote(value))\n" }
+        }
+        let path = cli.binary.deletingLastPathComponent().path + ":" + FileManager.default.homeDirectoryForCurrentUser.path + "/go/bin:/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin")
+        script += "export PATH=\(CLI.quote(path))\n"
+        script += "export ESEC_VAULT_SESSION='EsecVault app'\n"
         if let dir { script += "cd \(CLI.quote(dir)) || exit 1\n" }
         script += "echo '$ esec vault \(args.joined(separator: " ").replacingOccurrences(of: "'", with: ""))'\n"
         script += cli.commandLine(args) + "\n"
@@ -205,6 +341,10 @@ final class Store {
 
     /// Does a setup step: in the app when it asks nothing, else in Terminal.
     func doSetup(_ item: SetupItem) async {
+        if item.step == "guard", let guarded = guardStatus?.projects.filter({ !($0.clear ?? []).isEmpty }), !guarded.isEmpty {
+            for project in guarded { await guardHere(project) }
+            return
+        }
         guard let args = item.args else {
             runInTerminal(["setup"])
             return
@@ -222,6 +362,7 @@ final class Store {
         defer { busy = nil }
         do {
             _ = try await cli.verifyNow()
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
@@ -234,38 +375,40 @@ final class Store {
     func prune() async { await perform("Forgetting missing checkouts…", ["projects", "prune"]) }
 
     /// Sets up a new project in dir: its esec.toml, a key per environment
-    /// and a secrets file for each. Guarded environments need a touch.
+    /// and a secrets file for each. Sealing a new key uses public recipients.
     func newProject(_ draft: ProjectDraft) async -> Bool {
         var args = ["project", "init", "--dir", draft.dir.path, "--env", draft.envs.joined(separator: ",")]
         if !draft.project.isEmpty { args += ["--project", draft.project] }
         if !draft.guarded.isEmpty { args += ["--guard", draft.guarded.joined(separator: ",")] }
         if draft.format != "default" { args += ["--format", draft.format] }
-        let touch = draft.guarded.isEmpty ? "" : " — touch your security key"
-        let ok = await perform("Setting up the project\(touch)…", args, in: draft.dir.path)
+        let ok = await perform("Setting up the project…", args, in: draft.dir.path)
         if ok { await add(draft.dir) }
         return ok
     }
 
     /// Adds an environment to a project, in one of its checkouts.
     func addEnv(_ project: String, in checkout: String, name: String, guardLevel: String) async -> Bool {
-        let touch = guardLevel == "none" ? "" : " — touch your security key"
-        return await perform("Adding \(name)\(touch)…", ["env", "add", name, "--project", project, "--guard", guardLevel], in: checkout, then: project)
+        return await perform("Adding \(name)…", ["env", "add", name, "--project", project, "--guard", guardLevel], in: checkout, then: project)
+    }
+
+    func renameEnv(_ project: String, env: String, to name: String, in checkout: String) async -> Bool {
+        await perform("Renaming \(env) to \(name)…", ["env", "rename", env, name, "--dir", checkout, "--yes"], in: checkout, then: project)
     }
 
     /// Gives an environment a new key and re-encrypts its files.
     func rotate(_ project: String, _ env: EnvView, in checkout: String) async {
-        let touch = env.isGuarded ? " — touch your security key" : ""
+        let touch = env.isGuarded ? " — approval may be needed" : ""
         await perform("Rotating \(env.name)\(touch)…", ["env", "rotate", env.name, "--project", project, "--yes"], in: checkout, then: project)
     }
 
-    /// Guards an environment: esec shows its dialog, then the key waits for a touch.
+    /// Guard approval follows the credential type and the selected policy.
     func guardEnv(_ project: String, _ env: String, level: String, in checkout: String?) async {
-        await perform("Guarding \(env) — touch your security key…", ["guard", "enable", "--project", project, "--env", env, "--level", level], in: checkout, then: project)
+        await perform("Guarding \(env) — approval may be needed…", ["guard", "enable", "--project", project, "--env", env, "--level", level], in: checkout, then: project)
     }
 
     /// Stops guarding an environment: sealed to the readers' user keys again.
     func unguardEnv(_ project: String, _ env: String, in checkout: String?) async {
-        await perform("Unguarding \(env) — touch your security key…", ["guard", "disable", "--project", project, "--env", env], in: checkout, then: project)
+        await perform("Unguarding \(env) — approval may be needed…", ["guard", "disable", "--project", project, "--env", env], in: checkout, then: project)
     }
 
     // MARK: Sharing
@@ -273,7 +416,7 @@ final class Store {
     /// Shares environments with GitHub users, groups or keys.
     func share(_ project: String, envs: [String], with who: [String], in checkout: String?) async -> Bool {
         let touch = (details[project] ?? projects.first { $0.project == project })?.envs.contains { envs.contains($0.name) && $0.isGuarded } == true
-            ? " — touch your security key" : ""
+            ? " — approval may be needed" : ""
         return await perform("Sharing\(touch)…", ["share", envs.joined(separator: ","), "--with", who.joined(separator: ","), "--project", project], in: checkout, then: project)
     }
 
@@ -297,7 +440,7 @@ final class Store {
         do {
             let out = String(decoding: try await cli.run(args, in: checkout), as: UTF8.self)
             key = out.split(separator: "\n").first { $0.hasPrefix("AGE-SECRET-KEY-1") }.map(String.init)
-            message = out.split(separator: "\n").last.map(String.init)
+            message = "CI key \(name) created. Commit esec.toml and .esec/ together."
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -309,9 +452,44 @@ final class Store {
 
     // MARK: Seals
 
-    /// Seals again what changed, across checkouts. Guarded ones need a touch each.
+    /// Resealing opens existing keys; a guarded key may need approval.
     func sealAgain() async {
-        await perform("Sealing again — guarded ones need a touch each…", ["seal", "sync", "--all"])
+        await perform("Resealing keys — approval may be needed…", ["seal", "sync", "--all"])
+    }
+
+    /// Remove cached guarded keys without changing session to per-read policy.
+    func guardHere(_ guarded: GuardProject) async {
+        guard let cli, busy == nil else { return }
+        do {
+            let project = try await cli.project(guarded.project)
+            let names = Set(guarded.clear ?? [])
+            let commands = project.envs.filter { names.contains($0.name) && $0.isGuarded }.map {
+                ["guard", "enable", "--project", project.project, "--env", $0.name, "--level", $0.guardLevel]
+            }
+            guard !commands.isEmpty else { await refresh(full: true); return }
+            let checkout = project.checkouts.first { $0.status == "ok" }?.path
+            await perform("Removing cached guarded keys…", commands: commands, in: checkout, then: project.project)
+        } catch { lastError = error.localizedDescription }
+    }
+
+    func serviceAction(_ action: String) async {
+        await perform("Background service: \(action)…", ["daemon", action] + (action == "install" ? ["--start"] : []))
+    }
+
+    func unlock(ttl: String = "4h") async {
+        await perform("Opening a broker session…", ["unlock", "--ttl", ttl])
+    }
+
+    func lock() async {
+        lockSecretWindows()
+        await perform("Locking the broker…", ["lock"])
+    }
+
+    func scanSecurityKeys() async {
+        guard let cli, busy == nil else { return }
+        busy = "Scanning connected YubiKeys…"
+        defer { busy = nil }
+        if let value = await read("Security keys", { try await cli.securityKeys(scan: true) }) { securityKeys = value }
     }
 
     /// Reseals every guarded environment with the recovery phrase, in Terminal.
@@ -319,21 +497,45 @@ final class Store {
 
     // MARK: Security keys
 
-    func addSecurityKey(name: String?) async {
+    func addSecurityKey(name: String?, detected: DetectedKey? = nil) async {
         var args = ["security-keys", "add"]
+        if let detected { args += ["--recipient", detected.recipient, "--serial", detected.serial, "--slot", detected.slot] }
         if let name, !name.isEmpty { args += ["--name", name] }
+        else if let detected { args += ["--name", detected.name] }
         await perform("Registering the security key…", args)
     }
 
-    func removeSecurityKey(_ id: String) async {
+    func removeSecurityKey(_ id: String) async -> Bool {
         await perform("Removing the security key…", ["security-keys", "remove", id])
     }
 
     func testSecurityKey(_ id: String) async {
-        await perform("Testing — touch your security key…", ["security-keys", "test", id])
+        await perform("Testing security key…", ["security-keys", "test", id])
+    }
+
+    func addPasskey(provider: String) async {
+        var args = ["security-keys", "passkey", "--provider", provider]
+        if let rp = Bundle.main.object(forInfoDictionaryKey: "EsecPasskeyRelyingParty") as? String {
+            args += ["--rp-id", rp]
+        }
+        await perform("Waiting for macOS passkey setup…", args)
+    }
+
+    var nativePasskeysAvailable: Bool {
+        if #available(macOS 15.0, *) {
+            return Bundle.main.object(forInfoDictionaryKey: "EsecPasskeysEnabled") as? Bool == true
+        }
+        return false
+    }
+
+    var securityKeyPasskeysAvailable: Bool {
+        if #available(macOS 26.4, *) { return nativePasskeysAvailable }
+        return false
     }
 
     func setUpYubiKey() { runInTerminal(["security-keys", "setup"]) }
+
+    func editConfig(_ path: String) { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
 
     func revealInFinder(_ path: String) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])

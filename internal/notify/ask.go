@@ -32,6 +32,7 @@ func Ask(title, text string, timeout time.Duration) (string, error) {
 	case "darwin":
 		out, err := exec.CommandContext(ctx, "/usr/bin/osascript",
 			"-e", "on run argv",
+			"-e", frontmost,
 			"-e", "display dialog (item 2 of argv) with title (item 1 of argv) buttons {\"Dismiss\", \"Later\", \"Sign\"} default button \"Later\" cancel button \"Later\" giving up after (item 3 of argv as integer) with icon caution",
 			"-e", "end run",
 			title, text, itoa(secs)).Output()

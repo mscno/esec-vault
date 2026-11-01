@@ -46,37 +46,16 @@ func run(t *testing.T, bin string, args ...string) (stderr string, code int) {
 	return o.String() + e.String(), code
 }
 
-// A tool failure whose diagnostic contains "exit status" must still be
-// reported. This is the exact case that hid rclone's "403 AccessDenied".
-func TestExternalToolFailureIsNeverSilent(t *testing.T) {
-	dir := t.TempDir()
-	fake := filepath.Join(dir, "rclone")
-	// Mimic rclone: the useful diagnostic lives on stderr and the message
-	// itself contains "exit status".
-	script := "#!/bin/sh\necho 'ERROR: rclone failed: exit status 1: S3 CreateBucket 403 AccessDenied' >&2\nexit 1\n"
-	if err := os.WriteFile(fake, []byte(script), 0700); err != nil { //nolint:gosec // test shim
-		t.Fatal(err)
-	}
-	home := filepath.Join(dir, "home")
+func TestExternalBackupCommandsRemoved(t *testing.T) {
+	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
 	bin := buildCLI(t)
-	// Prepend the shim so it wins over any real rclone, keeping the rest of
-	// PATH intact for the build helper above.
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("ESEC_VAULT_HOME", home)
-	if err := os.MkdirAll(home, 0700); err != nil {
-		t.Fatal(err)
+	out, code := run(t, bin, "remote", "test")
+	if code == 0 || !strings.Contains(out, "remote") {
+		t.Fatalf("removed command: %d %s", code, out)
 	}
-	// Point the default remote at the shim.
-	cfg := "default = 'probe'\n[remotes.probe]\ntype = 'rclone'\nprefix = 'p'\nrclone_remote = 'x'\nbucket = 'somebucket'\n"
-	if err := os.WriteFile(filepath.Join(home, "remote.toml"), []byte(cfg), 0600); err != nil {
-		t.Fatal(err)
-	}
-	stderr, code := run(t, bin, "remote", "test")
-	if code == 0 {
-		t.Fatal("expected failure")
-	}
-	if !strings.Contains(stderr, "AccessDenied") {
-		t.Fatalf("tool diagnostic was swallowed; stderr=%q", stderr)
+	out, code = run(t, bin, "project", "init", "acme/app", "--dir", t.TempDir())
+	if code == 0 || !strings.Contains(out, "login") {
+		t.Fatalf("operation without login: %d %s", code, out)
 	}
 }
 

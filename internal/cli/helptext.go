@@ -12,9 +12,8 @@ import (
 var commandDetails = map[string]string{
 	"setup": `Sets this machine up, or says what is left. Each step is skipped when done, so run it again any time:
 
-  identity            sign in to your vault server (a machine joining your account), recover from a backup, or create your first
+  identity            sign in to your vault server (a machine joining your account), or create your first identity after sign-in
   vault server        sync your keys
-  second place        a backup destination when keys would be on this machine only
   background service  install or upgrade it
   checkouts           find your projects in ~/src, ~/code, ~/projects… (or --root)
   keys here           environments of your checkouts whose key is not here
@@ -88,6 +87,11 @@ It never creates a second identity unasked: that would split your keys.
 	"secrets where": examples(
 		"esec vault secrets where DATABASE_URL --root ~/src",
 		"esec vault secrets where db.password --env prod --json",
+	),
+	"secrets show": `Opens one local secrets file in memory and prints its values as JSON. Unguarded files use the same local key resolution as esec decrypt: no broker session or policy rule is needed when this machine has the key. Guarded environments still use the broker's approval path and honor explicit deny rules. Reads are audited without logging secret values; the file stays encrypted on disk.
+
+` + examples(
+		"esec vault secrets show --file go-backend/.env.dev --json",
 	),
 	"secrets set": `Reads the value from the terminal (asked twice, never shown) or from one line of stdin, never from the command line, so it stays out of shell history. Where this device has the environment's key, it reads the value back before writing.
 
@@ -447,9 +451,9 @@ It never creates a second identity unasked: that would split your keys.
 	),
 	"backup": examples(
 		"esec vault backup",
-		"esec vault backup --push          # also upload to the default remote",
+		"esec vault backup --out vault-backup.esec  # optional local encrypted export",
 	),
-	"recover": `On a new machine, with your 24-word recovery phrase and a backup from your remote or a file.
+	"recover": `Recover your account with esec vault login SERVER --recover. To import an old encrypted backup file, use recover --file FILE, then sign in.
 
 ` + examples(
 		"esec vault recover",
@@ -525,13 +529,13 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault projects show acme/store",
 		"esec vault projects scan ~/src",
 	),
-	"verify": `Reads every secrets file in every checkout this machine knows, and in their git history, and checks each key: on this device, held in a second place (the vault server, the newest backup), held somewhere at all, and used by one project only. The background service runs it daily.
+	"verify": `Checks current files and encrypted values in Git history against signed repository seals with recovery recipients, including seals from before key rotations. Sealed keys need no local cache or separate vault backup. For keys without seals, it checks this device and the vault server. Historical keys not found are reported separately from missing current keys. The background service runs it daily.
 
 ` + examples(
 		"esec vault verify",
 		"esec vault verify --root ~/src     # also find checkouts there",
 		"esec vault verify --last --json    # the last check, without checking",
-		"esec vault verify --no-history --no-backup",
+		"esec vault verify --no-history",
 	),
 	"activity": `Every request a program made to the background service for keys, newest first: the project and environment, what was decided (allow, ask, deny), the asking programs (zsh ▸ claude ▸ esec-vault) and the agent session label (ESEC_VAULT_SESSION).
 
@@ -541,11 +545,11 @@ It never creates a second identity unasked: that would split your keys.
 		"esec vault activity --denied --since 24h",
 		"esec vault activity --json",
 	),
-	"drill": `Downloads the newest backup and opens it in memory with the recovery phrase alone, as a new machine would; checks it holds every key your checkouts use, and that the recovery key opens the guard and every guarded key. Nothing is written.
+	"drill": `Downloads your signed vault server backup and opens it in memory with the recovery phrase alone, as a new machine would; checks it holds every key your checkouts use, and that the recovery key opens the guard and every guarded key. Nothing is written.
 
 ` + examples(
 		"esec vault drill",
-		"esec vault drill --remote usb",
+		"esec vault login SERVER --recover  # recover a new device from the server",
 	),
 	"forward": `Like ssh -A for an SSH agent: the remote machine may ask this one for guarded keys while the session lasts. Each read shows a dialog here naming the machine and waits for your touch; only that run's values go back. Unguarded keys are not served: give the machine its own (esec vault group token).
 

@@ -80,13 +80,19 @@ func Detect(ctx context.Context) ([]Detected, error) {
 // no age identity yet. It needs ykman to list YubiKeys; without it, it
 // returns none.
 func DetectUnprovisioned(ctx context.Context) ([]string, error) {
-	out, err := Run(ctx, "ykman", "list", "--serials")
-	if err != nil {
-		return nil, nil //nolint:nilerr // no ykman: cannot tell, which is not a failure
-	}
 	present, err := Detect(ctx)
 	if err != nil && !errors.Is(err, ErrNoPlugin) {
 		return nil, err
+	}
+	return DetectUnprovisionedWith(ctx, present)
+}
+
+// DetectUnprovisionedWith reuses an existing age scan. Listing keys twice
+// needlessly opens the smart card again, potentially during a pending touch.
+func DetectUnprovisionedWith(ctx context.Context, present []Detected) ([]string, error) {
+	out, err := Run(ctx, "ykman", "list", "--serials")
+	if err != nil {
+		return nil, nil //nolint:nilerr // no ykman: cannot tell, which is not a failure
 	}
 	have := map[string]bool{}
 	for _, d := range present {
@@ -230,6 +236,11 @@ func (r *Registry) Save() error {
 	buf.WriteString("# Your security keys (esec vault security-keys). Public keys only.\n")
 	if err := toml.NewEncoder(&buf).Encode(r); err != nil {
 		return err
+	}
+	// The Mac app watches this directory. Saving the account's unchanged
+	// public keys on every list would trigger another list indefinitely.
+	if previous, err := os.ReadFile(File()); err == nil && bytes.Equal(previous, buf.Bytes()) {
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(File()), 0o700); err != nil {
 		return err

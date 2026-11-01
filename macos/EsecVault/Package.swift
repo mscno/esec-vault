@@ -11,6 +11,6 @@ let package = Package(
         // Models and the esec-vault runner: no UI, so they are testable.
         .target(name: "EsecVaultCore"),
         .executableTarget(name: "EsecVault", dependencies: ["EsecVaultCore"]),
-        .testTarget(name: "EsecVaultCoreTests", dependencies: ["EsecVaultCore"]),
+        .testTarget(name: "EsecVaultCoreTests", dependencies: ["EsecVaultCore", "EsecVault"]),
     ]
 )

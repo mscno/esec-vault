@@ -1,14 +1,15 @@
 import Foundation
 
 // These mirror the JSON of `esec-vault projects --json`, `projects show
-// --json`, `guard --json` and `verify --last --json`. The app reads metadata
-// only: names, paths, public keys, guard levels. It never asks for a value.
+// --json`, `guard --json` and `verify --last --json`. Background refreshes
+// read metadata only. Secret documents are loaded explicitly in their windows.
 
 public struct Checkout: Codable, Hashable, Sendable {
     public let path: String
-    /// ok, gone or moved.
+    /// ok, gone, moved or invalid.
     public let status: String
     public let seen: Date?
+    public let error: String?
 }
 
 public struct EnvView: Codable, Hashable, Sendable, Identifiable {
@@ -38,6 +39,15 @@ public struct EnvView: Codable, Hashable, Sendable, Identifiable {
     public var readerRefs: [ReaderRef] { (readers ?? []).map(ReaderRef.init) }
 
     public var isGuarded: Bool { guardLevel != "none" }
+
+    public var guardDescription: String {
+        switch guardLevel {
+        case "touch": "approval for every read"
+        case "session": "approval once per broker session"
+        case "none": "not guarded"
+        default: "unknown guard: \(guardLevel)"
+        }
+    }
 }
 
 public struct SecretsFile: Codable, Hashable, Sendable, Identifiable {
@@ -58,16 +68,23 @@ public struct SecretsFile: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct Project: Codable, Hashable, Sendable, Identifiable {
+    public struct Configuration: Codable, Hashable, Sendable {
+        public let path: String
+        public let format: String?
+        public let name: String?
+        public let unknown: [String]?
+    }
     public let project: String
     public let checkouts: [Checkout]
     public let envs: [EnvView]
     public let keysHere: Bool
     public let files: [SecretsFile]?
+    public let config: Configuration?
 
     public var id: String { project }
 
     enum CodingKeys: String, CodingKey {
-        case project, checkouts, envs, files
+        case project, checkouts, envs, files, config
         case keysHere = "keys_here"
     }
 
@@ -85,6 +102,7 @@ public struct Project: Codable, Hashable, Sendable, Identifiable {
     public var hasProblem: Bool {
         envs.contains { $0.mismatch == true || $0.here == "missing" }
             || checkouts.contains { $0.status != "ok" }
+            || !(config?.unknown ?? []).isEmpty
     }
 }
 
@@ -125,6 +143,7 @@ public struct KeyReport: Codable, Hashable, Sendable, Identifiable {
     public let unheld: Bool?
 
     public var id: String { publicKey }
+    public var isHistorical: Bool { !uses.isEmpty && uses.allSatisfy { $0.commit != nil } }
 
     enum CodingKeys: String, CodingKey {
         case uses, held, places, problems, unheld
@@ -146,6 +165,12 @@ public struct VerifyReport: Codable, Hashable, Sendable {
     public let problems: Int
     public let lost: Int
     public let unheld: Int?
+    public let historyMissing: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case checkouts, files, sources, keys, problems, lost, unheld
+        case historyMissing = "history_missing"
+    }
 
     public var ok: Bool { problems == 0 }
 }
@@ -166,7 +191,10 @@ public extension VerifySaved {
     var health: Health {
         guard let at, at > Date(timeIntervalSince1970: 1) else { return .unknown("Keys never checked") }
         guard let report else { return .unknown(error ?? "No report") }
-        if report.lost > 0 { return .lost("\(report.lost) key(s) lost") }
+        if report.lost > 0 { return .lost("\(report.lost) current key(s) not found") }
+        if let missing = report.historyMissing, missing > 0, report.problems == missing {
+            return .attention("\(missing) historical key(s) need checking")
+        }
         if !report.ok { return .attention("\(report.problems) key(s) need attention") }
         if Date().timeIntervalSince(at) > 7 * 86_400 { return .attention("Keys last checked over a week ago") }
         return .good
@@ -204,16 +232,6 @@ public struct Status: Codable, Hashable, Sendable {
         }
     }
 
-    public struct Push: Codable, Hashable, Sendable {
-        public let lastPush: Date?
-
-        enum CodingKeys: String, CodingKey { case lastPush = "last_push" }
-    }
-
-    public struct Destinations: Codable, Hashable, Sendable {
-        public let remote: [String: Push]?
-    }
-
     public struct Server: Codable, Hashable, Sendable {
         public let server: String
         public let login: String?
@@ -222,14 +240,11 @@ public struct Status: Codable, Hashable, Sendable {
     public let daemon: Daemon?
     public let identity: String?
     public let recoverable: Bool
-    public let pushPending: Bool
-    public let destinations: Destinations?
     public let vaultServer: Server?
     public let problems: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case daemon, identity, recoverable, destinations, problems
-        case pushPending = "push_pending"
+        case daemon, identity, recoverable, problems
         case vaultServer = "vault_server"
     }
 }
@@ -415,6 +430,7 @@ public struct SealView: Codable, Hashable, Sendable, Identifiable {
     public let readers: [Reader]
     /// Why it should be sealed again.
     public let stale: [String]?
+    public let staleError: String?
     public let problems: [Problem]?
 
     public var id: String { project + " " + env }
@@ -422,13 +438,24 @@ public struct SealView: Codable, Hashable, Sendable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case project, root, env, sealed, readers, stale, problems
         case guardLevel = "guard"
+        case staleError = "stale_error"
     }
 
     public var isGuarded: Bool { guardLevel != "none" }
     public var failures: [Problem] { (problems ?? []).filter { $0.level == "fail" } }
     /// Reasons it should be sealed again that this machine could check.
     public var resealReasons: [String] { (stale ?? []).filter { !$0.hasPrefix("could not check") } }
-    public var needsAttention: Bool { !sealed || !resealReasons.isEmpty || !failures.isEmpty }
+    public var uncheckedReasons: [String] {
+        (stale ?? []).filter { $0.hasPrefix("could not check") }
+            + (staleError.map { ["Could not check seal freshness: " + $0] } ?? [])
+    }
+    public var warnings: [Problem] {
+        (problems ?? []).filter { problem in
+            problem.level != "fail" && !pendingReaders.contains { problem.detail == $0.reader + " " + ($0.pending ?? "") }
+        }
+    }
+    public var pendingReaders: [Reader] { readers.filter { $0.pending != nil } }
+    public var needsAttention: Bool { !sealed || !(stale ?? []).isEmpty || staleError != nil || !(problems ?? []).isEmpty || !pendingReaders.isEmpty }
 }
 
 /// `esec-vault security-keys list --json`.
@@ -439,12 +466,14 @@ public struct SecurityKeyList: Codable, Hashable, Sendable {
     public let unprovisioned: [String]
     /// Why plugged-in keys could not be listed.
     public let detect: String?
+    public let checked: Date?
+    public let cached: Bool?
 }
 
 /// A registered security key.
 public struct SecurityKey: Codable, Hashable, Sendable, Identifiable {
     public let id: String
-    /// yubikey or se.
+    /// yubikey, se or passkey.
     public let kind: String
     public let name: String
     public let serial: String?

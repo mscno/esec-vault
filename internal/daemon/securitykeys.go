@@ -102,7 +102,7 @@ func (s *Server) detectOnce(ctx context.Context) {
 	if err != nil {
 		seen = &SeenKeys{}
 	}
-	unprovisioned, _ := securitykey.DetectUnprovisioned(ctx)
+	unprovisioned, _ := securitykey.DetectUnprovisionedWith(ctx, plugged)
 	seen.Checked = time.Now().UTC().Truncate(time.Second)
 	seen.PluggedIn = seen.PluggedIn[:0]
 	seen.Unprovisioned = unprovisioned

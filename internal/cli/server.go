@@ -21,7 +21,6 @@ import (
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/sshagent"
 	"github.com/mscno/esec-vault/internal/storage"
@@ -95,7 +94,9 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	opts := account.LoginOptions{Server: c.Server, Name: c.Name, Method: method, ReplaceIdentity: c.ReplaceIdentity, NoIndex: c.NoIndex, AccountKey: c.AccountKey, SSHKey: sshKey,
 		// The account creation token is read from the environment or a hidden
 		// prompt, never a flag: command lines are visible to other users.
-		BootstrapToken: os.Getenv("ESEC_VAULT_BOOTSTRAP_TOKEN")}
+		BootstrapToken: os.Getenv("ESEC_VAULT_BOOTSTRAP_TOKEN"),
+		CreateIdentity: func() error { return (&IdentityInitCmd{duringLogin: true}).Run(ctx) },
+	}
 	if !c.NoBrowser {
 		opts.OpenBrowser = openBrowser
 	}
@@ -123,17 +124,12 @@ func (c *LoginCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
-// afterKeyChange wakes the daemon, or snapshots directly when none runs, so
-// local backups include keys a command wrote outside the mutation hook.
+// afterKeyChange durably stages changes before waking the server sync worker.
 func afterKeyChange(ctx *cliCtx) {
-	if daemon.Notify() {
-		return
+	if err := account.StagePendingWithLock(ctx.Keyring, ctx.keyringLocked); err != nil {
+		ctx.Logger.Warn("server upload staging pending", "error", err)
 	}
-	if id, err := identity.Load(ctx.Keyring); err == nil {
-		if _, err := remote.BuildSnapshot(id, keystore.New()); err != nil {
-			ctx.Logger.Warn("keys saved, but the local backup snapshot is pending", "error", err)
-		}
-	}
+	daemon.Notify()
 }
 
 func printSync(ctx *cliCtx, res *account.SyncResult) {
@@ -268,6 +264,7 @@ func (c *LogoutCmd) Run(ctx *cliCtx) error {
 	}
 	bg, cancel := timeout(30 * time.Second)
 	defer cancel()
+	_, _ = daemon.Call(bg, daemon.Request{Op: "lock"})
 	if err := a.Logout(bg, c.ForgetDevice); err != nil {
 		return err
 	}

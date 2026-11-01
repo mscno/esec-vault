@@ -27,9 +27,9 @@ func TestSharedEnvironmentRenameCLI(t *testing.T) {
 	gh := "ESEC_VAULT_GITHUB_URL=" + h.GitHub.URL
 	owner := newMachine(t, bin, "owner").with(gh)
 	alice := newMachine(t, bin, "alice").with(gh, "SSH_AUTH_SOCK="+sock)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
-	alice.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
 	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
+	alice.seedIdentity()
 	loginAs(t, h, "alice", alice.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, 2002)), "").wait(true)
 	alice.run("", "access", "prove")
 	repo := t.TempDir()

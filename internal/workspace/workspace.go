@@ -151,17 +151,20 @@ type Status string
 
 // Checkout statuses.
 const (
-	StatusOK    Status = "ok"
-	StatusGone  Status = "gone"  // the directory or its esec.toml is gone
-	StatusMoved Status = "moved" // its esec.toml names another project now
+	StatusOK      Status = "ok"
+	StatusGone    Status = "gone"    // the directory or its esec.toml is gone
+	StatusMoved   Status = "moved"   // its esec.toml names another project now
+	StatusInvalid Status = "invalid" // esec.toml exists but cannot be read or validated
 )
 
 // Check looks at a checkout on disk.
 func Check(c Checkout) Status {
 	f, err := projectfile.Load(c.Path)
 	switch {
-	case err != nil:
+	case errors.Is(err, projectfile.ErrNotFound), errors.Is(err, fs.ErrNotExist):
 		return StatusGone
+	case err != nil:
+		return StatusInvalid
 	case f.Project != c.Project:
 		return StatusMoved
 	}

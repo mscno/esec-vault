@@ -133,12 +133,16 @@ func (c *GuardStatusCmd) Run(_ *cliCtx) error {
 type GuardEnableCmd struct {
 	Env     []string `name:"env" sep:"," help:"Environments to guard, such as prod (default: every environment esec.toml guards)"`
 	Project string   `help:"Project id (default: the checkout here)"`
-	Level   string   `default:"touch" enum:"touch,session" help:"touch: every read needs a touch; session: one touch per broker session"`
+	Level   string   `default:"auto" enum:"auto,touch,session" help:"Approval for every read (touch) or once per broker session (session); auto keeps esec.toml's level, or uses touch for an unguarded environment"`
 }
 
 // Run implements guard enable.
 func (c *GuardEnableCmd) Run(ctx *cliCtx) error {
-	return setGuard(ctx, c.Project, c.Env, c.Level, true)
+	level := c.Level
+	if level == "auto" {
+		level = ""
+	}
+	return setGuard(ctx, c.Project, c.Env, level, true)
 }
 
 // GuardDisableCmd stops guarding environments.
@@ -224,6 +228,11 @@ func guardOne(s *sealing, root string, pf *projectfile.File, env, level string, 
 	} else if err := s.cache(pf.Project, env, k.Private); err != nil {
 		return err
 	}
+	if s.acct != nil {
+		if err := s.acct.RecordGuardChange(pf.Project, e.Key, enable); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("✓ %s %s: %s\n", pf.Project, env, guardText(want))
 	return nil
 }
@@ -231,9 +240,9 @@ func guardOne(s *sealing, root string, pf *projectfile.File, env, level string, 
 func guardText(level string) string {
 	switch level {
 	case projectfile.GuardTouch:
-		return "guarded: every read needs a touch of a reader's security key"
+		return "guarded: every read needs passkey or security-key approval"
 	case projectfile.GuardSession:
-		return "guarded: one touch opens it for a broker session"
+		return "guarded: one approval opens it for a broker session"
 	}
 	return "not guarded: readers' devices open it"
 }

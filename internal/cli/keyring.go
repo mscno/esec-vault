@@ -9,13 +9,12 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mscno/esec"
-	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/storage"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec/pkg/keyringfile"
@@ -58,7 +57,6 @@ func (c *KeyringRepairCmd) Run(_ *cliCtx) error {
 		fmt.Println("Every key is filed under its public key.")
 		return nil
 	}
-	markDirty("keyring repair")
 	return nil
 }
 
@@ -154,7 +152,6 @@ func (c *KeyringMigrateCmd) Run(ctx *cliCtx) error {
 			fmt.Fprintln(os.Stderr, "Imported", p)
 		}
 		if len(projects) > 0 {
-			markDirty("keyring import")
 		}
 		if err != nil {
 			errs = append(errs, err)
@@ -187,7 +184,6 @@ func (c *KeyringAddCmd) Run(ctx *cliCtx) error {
 	if err := ks.Write(project, entries, true); err != nil {
 		return err
 	}
-	markDirty("keyring add")
 	fmt.Printf("ESEC_PUBLIC_KEY=%s\n", pub)
 	return nil
 }
@@ -228,97 +224,71 @@ func (c *KeyringListCmd) Run(ctx *cliCtx) error {
 	return nil
 }
 
-// BackupCmd persists a self-contained snapshot and optionally uploads it.
+// BackupCmd syncs the server and optionally creates a portable recovery export.
 type BackupCmd struct {
-	Out    string `type:"path" help:"Also export this encrypted snapshot"`
-	Verify bool   `help:"Compare the snapshot against the live keyring store"`
-	Push   bool   `help:"Upload and verify a remote copy"`
-	Remote string `help:"Remote name (otherwise env/config default)"`
-	Prune  bool   `help:"With --push, prune older generations"`
-	Async  bool   `help:"With --push, queue the upload in the daemon"`
+	Out    string `type:"path" help:"Create a new encrypted portable recovery file"`
+	Verify bool   `help:"Verify the export's encryption and embedded recovery identity"`
+	Push   bool   `hidden:"" help:"Removed: use sync --server"`
+	Remote string `hidden:"" help:"Removed external backup destination"`
+	Prune  bool   `hidden:"" help:"Removed external backup retention"`
+	Async  bool   `hidden:"" help:"Removed external upload queue"`
 }
 
 // Run backs up without requiring the recovery phrase.
 func (c *BackupCmd) Run(ctx *cliCtx) error {
-	if c.Async && !c.Push {
-		return fmt.Errorf("--async requires --push")
+	if c.Push || c.Remote != "" || c.Prune || c.Async {
+		return fmt.Errorf("external backup sync was removed; run esec vault sync --server; use backup --out FILE for a local export")
 	}
-	if c.Prune && !c.Push {
-		return fmt.Errorf("--prune requires --push")
+	if err := serverSync(ctx, false); err != nil {
+		return fmt.Errorf("vault server backup failed: %w", err)
 	}
 	if c.Out == "" {
-		if c.Push {
-			return (&RemotePushCmd{Prune: c.Prune, Name: c.Remote, Async: c.Async}).Run(ctx)
-		}
-		if handled, err := snapshotThroughDaemon(); handled {
-			return err
-		}
+		fmt.Println("Vault synced to the server. Use --out FILE for an explicit portable recovery export.")
+		return nil
 	}
-	id, err := identity.Load(ctx.Keyring)
+	a, err := openAccount(ctx)
 	if err != nil {
 		return err
 	}
-	snap, err := remote.BuildSnapshot(id, keystore.New())
+	bg, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	blob, err := a.RecoveryExport(bg)
 	if err != nil {
 		return err
 	}
-	if c.Out != "" {
-		if err := storage.Write(c.Out, snap.Blob); err != nil {
-			return err
-		}
+	if err := writeNewPrivate(c.Out, blob); err != nil {
+		return err
 	}
 	if c.Verify {
-		v, err := vaultfile.Open(snap.Blob, &id.Public, &id.Private)
+		id, err := identity.Load(ctx.Keyring)
 		if err != nil {
 			return err
 		}
-		if !vaultfile.HasMasterCopy(snap.Blob) || len(v.Identity) == 0 {
-			return fmt.Errorf("snapshot has no recovery material")
-		}
-		if err := verifyRestored(keystore.New(), v); err != nil {
+		v, err := vaultfile.Open(blob, &id.Public, &id.Private)
+		if err != nil {
 			return err
+		}
+		if !vaultfile.HasMasterCopy(blob) || len(v.Identity) == 0 {
+			return errors.New("export has no recovery copy")
 		}
 	}
 	if !ctx.Quiet {
-		fmt.Fprintf(os.Stderr, "Snapshot generation %d: %d projects, identity included (%s)\n", snap.Generation, snap.Projects, paths.VaultFile())
-	}
-	if c.Push {
-		return (&RemotePushCmd{Name: c.Remote, Prune: c.Prune, Async: c.Async}).Run(ctx)
+		fmt.Fprintln(os.Stderr, "Portable encrypted recovery export saved:", c.Out)
 	}
 	return nil
 }
 
-func snapshotThroughDaemon() (bool, error) {
-	resp, err := daemon.Call(context.Background(), daemon.Request{Op: "ping"})
-	if err != nil {
-		return resp != nil, err
-	}
-	resp, err = daemon.Call(context.Background(), daemon.Request{Op: "snapshot"})
-	if err != nil {
-		return true, err
-	}
-	return true, printJSON(resp.Job)
-}
-
 // RestoreCmd restores keys, with explicit optional settings restoration.
 type RestoreCmd struct {
-	File     string `type:"path" help:"Encrypted snapshot (default: local vault)"`
+	File     string `type:"path" help:"Encrypted recovery export (omit to restore server keyrings)"`
 	Force    bool   `help:"Overwrite conflicting keyrings"`
 	DryRun   bool   `help:"List projects without writing"`
-	Settings bool   `help:"Also restore policy, trust pins and remote config"`
+	Settings bool   `help:"Also restore policy and trust pins"`
 }
 
 // Run validates the entire restore before writing any keys.
 func (c *RestoreCmd) Run(ctx *cliCtx) error {
-	id, err := identity.Load(ctx.Keyring)
-	if err != nil {
-		return err
-	}
-	file := c.File
-	if file == "" {
-		file = paths.VaultFile()
-	}
-	v, err := vaultfile.Read(file, &id.Public, &id.Private)
+	v, err := c.readVault(ctx)
 	if err != nil {
 		return err
 	}
@@ -357,7 +327,6 @@ func (c *RestoreCmd) Run(ctx *cliCtx) error {
 			return err
 		}
 	}
-	markDirty("restore")
 	return verifyRestored(ks, v)
 }
 
@@ -403,13 +372,12 @@ func validateRestore(v *vaultfile.Vault) error {
 			}
 		}
 	}
-	for name, data := range v.Files {
+	for name := range v.Files {
 		switch name {
 		case "policy.toml", "trusted.toml":
 		case "remote.toml":
-			if err := remote.CheckNoSecrets(data); err != nil {
-				return err
-			}
+			// Legacy backups remain readable, but external sync configuration is obsolete.
+			delete(v.Files, name)
 		default:
 			return fmt.Errorf("unsupported settings file in backup: %s", name)
 		}
@@ -460,4 +428,31 @@ func (c *RecoverCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	return (&RestoreCmd{File: c.File, Force: c.Force, Settings: c.Settings}).Run(ctx)
+}
+
+func (c *RestoreCmd) readVault(ctx *cliCtx) (*vaultfile.Vault, error) {
+	id, err := identity.Load(ctx.Keyring)
+	if err != nil {
+		return nil, err
+	}
+	file := c.File
+	var v *vaultfile.Vault
+	if file == "" {
+		a, err := openAccount(ctx)
+		if err != nil {
+			return nil, err
+		}
+		bg, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		v, err = a.ReadVault(bg)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		v, err = vaultfile.Read(file, &id.Public, &id.Private)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
 }

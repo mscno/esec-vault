@@ -1,7 +1,6 @@
-// Package verify checks that no key is ever lost: every public key that any
-// secrets file uses, in a checkout or anywhere in its git history, must have
-// its private key on this device and in at least one other place (the vault
-// server, a backup), and no key may serve two projects.
+// Package verify checks that keys are preserved in signed repository seals
+// with recovery recipients, or in legacy keyrings and backups. It checks
+// current files and encrypted values in Git history separately.
 package verify
 
 import (
@@ -79,6 +78,9 @@ type Report struct {
 	// usually another person's project (a clone, an environment you have
 	// no access to), not a loss. They are not in Problems.
 	Unheld int `json:"unheld"`
+	// HistoryMissing counts historical-only keys not found in the checked
+	// sources. This is a recovery warning, not proof current files cannot open.
+	HistoryMissing int `json:"history_missing,omitempty"`
 }
 
 // OK reports whether every key is safe.
@@ -243,7 +245,7 @@ func (r *repo) history(ctx context.Context) ([]HistoryKey, error) {
 		return nil, err
 	}
 	head, _ := git(ctx, r.top, nil, "rev-parse", "HEAD")
-	stamp := fmt.Sprintf("%x", sha256.Sum256([]byte(refs+head)))
+	stamp := fmt.Sprintf("%x", sha256.Sum256([]byte("encrypted-values-v2\n"+refs+head)))
 	if cached, ok := loadHistory(r.common, stamp); ok {
 		return cached, nil
 	}
@@ -294,17 +296,28 @@ func (r *repo) history(ctx context.Context) ([]HistoryKey, error) {
 			if !ok {
 				continue
 			}
-			format, _ := fileutils.ParseFormat(filepath.Base(b.path))
-			pub, err := esec.ExtractPublicKey(data, esec.FileFormat(format))
-			if err != nil {
-				continue
+			if key, err := historicalKey(b.path, b.commit, data); err == nil && key != nil {
+				out = append(out, *key)
 			}
-			env, _, _ := secretfile.EnvOf(b.path)
-			out = append(out, HistoryKey{Public: fmt.Sprintf("%x", pub[:]), Env: env, Path: b.path, Commit: b.commit})
 		}
 	}
 	saveHistory(r.common, stamp, out)
 	return out, nil
+}
+
+func historicalKey(path, commit string, data []byte) (*HistoryKey, error) {
+	env, format, err := secretfile.EnvOf(path)
+	if err != nil {
+		return nil, err
+	}
+	if encrypted, err := secretfile.HasEncrypted(data, format); err != nil || !encrypted {
+		return nil, err
+	}
+	pub, err := esec.ExtractPublicKey(data, esec.FileFormat(format))
+	if err != nil {
+		return nil, err
+	}
+	return &HistoryKey{Public: fmt.Sprintf("%x", pub[:]), Env: env, Path: path, Commit: commit}, nil
 }
 
 // nextBlob reads one object of git cat-file --batch output; ok is false
@@ -404,8 +417,12 @@ func Build(uses map[string][]Use, sources []Source) *Report { //nolint:gocyclo /
 	sort.Strings(pubs)
 	for _, pub := range pubs {
 		k := Key{Public: pub, Uses: uses[pub], Held: map[string][]string{}}
+		historical := len(k.Uses) > 0
 		projects := map[string]bool{}
 		for _, u := range k.Uses {
+			if u.Commit == "" {
+				historical = false
+			}
 			if u.Project != "" {
 				projects[u.Project] = true
 			}
@@ -440,18 +457,22 @@ func Build(uses map[string][]Use, sources []Source) *Report { //nolint:gocyclo /
 			rep.Keys = append(rep.Keys, k)
 			continue
 		}
+		sealed := len(k.Held[SourceSealed]) > 0
 		switch {
+		case k.Places == 0 && historical:
+			k.Problems = append(k.Problems, "historical key not found in checked repository seals, keyrings or backups; current files do not use it")
+			rep.HistoryMissing++
 		case k.Places == 0:
-			k.Problems = append(k.Problems, "lost: no copy of its private key in any place checked; files encrypted to it cannot be decrypted")
+			k.Problems = append(k.Problems, "key not found in checked repository seals, keyrings or backups")
 			rep.Lost++
-		case len(k.Held[sources[0].Name]) == 0:
+		case !sealed && len(k.Held[sources[0].Name]) == 0:
 			k.Problems = append(k.Problems, "not on this device")
 		}
-		if k.Places == 1 && checked > 1 {
+		if !sealed && k.Places == 1 && checked > 1 {
 			k.Problems = append(k.Problems, "in one place only: "+onlyPlace(k.Held))
 		}
-		if checked == 1 && k.Places == 1 {
-			k.Problems = append(k.Problems, "in one place only (no vault server or backup to check: esec vault login, or esec vault remote add)")
+		if !sealed && checked == 1 && k.Places == 1 {
+			k.Problems = append(k.Problems, "in one place only (no vault server copy to check: esec vault login, then esec vault sync --server)")
 		}
 		if len(projects) > 1 {
 			names := make([]string, 0, len(projects))
@@ -459,7 +480,11 @@ func Build(uses map[string][]Use, sources []Source) *Report { //nolint:gocyclo /
 				names = append(names, p)
 			}
 			sort.Strings(names)
-			k.Problems = append(k.Problems, "one key serves several projects: "+strings.Join(names, ", ")+"; give each its own (esec vault env rotate)")
+			if historical {
+				k.Problems = append(k.Problems, "historical key was used by several projects: "+strings.Join(names, ", "))
+			} else {
+				k.Problems = append(k.Problems, "one key serves several projects: "+strings.Join(names, ", ")+"; give each its own (esec vault env rotate)")
+			}
 		}
 		if len(k.Problems) > 0 {
 			rep.Problems++

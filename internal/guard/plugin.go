@@ -9,7 +9,7 @@ import (
 )
 
 // pluginNames are the hardware plugins the guard knows.
-var pluginNames = []string{"yubikey", "se"}
+var pluginNames = []string{"passkey", "yubikey", "se"}
 
 // CheckPlugin finds the age plugin of a hardware holder and checks that
 // only its owner (the person, or root) can replace it: the program itself

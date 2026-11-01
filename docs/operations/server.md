@@ -8,7 +8,8 @@ response for `esec-vault-server`. For the design, see
 
 | Stored | Readable by the server? |
 |---|---|
-| Vault blobs (all environment private keys) | No. Sealed to your user key and signed by it. |
+| Vault manifests (keys, device settings, project revision metadata and object keys) | No. Sealed to your user key and signed by it. |
+| Immutable project-file objects in `vault_objects` | No. Independently encrypted; the manifest contains their keys. |
 | Device boxes (your user key, one per device) | No. Sealed to each device's key. |
 | Master-wrapped identity | No. Needs your recovery phrase. |
 | SSH-agent unlock slots | No. Needs a signature from your SSH key. |
@@ -20,6 +21,13 @@ response for `esec-vault-server`. For the design, see
 
 The server never receives a GitHub token for storage. It uses the token
 once at sign-in to read the numeric user id and login, then discards it.
+
+Format-3 storage requires a server-first upgrade; see the
+[storage rollout](../design/server-storage.md#rollout). A consistent backup of
+the whole SQLite database includes manifests and file objects. Verify replication
+and restore of both; a successful client sync alone does not establish disaster
+recovery. `esec vault drill` authenticates every referenced encrypted file object
+in addition to its existing phrase and key checks.
 
 ## Step 1: Create a GitHub OAuth app
 

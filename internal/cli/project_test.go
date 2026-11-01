@@ -75,7 +75,7 @@ func TestProjectInitReportsDirectoryAndSource(t *testing.T) {
 }
 
 func TestProjectInitMissingOriginReportsError(t *testing.T) {
-	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	enrollFileAccount(t, t.TempDir())
 	t.Setenv("ESEC_KEYRING_DIR", "")
 	bin := buildCLI(t)
 	for _, empty := range []bool{false, true} {
@@ -96,7 +96,7 @@ func TestProjectInitMissingOriginReportsError(t *testing.T) {
 }
 
 func TestEnvShowKeyRequiresConfirmation(t *testing.T) {
-	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
+	enrollFileAccount(t, t.TempDir())
 	t.Setenv("ESEC_KEYRING_DIR", "")
 	repo := t.TempDir()
 	if err := projectfile.WriteProjectFile(repo, "org/app"); err != nil {

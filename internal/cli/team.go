@@ -509,7 +509,6 @@ func (c *TeamSyncCmd) Run(ctx *cliCtx) error {
 	}
 	printTeamSync(res)
 	if len(res.Imported) > 0 {
-		markDirty("team sync")
 	}
 	return nil
 }

@@ -13,12 +13,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mscno/esec-vault/internal/passkeyguard"
 )
 
 // Security key kinds, by the age plugin that serves them.
 const (
 	SecurityKeyYubiKey = "yubikey"
 	SecurityKeySE      = "se"
+	SecurityKeyPasskey = "passkey"
 )
 
 // Link types for security keys.
@@ -68,7 +71,7 @@ type SecurityKeyState struct {
 
 var (
 	securityKeyID        = regexp.MustCompile(`^[a-z0-9][a-z0-9:._-]{0,127}$`)
-	securityKeyRecipient = regexp.MustCompile(`^age1(yubikey|se|tag|tagpq)1[02-9ac-hj-np-z]{20,}$`)
+	securityKeyRecipient = regexp.MustCompile(`^age1(yubikey|se|passkey|tag|tagpq)1[02-9ac-hj-np-z]{20,}$`)
 )
 
 // ValidateSecurityKey checks a security key's fields.
@@ -77,12 +80,19 @@ func ValidateSecurityKey(k SecurityKey) error {
 		return fmt.Errorf("invalid security key id %q", k.ID)
 	}
 	switch k.Kind {
-	case SecurityKeyYubiKey, SecurityKeySE:
+	case SecurityKeyYubiKey, SecurityKeySE, SecurityKeyPasskey:
 	default:
 		return fmt.Errorf("unknown security key kind %q", k.Kind)
 	}
 	if len(k.Recipient) > 4096 || !securityKeyRecipient.MatchString(k.Recipient) {
 		return fmt.Errorf("not a hardware age recipient: %.24q", k.Recipient)
+	}
+	if k.Kind == SecurityKeyPasskey {
+		if _, err := passkeyguard.ParseRecipient(k.Recipient); err != nil {
+			return fmt.Errorf("invalid passkey recipient: %w", err)
+		}
+	} else if strings.HasPrefix(k.Recipient, "age1passkey1") {
+		return fmt.Errorf("passkey recipient requires passkey kind")
 	}
 	if err := ValidDeviceName(k.Name); err != nil {
 		return fmt.Errorf("security key name: %w", err)

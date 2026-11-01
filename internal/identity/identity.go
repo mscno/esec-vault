@@ -63,7 +63,7 @@ var derivationSalt = []byte("esec-identity-derivation-v1")
 var ErrExists = errors.New("identity already exists")
 
 // ErrNotFound is returned when no identity is available.
-var ErrNotFound = errors.New("no identity found; run 'esec-vault identity init' or 'esec-vault identity recover'")
+var ErrNotFound = errors.New("no identity found; run 'esec vault login SERVER' (or 'esec vault login SERVER --recover')")
 
 // ErrPassphraseRequired is returned when an identity was created with a
 // passphrase and none was supplied.

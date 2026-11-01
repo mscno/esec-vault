@@ -332,7 +332,7 @@ func (s *sealing) openOnce(root string, pf *projectfile.File, env, why string) (
 	} else if recipients, err = mySecurityKeys(s.bg(), s.acct); err != nil {
 		return nil, err
 	}
-	text := fmt.Sprintf("Asked by: %s\n\nOpen: %s %s\nFor: %s\n\nAllow, then touch your security key, only if you started this.", caller.Describe(nil), pf.Project, env, why)
+	text := fmt.Sprintf("Asked by: %s\n\nOpen: %s %s\nFor: %s", caller.Describe(nil), pf.Project, env, why)
 	p, err := guard.DefaultPresence.OpenSeal(data, pf.Project, env, e.Key, recipients, "esec: open a guarded key?", text)
 	if err != nil {
 		return nil, err

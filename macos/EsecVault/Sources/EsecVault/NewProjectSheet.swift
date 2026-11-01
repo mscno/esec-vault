@@ -9,10 +9,10 @@ struct NewProjectSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State var draft: ProjectDraft
     @State private var envText = "dev, prod"
-    @State private var guardProd = true
+    @State private var guarded: Set<String> = ["prod"]
 
     private var envs: [String] {
-        envText.split(whereSeparator: { $0 == "," || $0 == " " }).map { $0.lowercased() }.filter { !$0.isEmpty }
+        EnvironmentName.parseList(envText)
     }
 
     private var guardReady: Bool { store.guardStatus?.setUp == true }
@@ -35,8 +35,17 @@ struct NewProjectSheet: View {
                     Text("YAML (eyaml)").tag("eyaml")
                     Text("TOML (etoml)").tag("etoml")
                 }
-                Toggle("Guard prod with my security key", isOn: $guardProd)
-                    .disabled(!guardReady || !envs.contains("prod"))
+                if EnvironmentName.isValidList(envs) {
+                    ForEach(envs, id: \.self) { env in
+                        Toggle("Require approval for every \(env) read", isOn: Binding(get: { guarded.contains(env) }, set: { on in
+                            if on { guarded.insert(env) } else { guarded.remove(env) }
+                        }))
+                        .disabled(!guardReady)
+                    }
+                } else {
+                    Text("Use unique names with dot-separated lowercase letters and digits, such as dev, api.prod.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
             } header: {
                 Text("New project")
             } footer: {
@@ -50,17 +59,17 @@ struct NewProjectSheet: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Create") {
                     draft.envs = envs
-                    draft.guarded = guardProd && guardReady && envs.contains("prod") ? ["prod"] : []
+                    draft.guarded = guardReady ? envs.filter { guarded.contains($0) } : []
                     Task { if await store.newProject(draft) { dismiss() } }
                 }
-                .disabled(envs.isEmpty || store.busy != nil)
+                .disabled(!EnvironmentName.isValidList(envs) || store.busy != nil)
             }
         }
     }
 
     private var footer: String {
         var text = "Writes esec.toml and an encrypted secrets file per environment; commit them. Each key is stored on your vault server or backup before a file uses it."
-        if !guardReady { text += " To guard prod, set up the guard first (Overview)." }
+        if !guardReady { text += " To guard environments, add a passkey or security key first (Security Keys)." }
         return text
     }
 

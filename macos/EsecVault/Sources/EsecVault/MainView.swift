@@ -6,6 +6,7 @@ enum Selection: Hashable {
     case health
     case activity
     case securityKeys
+	case storage
     case project(String)
 }
 
@@ -31,6 +32,8 @@ struct MainView: View {
                 Label("Security Keys", systemImage: "key.horizontal")
                     .badge(store.unregisteredKeys)
                     .tag(Selection.securityKeys)
+                Label("Server Vault", systemImage: "externaldrive.badge.icloud")
+                    .tag(Selection.storage)
                 ForEach(store.namespaces, id: \.name) { group in
                     Section(group.name) {
                         ForEach(group.projects) { p in
@@ -61,6 +64,8 @@ struct MainView: View {
                 ActivityView()
             case .securityKeys:
                 SecurityKeysView()
+            case .storage:
+                VaultStorageView()
             default:
                 HealthView()
             }
@@ -77,7 +82,7 @@ struct MainView: View {
                     .help("Find every checkout (a folder with esec.toml) under a folder, such as ~/src")
                 Button { pickFolder(scan: false) } label: { Label("Add Checkout", systemImage: "folder.badge.plus") }
                     .help("Remember one checkout")
-                Button { Task { await store.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                Button { Task { await store.refresh(full: true) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
             }
         }
         .safeAreaInset(edge: .bottom) {

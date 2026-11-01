@@ -142,6 +142,11 @@ func TestHelpAndUsageStreams(t *testing.T) {
 	}
 
 	_, errOut, code = runIn(dir, "", "env", "list")
+	if code != 1 || !strings.Contains(errOut, "login") {
+		t.Fatalf("unsigned vault operation: %d %s", code, errOut)
+	}
+	enrollFileAccount(t, home)
+	_, errOut, code = runIn(dir, "", "env", "list")
 	if code != 1 || !strings.Contains(errOut, "hint: no esec.toml") {
 		t.Fatalf("env list outside a project: exit %d\n%s", code, errOut)
 	}

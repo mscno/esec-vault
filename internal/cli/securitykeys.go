@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/chain"
+	"github.com/mscno/esec-vault/internal/daemon"
+	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/securitykey"
 )
@@ -25,11 +28,12 @@ import (
 // SecurityKeysCmd manages the security keys (YubiKeys) that open your
 // guarded environments.
 type SecurityKeysCmd struct {
-	List   SecurityKeysListCmd   `cmd:"" default:"withargs" help:"Your security keys, and the YubiKeys plugged in now (default)."`
-	Add    SecurityKeysAddCmd    `cmd:"" help:"Register the plugged-in YubiKeys, so seals made for you include them."`
-	Remove SecurityKeysRemoveCmd `cmd:"" help:"Stop a security key opening new seals, such as a lost one."`
-	Setup  SecurityKeysSetupCmd  `cmd:"" help:"Give a plugged-in YubiKey an age identity (touch for every use), then register it."`
-	Test   SecurityKeysTestCmd   `cmd:"" help:"Prove a security key still decrypts: encrypt a random value to it and open it (a touch)."`
+	List    SecurityKeysListCmd    `cmd:"" default:"withargs" help:"Your security keys, and the YubiKeys plugged in now (default)."`
+	Add     SecurityKeysAddCmd     `cmd:"" help:"Register the plugged-in YubiKeys, so seals made for you include them."`
+	Remove  SecurityKeysRemoveCmd  `cmd:"" help:"Stop a security key opening new seals, such as a lost one."`
+	Setup   SecurityKeysSetupCmd   `cmd:"" help:"Give a plugged-in YubiKey an age identity (touch for every use), then register it."`
+	Test    SecurityKeysTestCmd    `cmd:"" help:"Prove a security key still decrypts: encrypt a random value to it and open it (a touch)."`
+	Passkey SecurityKeysPasskeyCmd `cmd:"" help:"Add a passkey through the native macOS sheet (Apple Passwords, password manager or FIDO2 security key)."`
 }
 
 // securityKeysChanged runs after keys are added or removed: it reseals the
@@ -59,7 +63,8 @@ func myKeys(bg context.Context, ctx *cliCtx) ([]chain.SecurityKey, *account.Acco
 
 // SecurityKeysListCmd lists security keys.
 type SecurityKeysListCmd struct {
-	JSON bool `help:"Print JSON, for scripts, agents and the Mac app"`
+	JSON   bool `help:"Print JSON, for scripts, agents and the Mac app"`
+	Cached bool `help:"Use the background service's last YubiKey scan without opening a smart card"`
 }
 
 type securityKeyView struct {
@@ -86,7 +91,9 @@ type securityKeysView struct {
 	Unregistered  []unregisteredKeyView `json:"unregistered"`
 	Unprovisioned []string              `json:"unprovisioned"`
 	// Detect says why plugged-in keys could not be listed, if so.
-	Detect string `json:"detect,omitempty"`
+	Detect  string    `json:"detect,omitempty"`
+	Checked time.Time `json:"checked,omitzero"`
+	Cached  bool      `json:"cached,omitempty"`
 }
 
 // Run implements security-keys list.
@@ -101,10 +108,7 @@ func (c *SecurityKeysListCmd) Run(ctx *cliCtx) error {
 	if a != nil {
 		v.Source = "account"
 	}
-	plugged, detectErr := securitykey.Detect(bg)
-	if detectErr != nil {
-		v.Detect = detectErr.Error()
-	}
+	plugged := v.loadDetection(bg, c.Cached)
 	in := map[string]bool{}
 	for _, d := range plugged {
 		in[d.Recipient] = true
@@ -113,7 +117,7 @@ func (c *SecurityKeysListCmd) Run(ctx *cliCtx) error {
 	registered := map[string]bool{}
 	for _, k := range keys {
 		registered[k.Recipient] = true
-		kv := securityKeyView{ID: k.ID, Kind: k.Kind, Name: k.Name, Serial: k.Serial, Recipient: k.Recipient, PluggedIn: in[k.Recipient]}
+		kv := securityKeyView{ID: k.ID, Kind: k.Kind, Name: k.Name, Serial: k.Serial, Recipient: k.Recipient, PluggedIn: in[k.Recipient] || k.Kind == chain.SecurityKeyPasskey}
 		if reg != nil {
 			for _, e := range reg.Keys {
 				if e.Recipient == k.Recipient && !e.Tested.IsZero() {
@@ -129,14 +133,45 @@ func (c *SecurityKeysListCmd) Run(ctx *cliCtx) error {
 			v.Unregistered = append(v.Unregistered, unregisteredKeyView{Detected: d, Command: "esec vault security-keys add"})
 		}
 	}
-	if none, err := securitykey.DetectUnprovisioned(bg); err == nil {
-		v.Unprovisioned = append(v.Unprovisioned, none...)
-	}
 	if c.JSON {
 		return printJSON(v)
 	}
 	printSecurityKeys(v)
 	return nil
+}
+
+// loadDetection reuses the daemon's scan for metadata-only callers. It never
+// opens a hardware tool on the cached path, even when no recent cache exists.
+func (v *securityKeysView) loadDetection(ctx context.Context, cached bool) []securitykey.Detected {
+	if cached {
+		v.Cached = true
+		seen, err := daemon.LoadSeenKeys()
+		if err != nil {
+			v.Detect = err.Error()
+			return nil
+		}
+		v.Checked = seen.Checked
+		if seen.Checked.IsZero() || time.Since(seen.Checked) >= 2*time.Minute {
+			v.Detect = "No recent YubiKey scan. Scan connected keys to check availability."
+			return nil
+		}
+		plugged := make([]securitykey.Detected, 0, len(seen.PluggedIn))
+		for _, key := range seen.PluggedIn {
+			plugged = append(plugged, key.Detected)
+		}
+		v.Unprovisioned = append(v.Unprovisioned, seen.Unprovisioned...)
+		return plugged
+	}
+	plugged, err := securitykey.Detect(ctx)
+	if err != nil {
+		v.Detect = err.Error()
+		return nil
+	}
+	v.Checked = time.Now().UTC().Truncate(time.Second)
+	if none, err := securitykey.DetectUnprovisionedWith(ctx, plugged); err == nil {
+		v.Unprovisioned = append(v.Unprovisioned, none...)
+	}
+	return plugged
 }
 
 func printSecurityKeys(v securityKeysView) {
@@ -179,6 +214,7 @@ type SecurityKeysAddCmd struct {
 	Recipient string `help:"Register this recipient instead of the plugged-in YubiKeys (age1yubikey1…, age1se1…)"`
 	Kind      string `enum:"yubikey,se" default:"yubikey" help:"With --recipient: yubikey or se (Secure Enclave)"`
 	Serial    string `help:"With --recipient: the YubiKey's serial"`
+	Slot      string `help:"With --recipient and --serial: the detected age slot"`
 }
 
 // Run implements security-keys add.
@@ -195,7 +231,7 @@ func (c *SecurityKeysAddCmd) Run(ctx *cliCtx) error {
 	}
 	var add []chain.SecurityKey
 	if c.Recipient != "" {
-		add = append(add, manualKey(c.Kind, c.Recipient, c.Name, c.Serial))
+		add = append(add, c.keyFromRecipient())
 	} else {
 		plugged, err := securitykey.Detect(bg)
 		if err != nil {
@@ -244,6 +280,14 @@ func (c *SecurityKeysAddCmd) Run(ctx *cliCtx) error {
 		return fmt.Errorf("registered, but resealing guarded environments failed: %w; run esec vault seal sync", err)
 	}
 	return nil
+}
+
+func (c *SecurityKeysAddCmd) keyFromRecipient() chain.SecurityKey {
+	key := manualKey(c.Kind, c.Recipient, c.Name, c.Serial)
+	if c.Kind == chain.SecurityKeyYubiKey && c.Serial != "" && c.Slot != "" {
+		key.ID = securitykey.ID(c.Serial, c.Slot)
+	}
+	return key
 }
 
 // manualKey is a security key given by its recipient.
@@ -440,7 +484,7 @@ func (c *SecurityKeysTestCmd) Run(ctx *cliCtx) error {
 			in[d.Recipient] = true
 		}
 		for _, k := range keys {
-			if in[k.Recipient] {
+			if in[k.Recipient] || (k.Kind == chain.SecurityKeyPasskey && runtime.GOOS == "darwin") {
 				test = append(test, k)
 			}
 		}
@@ -453,7 +497,11 @@ func (c *SecurityKeysTestCmd) Run(ctx *cliCtx) error {
 		return err
 	}
 	for _, k := range test {
-		fmt.Printf("Testing %s: touch it when it blinks…\n", k.Name)
+		if k.Kind == chain.SecurityKeyPasskey {
+			fmt.Printf("Testing %s: approve in the macOS passkey sheet…\n", k.Name)
+		} else {
+			fmt.Printf("Testing %s: finish any PIN prompt, then touch it when it blinks…\n", k.Name)
+		}
 		if err := testDecrypt(k); err != nil {
 			return fmt.Errorf("%s did not decrypt: %w", k.Name, err)
 		}
@@ -469,8 +517,13 @@ func (c *SecurityKeysTestCmd) Run(ctx *cliCtx) error {
 
 // testDecrypt encrypts a random value to k and decrypts it with its plugin.
 var testDecrypt = func(k chain.SecurityKey) error {
-	ui := plugin.NewTerminalUI(func(f string, v ...any) { fmt.Fprintf(os.Stderr, f+"\n", v...) },
-		func(f string, v ...any) { fmt.Fprintf(os.Stderr, "! "+f+"\n", v...) })
+	ui := guard.DefaultPresence.ClientUI()
+	// YubiKey identities must name the detected serial, slot and key tag.
+	// An empty plugin identity fails before the key can request a touch.
+	ids, err := guard.Identities([]string{k.Recipient}, ui)
+	if err != nil {
+		return err
+	}
 	r, err := plugin.NewRecipient(k.Recipient, ui)
 	if err != nil {
 		return err
@@ -490,11 +543,7 @@ var testDecrypt = func(k chain.SecurityKey) error {
 	if err := w.Close(); err != nil {
 		return err
 	}
-	id, err := plugin.NewIdentityWithoutData(k.Kind, ui)
-	if err != nil {
-		return err
-	}
-	out, err := age.Decrypt(&buf, id)
+	out, err := age.Decrypt(&buf, ids...)
 	if err != nil {
 		return err
 	}

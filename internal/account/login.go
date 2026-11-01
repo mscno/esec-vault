@@ -36,6 +36,9 @@ const (
 
 // LoginOptions configures Login.
 type LoginOptions struct {
+	// CreateIdentity runs only after the server confirms this is a new account.
+	CreateIdentity func() error
+
 	Server          string
 	Name            string
 	Method          string
@@ -349,8 +352,14 @@ func (a *Account) enroll(ctx context.Context, info wire.DeviceInfo, opts LoginOp
 // and this device as the first device, and uploads the first vault.
 func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *envelope.Envelope, opts LoginOptions) error {
 	id, upgraded, err := identity.EnsureSigningKey(a.KR)
+	if errors.Is(err, identity.ErrNotFound) && opts.CreateIdentity != nil {
+		if err := opts.CreateIdentity(); err != nil {
+			return err
+		}
+		id, upgraded, err = identity.EnsureSigningKey(a.KR)
+	}
 	if errors.Is(err, identity.ErrNotFound) {
-		return errors.New("no vault account exists for this GitHub user yet, and this machine has no identity to create one; run 'esec vault identity init' (or 'identity recover'), then 'esec vault login' again")
+		return errors.New("this new account needs an identity; run esec vault login interactively")
 	}
 	if err != nil {
 		return err
@@ -406,7 +415,7 @@ func (a *Account) createAccount(ctx context.Context, d chain.Device, proof *enve
 	if err != nil {
 		return fmt.Errorf("create account: %w", err)
 	}
-	if err := saveBase(put.Blob); err != nil {
+	if err := a.saveBase(put.Blob, id); err != nil {
 		return err
 	}
 	a.State.pin(st2)

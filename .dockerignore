@@ -1,0 +1,14 @@
+.git
+.aws
+.codex
+.agents
+.env*
+**/.DS_Store
+macos
+esec-vault
+go.work
+go.work.sum
+*.keyring
+coverage.out
+dist
+tmp

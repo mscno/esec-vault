@@ -204,7 +204,7 @@ func requireCurrentWith(m *service.Manager, source string) error {
 	if !m.Installed() {
 		return nil
 	}
-	same, err := m.Current(source)
+	same, err := m.BinaryCurrent(source)
 	if err != nil {
 		return err
 	}
@@ -246,28 +246,44 @@ func waitDaemonStopped(ctx context.Context) error {
 // DaemonStatusCmd reports OS ownership and socket state.
 type DaemonStatusCmd struct{}
 
+// daemonStatusView keeps service installation separate from the broker's
+// reachability and session. A stopped service still reports its build status.
+type daemonStatusView struct {
+	*daemon.Response
+
+	Installed bool   `json:"installed"`
+	Reachable bool   `json:"reachable"`
+	Managed   bool   `json:"managed"`
+	Unit      string `json:"unit,omitempty"`
+}
+
 // Run prints the service and session status.
 func (c *DaemonStatusCmd) Run(app *cliCtx) error {
+	m, err := service.New()
+	if err != nil {
+		return err
+	}
+	v := daemonStatusView{Response: &daemon.Response{CLI: app.Version}, Installed: m.Installed(), Managed: daemon.ManagedSocket(), Unit: m.Manifest.Unit}
+	if v.Installed {
+		if exe, exeErr := os.Executable(); exeErr == nil {
+			v.UpToDate, _ = m.BinaryCurrent(exe)
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	resp, err := daemon.Call(ctx, daemon.Request{Op: "status"})
 	if err == nil {
+		managedCurrent := v.UpToDate
+		v.Response, v.Reachable = resp, true
 		resp.CLI = app.Version
-		resp.UpToDate = resp.Version != "" && resp.Version == app.Version
+		resp.UpToDate = resp.Version != "" && resp.Version == app.Version && (!v.Installed || managedCurrent)
 		if !resp.UpToDate {
 			fmt.Fprintf(os.Stderr, "! daemon runs %s but this CLI is %s; run: esec-vault daemon upgrade\n", orUnknown(resp.Version), orUnknown(app.Version))
 		}
-		return printJSON(resp)
+		return printJSON(v)
 	}
-	m, managerErr := service.New()
-	if managerErr != nil {
-		return managerErr
-	}
-	_, statErr := os.Stat(filepath.Join(paths.Home(), "daemon-install.json"))
-	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return statErr
-	}
-	return printJSON(map[string]any{"installed": statErr == nil, "reachable": false, "unit": m.Manifest.Unit, "cli_version": app.Version, "up_to_date": false, "error": err.Error()})
+	v.Error = err.Error()
+	return printJSON(v)
 }
 
 // orUnknown labels a missing build string so status output stays unambiguous
@@ -293,7 +309,7 @@ func (c *UnlockCmd) Run(app *cliCtx) error {
 	// Say what unlocking does not need: a YubiKey touched now, with nothing
 	// waiting for it, types its one-time password into the terminal.
 	fmt.Fprintln(os.Stderr, "Unlocked until", resp.Expires.Format(time.RFC3339)+"; unlocking needs no security key.")
-	fmt.Fprintln(os.Stderr, "A guarded environment asks (a dialog, then a touch) when read with esec vault decrypt ENV or esec vault run ENV -- COMMAND;")
+	fmt.Fprintln(os.Stderr, "A guarded environment requests passkey or security-key approval when read with esec vault decrypt ENV or esec vault run ENV -- COMMAND;")
 	fmt.Fprintln(os.Stderr, "one guarded for the session then stays open, without asking, until the vault locks.")
 	return nil
 }

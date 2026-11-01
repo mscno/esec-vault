@@ -309,6 +309,8 @@ func (s *Server) routes() {
 	m.Handle("POST /v1/devices/{id}/suspend", s.api(false, s.apiSuspend))
 	m.Handle("GET /v1/vault", s.api(false, s.apiVaultGet))
 	m.Handle("PUT /v1/vault", s.api(false, s.apiVaultPut))
+	m.Handle("PUT /v1/vault/objects/{id}", s.api(false, s.apiVaultObjectPut))
+	m.Handle("GET /v1/vault/objects/{id}", s.api(false, s.apiVaultObjectGet))
 	m.Handle("GET /v1/vault/versions", s.api(false, s.apiVaultVersions))
 	m.Handle("GET /v1/vault/versions/{version}", s.api(false, s.apiVaultVersion))
 	m.Handle("DELETE /v1/agent-slots/{id}", s.api(false, s.apiDisableSlot))

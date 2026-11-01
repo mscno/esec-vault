@@ -1,3 +1,46 @@
+# Unreleased
+
+### Server-first vault storage
+
+- Store device policies, trust settings, complete project revisions, and sealed
+  key recovery material in the encrypted server vault alongside historical keys.
+- Replace automatic local snapshots with a durable encrypted upload queue; retain
+  explicit portable recovery exports and legacy backup imports.
+- Add project cache controls, verified keyring import/move, standalone key export,
+  revision restore, key retirement/tombstones, and a native Server Vault page.
+- Fence older-format writers after migration and preserve encrypted file objects
+  through user-key rotation.
+
+
+- **Native secret-file windows.** Open project files directly, decrypt in memory,
+  show values on compact single-line rows, toggle visibility, filter keys, and
+  save edits encrypted. Compare keys across environments in ordered columns:
+  development, staging, production, then other environments alphabetically.
+  Saves detect stale files, preserve permissions and support empty/multiline
+  values; dotenv and YAML support adding keys. Unguarded local files use the
+  same keys as `esec decrypt`, without a broker session or policy rule.
+  Guarded reads retain broker approval and explicit deny rules; all viewer
+  reads retain login and audit checks. Update the background service with the app.
+
+- **Vault-server accounts are required.** Normal vault operations require a
+  confirmed device and a stored sign-in session. Login creates a first identity
+  only after the server confirms this is a new account. Setup, diagnostics,
+  recovery and stopping services remain available before sign-in. Workloads
+  keep authenticating with their own server credentials. Broker reads stop
+  after logout, including keys already cached in memory.
+- **Remove client external backup sync.** Remove rclone/Cloudflare R2, restic,
+  file destinations, custom adapters, upload workers and `remote` commands.
+  The vault server stores encrypted key backups and identity recovery data.
+  Upgrade the daemon after installing so an older upload worker stops.
+- **Keep recovery and local exports.** `backup --out FILE` syncs the server
+  before exporting an encrypted snapshot. Existing backup files remain readable;
+  obsolete `remote.toml` settings are ignored. Existing cloud objects,
+  credentials and snapshots are never deleted by the upgrade.
+- **Check the server copy.** `sync` defaults to the server. Recovery drills
+  verify and open its signed backup. Health checks no longer require a second
+  external backup destination. Keep repository seals for guarded keys and
+  back up the server database separately.
+
 # v0.24.2
 
 Hardening of guarded reads and `esec vault decrypt`. Only clients change; the

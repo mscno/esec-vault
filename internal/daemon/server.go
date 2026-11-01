@@ -35,6 +35,10 @@ func (s *Server) serverLoop(ctx context.Context) {
 	retry := time.Minute
 	seenPending := map[string]bool{}
 	for ctx.Err() == nil {
+		if account.RequireLogin(s.Keyring) != nil {
+			s.sleep(ctx, s.Interval)
+			continue
+		}
 		a, err := account.Open(s.Keyring, daemonUI{s})
 		if errors.Is(err, account.ErrNotLoggedIn) {
 			s.sleep(ctx, s.Interval)

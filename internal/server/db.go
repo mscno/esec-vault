@@ -20,6 +20,9 @@ import (
 const schemaVersion = 1
 
 var schema = []string{
+	`CREATE TABLE IF NOT EXISTS vault_objects (
+	 user_id TEXT NOT NULL, id TEXT NOT NULL, blob BLOB NOT NULL,
+	 created_at INTEGER NOT NULL, PRIMARY KEY(user_id,id))`,
 	`CREATE TABLE IF NOT EXISTS users (
 		id TEXT PRIMARY KEY,
 		github_id INTEGER UNIQUE NOT NULL,

@@ -24,6 +24,8 @@ import (
 
 	"github.com/mscno/esec/pkg/keyringfile"
 
+	"github.com/mscno/esec-vault/internal/identity"
+	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/server"
 	"github.com/mscno/esec-vault/internal/servertest"
 )
@@ -302,11 +304,22 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 
 	// --- Laptop: identity, project, first login creates the account. ---
 	laptop := newMachine(t, bin, "laptop").with("SSH_AUTH_SOCK=" + sock)
-	out := laptop.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	out := laptop.seedIdentity()
 	mnemonic := regexp.MustCompile(`(?m)^\s+((?:[a-z]+ ){23}[a-z]+)\s*$`).FindStringSubmatch(out)
 	if mnemonic == nil {
 		t.Fatalf("no recovery phrase in:\n%s", out)
 	}
+	// Without the operator's bootstrap token no account can be created.
+	login(t, h, laptop.with("ESEC_VAULT_BOOTSTRAP_TOKEN=wrong-token-wrong-token"), "").wait(false)
+	login(t, h, laptop, "esb_from_the_prompt_but_wrong\n").wait(false)
+	p := login(t, h, laptop.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "")
+	out = p.wait(true)
+	for _, want := range []string{"Signed in as mscno", "Created the vault account", "Account key:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("laptop login output lacks %q:\n%s", want, out)
+		}
+	}
+	accountKey := regexp.MustCompile(`Account key: (\S+)`).FindStringSubmatch(out)[1]
 	repo := t.TempDir()
 	laptop.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")
 	envDev := filepath.Join(repo, ".env.dev")
@@ -319,17 +332,6 @@ func TestVaultServerEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one se
 	}
 	laptop.tool(repo, "encrypt", "dev", "-f", "env")
 
-	// Without the operator's bootstrap token no account can be created.
-	login(t, h, laptop.with("ESEC_VAULT_BOOTSTRAP_TOKEN=wrong-token-wrong-token"), "").wait(false)
-	login(t, h, laptop, "esb_from_the_prompt_but_wrong\n").wait(false)
-	p := login(t, h, laptop.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "")
-	out = p.wait(true)
-	for _, want := range []string{"Signed in as mscno", "Created the vault account", "Account key:", "Sealed"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("laptop login output lacks %q:\n%s", want, out)
-		}
-	}
-	accountKey := regexp.MustCompile(`Account key: (\S+)`).FindStringSubmatch(out)[1]
 	raw, err := os.ReadFile(filepath.Join(laptop.home, "keyrings", "acme_store.keyring"))
 	if err != nil || !keyringfile.IsSealed(raw) {
 		t.Fatalf("laptop keyring not sealed after login: %v", err)
@@ -527,4 +529,18 @@ func readKeyring(t *testing.T, m *machine, project string) map[string]string {
 		t.Fatal("empty keyring")
 	}
 	return entries
+}
+
+// seedIdentity prepares a pre-existing identity, as an upgrading client has.
+// New-account creation itself is tested through LoginOptions.CreateIdentity.
+func (m *machine) seedIdentity() string {
+	m.t.Helper()
+	m.t.Setenv("ESEC_VAULT_HOME", m.home)
+	m.t.Setenv("ESEC_KEYRING_DIR", "")
+	m.t.Setenv("ESEC_SECRET_STORE", "file")
+	phrase, err := identity.Init(keyring.NewOS(), "", nil)
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	return fmt.Sprintf("  %s\n", phrase)
 }

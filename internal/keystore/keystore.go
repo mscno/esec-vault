@@ -92,6 +92,12 @@ func (s *Store) WriteGuarded(project string, entries map[string]string) error {
 	return s.write(project, entries, true, nil, keepGuarding)
 }
 
+// Reconcile applies an explicit authenticated inventory deletion. Ordinary
+// writes remain additive; callers must hold the store's mutation lock.
+func (s *Store) Reconcile(project string, entries map[string]string) error {
+	return s.write(project, entries, true, nil, keepNone)
+}
+
 // Forget removes every entry holding the private key priv from project's
 // keyring, returning their names. The keyring is then a cache of keys
 // sealed in the project's repository: forgetting a key that is guarded

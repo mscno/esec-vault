@@ -13,6 +13,7 @@ import (
 	"github.com/mscno/esec/pkg/projectfile"
 	coreseal "github.com/mscno/esec/pkg/seal"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/guard"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
@@ -118,6 +119,9 @@ func (s *Server) unsealLoop(ctx context.Context) {
 // unsealCheckouts opens what unsealLoop opens, once. It returns how many
 // keys it cached.
 func unsealCheckouts(kr keyring.Keyring) int {
+	if account.RequireLogin(kr) != nil {
+		return 0
+	}
 	reg, err := workspace.Load()
 	if err != nil {
 		return 0

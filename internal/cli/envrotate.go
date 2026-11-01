@@ -83,7 +83,6 @@ func (c *EnvRotateCmd) Run(ctx *cliCtx) error {
 	if res == nil && err != nil {
 		return err
 	}
-	markDirty("env rotate")
 	if shared {
 		publishShared(ctx, project, c.Env, "rotated")
 	}

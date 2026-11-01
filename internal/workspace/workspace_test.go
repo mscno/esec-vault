@@ -77,3 +77,18 @@ func TestRegistry(t *testing.T) { //nolint:gocyclo // one story, step by step
 		t.Fatal("remove")
 	}
 }
+
+func TestPruneKeepsInvalidProjectConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "esec.toml")
+	if err := os.WriteFile(path, []byte("project = ["), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := &Registry{Checkouts: []Checkout{{Project: "acme/store", Path: dir}}}
+	if Check(r.Checkouts[0]) != StatusInvalid {
+		t.Fatal("invalid esec.toml marked as missing")
+	}
+	if gone := r.Prune(); len(gone) != 0 || len(r.Checkouts) != 1 {
+		t.Fatal("prune forgot a malformed configuration")
+	}
+}

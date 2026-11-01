@@ -44,7 +44,10 @@ func (s *Server) verifyLoop(ctx context.Context) {
 }
 
 func (s *Server) verifyOnce(ctx context.Context) {
-	opts := verify.Options{History: true, Server: true, Backup: true, Keyring: s.Keyring,
+	if account.RequireLogin(s.Keyring) != nil {
+		return
+	}
+	opts := verify.Options{History: true, Server: true,
 		OpenAccount: func() (*account.Account, error) { return account.Open(s.Keyring, daemonUI{s}) }}
 	rep, err := verify.Run(ctx, opts)
 	if rep == nil {
@@ -53,13 +56,13 @@ func (s *Server) verifyOnce(ctx context.Context) {
 	}
 	_ = verify.SaveLast(rep, err, time.Now().UTC())
 	if rep.OK() {
-		s.Logger.Info("verify: every key is in at least two places", "keys", len(rep.Keys))
+		s.Logger.Info("verify: keys preserved in repository seals or multiple keyring copies", "keys", len(rep.Keys))
 		return
 	}
 	s.Logger.Warn("verify found keys that need attention", "problems", rep.Problems, "lost", rep.Lost)
 	title := "esec: keys need attention"
 	if rep.Lost > 0 {
-		title = "esec: keys are lost"
+		title = "esec: current keys not found"
 	}
 	Notifier(title, fmt.Sprintf("%d key(s) need attention: run esec vault verify", rep.Problems))
 }

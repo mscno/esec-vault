@@ -47,7 +47,8 @@ func newGuardRig(t *testing.T) *guardRig {
 		"ESEC_VAULT_GUARD_IDENTITIES="+idFile, "ESEC_VAULT_SERVER=", "XDG_CONFIG_HOME=",
 		// Never the person's keychain: a 0600 file in the test's home.
 		"ESEC_SECRET_STORE=file")}
-	r.must("", "", "identity", "init", "--no-passphrase", "--skip-confirm")
+	r.initIdentity()
+	r.connect()
 	r.yubi = yubi
 	return r
 }
@@ -288,5 +289,22 @@ func TestProjectsRegistryAndVerify(t *testing.T) {
 	r.run("", "", "verify")
 	if _, err := os.Stat(filepath.Join(r.home, "verify.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGuardEnableKeepsConfiguredSessionLevel(t *testing.T) {
+	r := newGuardRig(t)
+	repo := initTestRepo(t)
+	r.must(repo, "", "project", "init", "acme/store", "--env", "prod", "--guard", "prod", "--format", "env")
+	r.must(repo, "", "guard", "enable", "--env", "prod", "--level", "session")
+	// The command recommended for clearing an old local copy must not
+	// silently change esec.toml's existing session policy to touch.
+	r.must(repo, "", "guard", "enable", "--env", "prod")
+	pf, err := projectfile.Load(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pf.Env["prod"].Guard != "session" {
+		t.Fatalf("configured policy changed to %s", pf.Env["prod"].Guard)
 	}
 }

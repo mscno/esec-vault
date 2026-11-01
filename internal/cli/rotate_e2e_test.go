@@ -33,7 +33,8 @@ func TestAppAndRotationEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one
 	gh := "ESEC_VAULT_GITHUB_URL=" + h.GitHub.URL
 
 	owner := newMachine(t, bin, "owner").with(gh, "BAO_TOKEN=root", "BAO_ADDR="+bao.URL)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	src := t.TempDir()
 	repo, worker := filepath.Join(src, "store"), filepath.Join(src, "worker")
 	for _, d := range []string{repo, worker} {
@@ -45,7 +46,6 @@ func TestAppAndRotationEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one
 	owner.run("", "project", "init", "acme/worker", "--dir", worker, "--env", "prod", "--format", "env")
 	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-old")
 	writeSecret(t, owner, worker, "prod", "DATABASE_URL=postgres://db-old")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "access", "create", "--project=acme/store")
 	owner.run("", "access", "create", "--project=acme/worker")
 	owner.run("", "org", "create", "acme")

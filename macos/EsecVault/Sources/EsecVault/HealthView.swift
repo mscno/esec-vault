@@ -23,6 +23,19 @@ struct HealthView: View {
                         .disabled(store.busy != nil)
                 }
             }
+            ServiceSection()
+            if !store.refreshErrors.isEmpty {
+                Section("Status checks unavailable") {
+                    ForEach(store.refreshErrors.keys.sorted(), id: \.self) { source in
+                        VStack(alignment: .leading) {
+                            Text(source).bold()
+                            Text(store.refreshErrors[source] ?? "").font(.caption).textSelection(.enabled)
+                        }
+                        .foregroundStyle(.orange)
+                    }
+                    Text("Last known information may be out of date. Refresh to retry.").font(.caption)
+                }
+            }
             let setup = store.setup
             if !setup.isEmpty {
                 Section {
@@ -59,10 +72,11 @@ struct HealthView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
                                     Text(k.uses.first.map { "\($0.project) \($0.env)" } ?? k.publicKey).bold()
+                                    if k.isHistorical { Text("Git history").font(.caption).foregroundStyle(.secondary) }
                                     Text(String(k.publicKey.prefix(12)) + "…").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                                 }
                                 ForEach(k.problems ?? [], id: \.self) { p in
-                                    Text(p).font(.callout).foregroundStyle(p.hasPrefix("lost") ? .red : .orange)
+                                    Text(p).font(.callout).foregroundStyle(!k.isHistorical && k.places == 0 ? .red : .orange)
                                 }
                             }
                         }
@@ -76,8 +90,7 @@ struct HealthView: View {
                             Text("\(p.project): \((p.clear ?? []).joined(separator: ", "))").foregroundStyle(.orange)
                             Spacer()
                             Button("Guard It Here") {
-                                let checkout = store.projects.first { $0.project == p.project }?.checkouts.first { $0.status == "ok" }?.path
-                                Task { await store.perform("Guarding — touch your security key…", ["guard", "enable", "--project", p.project], in: checkout, then: p.project) }
+                                Task { await store.guardHere(p) }
                             }
                             .disabled(store.busy != nil)
                         }
@@ -138,10 +151,13 @@ struct SealsSection: View {
     var body: some View {
         let todo = store.sealsToFix
         Section {
-            if store.seals.isEmpty {
+            if store.refreshErrors["Seals"] != nil {
+                Label("Seals could not be checked. Last known results are shown below.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            } else if store.seals.isEmpty {
                 Text("No sealed keys found in the checkouts here.").foregroundStyle(.secondary)
             } else if todo.isEmpty {
-                Label("Every key of \(Set(store.seals.map(\.project)).count) project(s) is sealed in its repository, signed, with your recovery key.", systemImage: "checkmark.seal.fill")
+                Label("Every checked key of \(Set(store.seals.map(\.project)).count) project(s) is sealed in its repository with its configured readers and recovery key.", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)
             }
             ForEach(todo) { s in
@@ -159,6 +175,9 @@ struct SealsSection: View {
                     if !s.resealReasons.isEmpty {
                         Text("Seal again: " + s.resealReasons.joined(separator: "; ")).font(.caption).foregroundStyle(.orange)
                     }
+                    ForEach(s.uncheckedReasons, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
+                    ForEach(s.warnings, id: \.detail) { Text($0.detail).font(.caption).foregroundStyle(.orange) }
+                    ForEach(s.pendingReaders, id: \.reader) { Text("\($0.display): \($0.pending ?? "pending")").font(.caption).foregroundStyle(.orange) }
                 }
             }
             if !todo.isEmpty {
@@ -174,7 +193,7 @@ struct SealsSection: View {
             Text("Seals")
         } footer: {
             if todo.contains(where: \.isGuarded) {
-                Text("Guarded environments need a touch each to be sealed again, or your recovery phrase once.").foregroundStyle(.secondary)
+                Text("Resealing guarded environments may ask for passkey or security-key approval. Your recovery phrase can open them in one recovery operation.").foregroundStyle(.secondary)
             }
         }
     }

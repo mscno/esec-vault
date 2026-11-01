@@ -3,20 +3,23 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"testing"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/remote"
+	"github.com/mscno/esec-vault/internal/servertest"
 )
 
 func server(t *testing.T, intervals ...time.Duration) (*Server, context.Context) {
@@ -37,11 +40,19 @@ func server(t *testing.T, intervals ...time.Duration) (*Server, context.Context)
 	if _, err := identity.Init(kr, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	cfg := remote.DefaultConfig()
-	cfg.Default = "local"
-	cfg.Remotes["local"] = remote.Entry{Type: remote.TypeFile, Dir: filepath.Join(dir, "offsite")}
-	cfg.Policy.Debounce = "0s"
-	if err := remote.Save(cfg); err != nil {
+	h := servertest.Start(t, 53101343)
+	h.GitHub.AddUser(53101343, "mscno")
+	enrollCtx, enrollCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer enrollCancel()
+	a, err := account.Login(enrollCtx, kr, testLoginUI{t, h}, account.LoginOptions{Server: h.URL, Name: "daemon-test", Poll: time.Millisecond, BootstrapToken: servertest.BootstrapToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sync(enrollCtx, account.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// Obsolete external configuration cannot affect daemon startup or uploads.
+	if err := os.WriteFile(filepath.Join(dir, "remote.toml"), []byte("invalid legacy config"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	s, err := New(kr, slog.Default())
@@ -78,9 +89,9 @@ func server(t *testing.T, intervals ...time.Duration) (*Server, context.Context)
 }
 
 func TestFilesystemEditBackedUpWithoutCLINotification(t *testing.T) {
-	_, ctx := server(t, time.Hour)
+	s, ctx := server(t, time.Hour)
 	// Establish a persisted initial generation before the external edit.
-	if _, err := Call(ctx, Request{Op: "backup"}); err != nil {
+	if _, err := Call(ctx, Request{Op: "snapshot"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := keystore.New().Write("org/external", map[string]string{"ESEC_PRIVATE_KEY_DEV": "test-key"}, true); err != nil {
@@ -88,13 +99,20 @@ func TestFilesystemEditBackedUpWithoutCLINotification(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		state, err := remote.LoadState()
-		if err == nil && state.Generation >= 2 {
+		a, err := account.Open(s.Keyring, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := a.ReadVault(ctx)
+		if err == nil && state.Projects["org/external"]["ESEC_PRIVATE_KEY_DEV"] == "test-key" {
+			if _, err := os.Stat(paths.VaultFile()); !os.IsNotExist(err) {
+				t.Fatal("automatic sync created a legacy local snapshot")
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("external edit was not snapshotted and uploaded")
+	t.Fatal("external edit was not acknowledged by the server")
 }
 
 func TestLockedStartTTLAndBackupJobs(t *testing.T) {
@@ -118,14 +136,14 @@ func TestLockedStartTTLAndBackupJobs(t *testing.T) {
 	if unlocked, _ := s.Broker.Session(); unlocked {
 		t.Fatal("broker kept session")
 	}
-	r, err = Call(ctx, Request{Op: "backup"})
+	r, err = Call(ctx, Request{Op: "snapshot"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.Job == nil || r.Job.State != "complete" || r.Job.Generation == 0 {
 		t.Fatalf("false backup success: %+v", r)
 	}
-	r, err = Call(ctx, Request{Op: "backup", Async: true})
+	r, err = Call(ctx, Request{Op: "snapshot", Async: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,3 +253,18 @@ func TestControlSocketPermissionsAndShutdown(t *testing.T) {
 	default:
 	} // the server cancels its child, not the caller
 }
+
+type testLoginUI struct {
+	t *testing.T
+	h *servertest.Harness
+}
+
+func (u testLoginUI) Printf(f string, args ...any) {
+	if code := regexp.MustCompile(`enter ([0-9A-Z]{4}-[0-9A-Z]{4})`).FindStringSubmatch(fmt.Sprintf(f, args...)); code != nil {
+		if err := u.h.Browser("mscno").Confirm(code[1], true); err != nil {
+			u.t.Error(err)
+		}
+	}
+}
+func (testLoginUI) Confirm(string) bool           { return true }
+func (testLoginUI) Secret(string) (string, error) { return "", fmt.Errorf("unexpected prompt") }

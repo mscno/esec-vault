@@ -1,6 +1,7 @@
 package verify
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -34,7 +35,11 @@ func TestVerifyFindsLostReusedAndHistoricKeys(t *testing.T) { //nolint:gocyclo /
 	newPub, newPriv, _ := esec.GenerateKeypair()
 	file := filepath.Join(repo, ".env.prod")
 	write := func(pub string) {
-		if err := os.WriteFile(file, []byte("ESEC_PUBLIC_KEY="+pub+"\n"), 0600); err != nil {
+		var data bytes.Buffer
+		if _, err := esec.Encrypt(strings.NewReader("ESEC_PUBLIC_KEY="+pub+"\nSECRET=test\n"), &data, esec.FileFormatEnv); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, data.Bytes(), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -74,7 +79,7 @@ func TestVerifyFindsLostReusedAndHistoricKeys(t *testing.T) { //nolint:gocyclo /
 	local["acme/shop"] = map[string]string{keystore.PubEntry(newPub): newPriv}
 	delete(local["acme/store"], keystore.PubEntry(oldPub))
 	rep = Build(uses, []Source{{Name: "this device", Projects: local}})
-	if rep.Lost != 1 {
+	if rep.Lost != 0 || rep.HistoryMissing != 1 {
 		t.Fatalf("lost: %+v", rep)
 	}
 	var reuse bool

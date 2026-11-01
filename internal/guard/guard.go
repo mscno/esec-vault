@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,7 @@ import (
 	"filippo.io/age/plugin"
 	coreseal "github.com/mscno/esec/pkg/seal"
 
+	"github.com/mscno/esec-vault/internal/passkeyguard"
 	"github.com/mscno/esec-vault/internal/securitykey"
 )
 
@@ -75,6 +77,31 @@ func identities(recipients []string, ui *plugin.ClientUI) ([]age.Identity, []str
 	if ids, err := StandIns(ui); err != nil || len(ids) > 0 {
 		return ids, nil, err
 	}
+	// Prefer this person's registered native passkeys. Colleagues' passkeys
+	// in the same seal must not cause unrelated account prompts.
+	if registered, err := securitykey.Load(); err == nil && runtime.GOOS == "darwin" {
+		var native []age.Identity
+		for _, r := range recipients {
+			if PluginName(r) != "passkey" || !registered.Has(r) {
+				continue
+			}
+			if _, err := CheckPlugin("passkey"); err != nil {
+				return nil, nil, err
+			}
+			if _, err := passkeyguard.ParseRecipient(r); err != nil {
+				return nil, nil, err
+			}
+			_, data, _ := plugin.ParseRecipient(r)
+			id, err := plugin.NewIdentity(plugin.EncodeIdentity("passkey", data), &plugin.ClientUI{})
+			if err != nil {
+				return nil, nil, err
+			}
+			native = append(native, id)
+		}
+		if len(native) > 0 {
+			return native, nil, nil
+		}
+	}
 	seen := map[string]bool{}
 	var out []age.Identity
 	var cautions []string
@@ -114,6 +141,9 @@ func identities(recipients []string, ui *plugin.ClientUI) ([]age.Identity, []str
 // find their key by themselves. A slot that never asks for a touch is not
 // used: a guarded read would then need only the dialog.
 func pluginIdentities(name, path string, recipients []string, ui *plugin.ClientUI) ([]age.Identity, []string, error) {
+	if name == "passkey" {
+		return nil, nil, errors.New("no native passkey is available here: use EsecVault on macOS or another registered reader")
+	}
 	if name != "yubikey" {
 		id, err := plugin.NewIdentityWithoutData(name, ui)
 		if err != nil {

@@ -37,15 +37,15 @@ func TestPeopleGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one s
 	const g = "acme/backend"
 
 	owner := newMachine(t, bin, "owner").with(gh)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")
 	writeSecret(t, owner, repo, "dev", "DATABASE_URL=postgres://db-dev")
 	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 
 	alice := newMachine(t, bin, "alice").with(gh, "SSH_AUTH_SOCK="+sock)
-	alice.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	alice.seedIdentity()
 	loginAs(t, h, "alice", alice.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, 2002)), "").wait(true)
 	alice.run("", "access", "prove")
 
@@ -176,7 +176,7 @@ func TestPeopleGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one s
 		t.Fatalf("project page lacks the invite:\n%s", page)
 	}
 	carol := newMachine(t, bin, "carol").with(gh)
-	carol.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	carol.seedIdentity()
 	loginAs(t, h, "carol", carol.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, 2003)), "").wait(true)
 	if out := owner.run("", "changes", "--list"); !strings.Contains(out, "acme/store: add carol, who reads dev") {
 		t.Fatalf("the invite did not become a change:\n%s", out)

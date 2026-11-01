@@ -16,7 +16,6 @@ import (
 	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/identity"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/service"
@@ -33,7 +32,7 @@ type SetupCmd struct {
 	Root     []string `type:"path" help:"Where your checkouts are (default: whichever of ~/src, ~/code, ~/projects, ~/dev, ~/Developer, ~/work, ~/repos exist)"`
 	NoDaemon bool     `help:"Do not install the background service"`
 	Check    bool     `help:"Only report what is set up and what is left; change nothing"`
-	Yes      bool     `help:"Do the steps that ask (guarding keys here, a backup destination) without asking; touches and phrases are still needed"`
+	Yes      bool     `help:"Do the steps that ask (guarding keys here) without asking; touches and phrases are still needed"`
 	JSON     bool     `help:"Print the steps as JSON, for scripts, agents and the Mac app"`
 }
 
@@ -92,7 +91,6 @@ func (c *SetupCmd) Run(ctx *cliCtx) error {
 	haveID := r.identity()
 	if haveID {
 		r.server()
-		r.secondPlace()
 	}
 	r.daemon()
 	r.checkouts()
@@ -153,75 +151,38 @@ func (r *setupRun) serverURL() string {
 // phrase, or as your first machine. It never makes a second identity
 // unasked: that would split your keys.
 func (r *setupRun) identity() bool {
-	id, err := identity.Load(r.ctx.Keyring)
-	if err == nil {
+	if err := account.RequireLogin(r.ctx.Keyring); err == nil {
+		id, err := identity.Load(r.ctx.Keyring)
+		if err != nil {
+			r.add("identity", "failed", err.Error(), "esec vault login --recover")
+			return false
+		}
 		r.add("identity", "ok", "fingerprint "+id.Fingerprint()[:16]+"…", "")
 		return true
 	}
-	if !errors.Is(err, identity.ErrNotFound) {
-		r.add("identity", "failed", err.Error(), "esec vault doctor")
-		return false
-	}
 	server := r.serverURL()
-	join := "esec vault login SERVER (joining your account), esec vault recover --file BACKUP (from a backup), or esec vault init (your first machine)"
+	command := "esec vault login SERVER"
 	if server != "" {
-		join = "esec vault login " + server
+		command = "esec vault login " + server
 	}
 	if r.c.Check || !r.interactive && server == "" {
-		r.add("identity", "todo", "none on this machine", join)
+		r.add("identity", "todo", "sign in to your vault server; it stores keys and recovery data", command)
 		return false
 	}
-	run := func(what string, cmd interface{ Run(ctx *cliCtx) error }) bool {
-		if err := cmd.Run(r.ctx); err != nil {
-			r.add("identity", "failed", what+": "+err.Error(), join)
+	if server == "" {
+		var err error
+		server, err = promptLine("Vault server (https://…): ")
+		if err != nil || server == "" {
+			r.add("identity", "todo", "vault server sign-in required", command)
 			return false
 		}
-		id, err := identity.Load(r.ctx.Keyring)
-		if err != nil {
-			r.add("identity", "failed", what+": "+err.Error(), join)
-			return false
-		}
-		r.add("identity", "done", what+": fingerprint "+id.Fingerprint()[:16]+"…", "")
-		return true
 	}
-	if server != "" {
-		return run("signed in to "+server, &LoginCmd{Server: server})
-	}
-	answer, err := promptLine("No identity here. Is this (1) another machine of yours with a vault server, (2) another machine with a backup, or (3) your first machine? [1/2/3]: ")
-	if err != nil {
-		r.add("identity", "todo", "none on this machine", join)
+	if err := (&LoginCmd{Server: server}).Run(r.ctx); err != nil {
+		r.add("identity", "failed", err.Error(), command)
 		return false
 	}
-	switch answer {
-	case "1":
-		url, err := promptLine("Vault server (https://…): ")
-		if err != nil || url == "" {
-			r.add("identity", "todo", "none on this machine", join)
-			return false
-		}
-		return run("signed in to "+url, &LoginCmd{Server: url})
-	case "2":
-		if err := (&RemoteAddCmd{}).Run(r.ctx); err != nil {
-			r.add("identity", "failed", "backup destination: "+err.Error(), join)
-			return false
-		}
-		dir, err := os.MkdirTemp("", "esec-vault-setup-")
-		if err != nil {
-			r.add("identity", "failed", err.Error(), join)
-			return false
-		}
-		defer os.RemoveAll(dir)
-		file := filepath.Join(dir, "backup.esec")
-		if err := (&RemotePullCmd{Out: file, Force: true}).Run(r.ctx); err != nil {
-			r.add("identity", "failed", "download the newest backup: "+err.Error(), join)
-			return false
-		}
-		return run("recovered from the newest backup", &RecoverCmd{File: file})
-	case "3":
-		return run("created; write the 24 words down", &InitCmd{})
-	}
-	r.add("identity", "todo", "none on this machine", join)
-	return false
+	r.add("identity", "done", "signed in; identity and keys recovered or created through the vault server", "")
+	return true
 }
 
 // server syncs keys with the vault server, when signed in.
@@ -239,40 +200,6 @@ func (r *setupRun) server() {
 		return
 	}
 	r.add("vault server", "done", "keys synced", "")
-}
-
-// secondPlace makes sure keys are stored somewhere besides this machine.
-func (r *setupRun) secondPlace() {
-	cfg, err := remote.Load()
-	if err != nil {
-		r.add("second place", "failed", err.Error(), "esec vault remote list")
-		return
-	}
-	_, signedIn := account.LoadState()
-	switch {
-	case signedIn == nil && cfg.Default != "":
-		r.add("second place", "ok", "the vault server, and backups to "+cfg.Default, "")
-		return
-	case signedIn == nil:
-		r.add("second place", "ok", "the vault server", "")
-		return
-	case cfg.Default != "":
-		r.add("second place", "ok", "backups to "+cfg.Default, "")
-		return
-	}
-	if !r.interactive || !r.may("Keys are only on this machine. Add a backup destination now?") {
-		r.add("second place", "todo", "keys are only on this machine", "esec vault remote add (or esec vault login SERVER)")
-		return
-	}
-	if err := (&RemoteAddCmd{Prefix: "personal/v2"}).Run(r.ctx); err != nil {
-		r.add("second place", "failed", err.Error(), "esec vault remote add")
-		return
-	}
-	if err := (&BackupCmd{Verify: true, Push: true}).Run(r.ctx); err != nil {
-		r.add("second place", "failed", "first backup: "+err.Error(), "esec vault backup --verify --push")
-		return
-	}
-	r.add("second place", "done", "backed up", "")
 }
 
 // daemon installs the background service, or upgrades an old one.
@@ -296,11 +223,16 @@ func (r *setupRun) daemon() {
 	}
 	var cmd interface{ Run(ctx *cliCtx) error }
 	var command string
+	statusCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, statusErr := daemon.Call(statusCtx, daemon.Request{Op: "status"})
 	switch {
 	case !m.Installed():
 		cmd, command = &DaemonInstallCmd{Start: true}, "esec vault daemon install --start"
 	case len(daemonVersionIssues(r.ctx)) > 0:
 		cmd, command = &DaemonUpgradeCmd{Start: true}, "esec vault daemon upgrade"
+	case statusErr != nil:
+		cmd, command = &DaemonStartCmd{}, "esec vault daemon start"
 	default:
 		r.add("background service", "ok", "installed and current", "")
 		return
@@ -582,7 +514,7 @@ func (r *setupRun) verify() {
 	} else {
 		bg, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		rep, runErr = verify.Run(bg, verify.Options{History: true, Server: true, Backup: true, Keyring: r.ctx.Keyring,
+		rep, runErr = verify.Run(bg, verify.Options{History: true, Server: true,
 			OpenAccount: func() (*account.Account, error) { return openAccount(r.ctx) }})
 		if rep == nil {
 			r.add("keys safe", "failed", runErr.Error(), "esec vault verify")

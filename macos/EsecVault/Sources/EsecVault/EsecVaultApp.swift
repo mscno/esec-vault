@@ -3,12 +3,22 @@ import EsecVaultCore
 import SwiftUI
 
 @main
+enum EsecVaultMain {
+    @MainActor static func main() {
+        if CommandLine.arguments.dropFirst().elementsEqual(["--passkey-helper"]) {
+            NativePasskeyHelper.run()
+        } else {
+            EsecVaultApp.main()
+        }
+    }
+}
+
 struct EsecVaultApp: App {
     @State private var store = Store()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        Window("esec Vault", id: "main") {
+        Window("EsecVault", id: "main") {
             MainView()
                 .environment(store)
                 .frame(minWidth: 860, minHeight: 520)
@@ -18,9 +28,11 @@ struct EsecVaultApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Project…") { NotificationCenter.default.post(name: .newProject, object: nil) }
                     .keyboardShortcut("n")
+                Button("Open Secrets File…") { store.chooseSecretFile() }
+                    .keyboardShortcut("o")
                 Button("Find Checkouts…") { NotificationCenter.default.post(name: .scanFolder, object: nil) }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
-                Button("Refresh") { Task { await store.refresh() } }
+                Button("Refresh") { Task { await store.refresh(full: true) } }
                     .keyboardShortcut("r")
             }
         }
@@ -90,6 +102,18 @@ struct MenuContent: View {
         if store.setupTodo > 0 {
             Text("\(store.setupTodo) setup step(s) to do")
         }
+        if let daemon = store.daemonState {
+            Text("Service: \(daemon.serviceDescription.lowercased())")
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if daemon.sessionIsOpen(at: context.date) {
+                    Button("Lock Broker") { Task { await store.lock() } }
+                        .disabled(store.busy != nil)
+                } else if daemon.reachable, daemon.upToDate {
+                    Button("Unlock Broker for 4 Hours") { Task { await store.unlock() } }
+                        .disabled(store.busy != nil)
+                }
+            }
+        }
         let recent = store.recentGuarded.prefix(5)
         if !recent.isEmpty {
             Divider()
@@ -99,7 +123,7 @@ struct MenuContent: View {
             }
         }
         Divider()
-        Button("Open esec Vault") {
+        Button("Open EsecVault") {
             openWindow(id: "main")
             NSApp.activate()
         }
@@ -107,7 +131,7 @@ struct MenuContent: View {
             .disabled(store.busy != nil)
         Button("Refresh") { Task { await store.refresh(full: true) } }
         Divider()
-        Toggle("Open at Login", isOn: Binding(get: { store.opensAtLogin }, set: { store.opensAtLogin = $0 }))
-        Button("Quit") { NSApp.terminate(nil) }
+        Toggle("Open EsecVault at Login", isOn: Binding(get: { store.opensAtLogin }, set: { store.opensAtLogin = $0 }))
+        Button("Quit EsecVault (Keep Service Running)") { NSApp.terminate(nil) }
     }
 }

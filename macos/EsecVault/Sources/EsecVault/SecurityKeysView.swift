@@ -15,7 +15,7 @@ struct SecurityKeysView: View {
                 if let keys = list?.keys, !keys.isEmpty {
                     ForEach(keys) { SecurityKeyRow(key: $0) { removing = $0 } }
                 } else {
-                    Text("No security key yet. Plug in your YubiKey: it shows up below.").foregroundStyle(.secondary)
+                    Text("No passkey or security key yet. Add a passkey, or scan connected YubiKeys for legacy PIV keys.").foregroundStyle(.secondary)
                 }
             } header: {
                 Text("Your security keys")
@@ -28,14 +28,14 @@ struct SecurityKeysView: View {
                 }
             }
             if let blank = list?.unprovisioned, !blank.isEmpty {
-                Section("Plugged in, with no age key yet") {
+                Section("YubiKeys without a legacy PIV key") {
                     ForEach(blank, id: \.self) { serial in
                         HStack {
                             Image(systemName: "key.horizontal").foregroundStyle(.secondary)
                             Text("YubiKey \(serial)")
                             Spacer()
-                            Button("Set Up…") { store.setUpYubiKey() }
-                                .help("Makes an age key on it (PIN, touch for every read) in Terminal, then adds it")
+                            Button("Add as Passkey…") { Task { await store.addPasskey(provider: "security-key") } }
+                                .disabled(store.busy != nil || !store.securityKeyPasskeysAvailable)
                         }
                     }
                 }
@@ -46,8 +46,30 @@ struct SecurityKeysView: View {
                 }
             }
             Section {
+                Menu("Add Passkey…") {
+                    Button("Apple Passwords or Password Manager…") { Task { await store.addPasskey(provider: "platform") } }
+                    Button("YubiKey / FIDO2 Security Key…") { Task { await store.addPasskey(provider: "security-key") } }
+                        .disabled(!store.securityKeyPasskeysAvailable)
+                }
+                .disabled(store.busy != nil || !store.nativePasskeysAvailable)
+                Text("macOS handles passkey selection and approval through Apple Passwords or your enabled password manager. The provider must support passkey encryption (WebAuthn PRF). Existing guarded environments need resealing to include a new passkey.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !store.nativePasskeysAvailable {
+                    Text("Native passkeys require macOS 15 or later and the signed EsecVault app.").font(.caption).foregroundStyle(.orange)
+                } else if !store.securityKeyPasskeysAvailable {
+                    Text("Native FIDO2 security-key encryption requires macOS 26.4 or later.").font(.caption).foregroundStyle(.secondary)
+                }
                 HStack {
-                    Button("Set Up a New YubiKey…") { store.setUpYubiKey() }
+                    Button("Scan Connected YubiKeys") { Task { await store.scanSecurityKeys() } }
+                        .disabled(store.busy != nil)
+                    if let checked = list?.checked {
+                        Text("Last scan \(checked.formatted(.relative(presentation: .named)))").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("Ordinary refreshes use the background service’s scan cache. Touch a YubiKey only when macOS requests it or its light is blinking for an active operation.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Set Up Legacy PIV Key in Terminal…") { store.setUpYubiKey() }
                     Spacer()
                     if !(list?.unregistered.isEmpty ?? true) {
                         Button("Add All Plugged-In Keys") { Task { await store.addSecurityKey(name: nil) } }
@@ -61,8 +83,7 @@ struct SecurityKeysView: View {
         .confirmationDialog("Remove \(removing?.name ?? "")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { key in
             Button("Remove \(key.name)", role: .destructive) {
                 Task {
-                    await store.removeSecurityKey(key.id)
-                    resealAfterRemove = true
+                    resealAfterRemove = await store.removeSecurityKey(key.id)
                 }
             }
         } message: { _ in
@@ -73,7 +94,7 @@ struct SecurityKeysView: View {
             Button("Use Recovery Phrase…") { store.recoverSeals() }
             Button("Later", role: .cancel) {}
         } message: {
-            Text("Each guarded environment is sealed again without the removed key: a touch of another key each, or your recovery phrase once.")
+            Text("Each guarded environment is sealed again without the removed key, using another passkey or security key, or your recovery phrase. Existing copies in git history remain readable with the old key.")
         }
     }
 
@@ -81,7 +102,7 @@ struct SecurityKeysView: View {
         let keys = list?.keys.count ?? 0
         let source = list?.source == "account" ? "Kept in your account: your other Macs and people who share with you see them." : "Kept on this Mac until you sign in to a vault server."
         switch keys {
-        case 0: return "Guarded environments open only with a touch of one of these. " + source
+        case 0: return "Guarded environments require approval through a registered passkey or security key. " + source
         case 1: return "One key: add a spare, or losing it means recovering with your phrase. " + source
         default: return source
         }
@@ -101,9 +122,9 @@ struct SecurityKeyRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(key.name)
                 HStack(spacing: 6) {
-                    Text(key.kind == "se" ? "Secure Enclave" : "YubiKey")
+                    Text(key.kind == "passkey" ? "Passkey" : key.kind == "se" ? "Secure Enclave" : "YubiKey (PIV)")
                     if let serial = key.serial { Text("· \(serial)") }
-                    Text(key.pluggedIn ? "· plugged in" : "· not plugged in")
+                    Text(key.kind == "passkey" ? "· unlocks through macOS" : key.pluggedIn ? "· plugged in" : "· not plugged in")
                     if let tested = key.tested {
                         Text("· tested \(tested.formatted(.relative(presentation: .named)))")
                     }
@@ -113,7 +134,7 @@ struct SecurityKeyRow: View {
             Spacer()
             Button("Test") { Task { await store.testSecurityKey(key.id) } }
                 .disabled(!key.pluggedIn || store.busy != nil)
-                .help("Seals a random value to it and opens it: one touch")
+                .help("Encrypts a random value to this key and opens it through its passkey or security-key approval flow")
             Button("Remove…", role: .destructive) { remove(key) }
                 .disabled(store.busy != nil)
         }
@@ -142,8 +163,8 @@ struct DetectedKeyRow: View {
             Spacer()
             TextField("Name", text: $name, prompt: Text("blue, on my keychain"))
                 .frame(width: 180)
-            Button("Add") { Task { await store.addSecurityKey(name: name) } }
-                .disabled(store.busy != nil)
+            Button("Add") { Task { await store.addSecurityKey(name: name, detected: key) } }
+                .disabled(store.busy != nil || key.touchPolicy?.lowercased() == "never")
         }
     }
 }

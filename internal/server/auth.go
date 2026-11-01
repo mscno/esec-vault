@@ -309,7 +309,7 @@ func (s *Server) readSignedBody(w http.ResponseWriter, r *http.Request, dev *dev
 // request is the commit that creates its account.
 func (s *Server) bodyLimit(ctx context.Context, r *http.Request, dev *deviceRow) (int64, error) {
 	switch {
-	case r.URL.Path != "/v1/commit" && r.URL.Path != "/v1/vault":
+	case r.URL.Path != "/v1/commit" && r.URL.Path != "/v1/vault" && !strings.HasPrefix(r.URL.Path, "/v1/vault/objects/"):
 		return maxSmallBody, nil
 	case dev.Status != wire.DevicePending:
 		return maxLargeBody, nil

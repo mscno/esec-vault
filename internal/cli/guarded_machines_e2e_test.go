@@ -38,7 +38,7 @@ func TestGuardedKeysReachMachines(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := newMachine(t, bin, "owner").with("ESEC_VAULT_GITHUB_URL="+h.GitHub.URL, "ESEC_VAULT_GUARD_IDENTITIES="+ids, "ESEC_VAULT_DIALOGS=off")
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
 	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")

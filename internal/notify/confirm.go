@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// frontmost brings the dialog's osascript to the front first. Started by
+// the background service, it is not the active application, so its dialog
+// opens without the keyboard: a PIN typed into it goes to the window
+// behind instead.
+const frontmost = "activate"
+
 // Confirm shows a dialog with the buttons Deny and allow, Deny being the
 // default, and reports whether allow was chosen. Closing it or letting it
 // time out denies. Like Ask, the text reaches the dialog program as an
@@ -22,6 +28,7 @@ func Confirm(title, text, allow string, timeout time.Duration) (bool, error) {
 	case "darwin":
 		out, err := exec.CommandContext(ctx, "/usr/bin/osascript",
 			"-e", "on run argv",
+			"-e", frontmost,
 			"-e", "display dialog (item 2 of argv) with title (item 1 of argv) buttons {\"Deny\", (item 3 of argv)} default button \"Deny\" cancel button \"Deny\" giving up after (item 4 of argv as integer) with icon stop",
 			"-e", "end run",
 			title, text, allow, secs).Output()
@@ -55,6 +62,7 @@ func Secret(title, prompt string, timeout time.Duration) (value string, ok bool,
 	case "darwin":
 		out, err := exec.CommandContext(ctx, "/usr/bin/osascript",
 			"-e", "on run argv",
+			"-e", frontmost,
 			"-e", "set r to display dialog (item 2 of argv) with title (item 1 of argv) default answer \"\" with hidden answer buttons {\"Cancel\", \"OK\"} default button \"OK\" cancel button \"Cancel\" giving up after (item 3 of argv as integer)",
 			"-e", "if gave up of r then return \"\"",
 			"-e", "return \"ok:\" & text returned of r",

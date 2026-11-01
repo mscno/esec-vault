@@ -20,7 +20,7 @@ import (
 
 // IdentityCmd groups identity management.
 type IdentityCmd struct {
-	Init       IdentityInitCmd       `cmd:"" help:"Create a new identity; prints your 24-word recovery phrase."`
+	Init       IdentityInitCmd       `cmd:"" hidden:"" help:"Create a new identity; prints your 24-word recovery phrase."`
 	Recover    IdentityRecoverCmd    `cmd:"" help:"Recover your identity from the recovery phrase and a vault backup."`
 	Rotate     IdentityRotateCmd     `cmd:"" help:"Rotate the identity keypair (re-wraps to your master key)."`
 	Show       IdentityShowCmd       `cmd:"" help:"Show your public key and fingerprint."`
@@ -30,6 +30,8 @@ type IdentityCmd struct {
 
 // IdentityInitCmd creates a new identity.
 type IdentityInitCmd struct {
+	duringLogin bool
+
 	Passphrase   bool `help:"Prompt for a passphrase to protect the recovery phrase"`
 	NoPassphrase bool `help:"Create without a passphrase (recovery phrase only)"`
 	Force        bool `help:"Overwrite an existing identity without prompting"`
@@ -85,8 +87,11 @@ func (c *IdentityInitCmd) Run(ctx *cliCtx) error {
 		fmt.Println("Protection:   recovery phrase only (consider 'esec-vault identity passphrase')")
 	}
 	fmt.Println()
-	fmt.Println("Next: back it up — 'esec-vault backup'. The backup embeds this identity,")
-	fmt.Println("so the phrase plus one backup file can rebuild this machine.")
+	if c.duringLogin {
+		fmt.Println("The vault server will store this identity’s encrypted recovery copy.")
+	} else {
+		fmt.Println("Next: sign in with esec vault login SERVER.")
+	}
 	return nil
 }
 

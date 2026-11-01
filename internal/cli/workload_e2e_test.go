@@ -31,11 +31,11 @@ func TestWorkloadKMSEndToEnd(t *testing.T) {
 	const p = "--project=acme/store"
 
 	owner := newMachine(t, bin, "owner").with("ESEC_VAULT_GITHUB_URL=" + h.GitHub.URL)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "prod", "--format", "env")
 	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "access", "create", p)
 	owner.run("", "group", "create", "acme/production")
 	owner.run("", "access", "grant", "acme/production", "--env", "prod", p)
@@ -111,11 +111,11 @@ func TestWorkloadRekeyEndToEnd(t *testing.T) {
 	h.GitHub.AddUser(53101343, "mscno")
 	const p = "--project=acme/store"
 	owner := newMachine(t, bin, "owner").with("ESEC_VAULT_GITHUB_URL="+h.GitHub.URL, "BAO_TOKEN=root", "BAO_ADDR="+bao.URL)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "prod", "--format", "env")
 	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "access", "create", p)
 	owner.run("", "group", "create", "acme/store")
 	owner.run("", "access", "grant", "acme/store", "--env", "prod", p)

@@ -456,3 +456,24 @@ func TestNativeUserServiceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBinaryCurrentDoesNotDependOnGUIPath(t *testing.T) {
+	m, _ := manager(t, "darwin")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	executable := source(t)
+	if err := m.Install(context.Background(), executable, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/Applications/EsecVault.app/Contents/MacOS:/usr/bin:/bin")
+	same, err := m.BinaryCurrent(executable)
+	if err != nil || !same {
+		t.Fatalf("matching service build reported stale because PATH changed: %v %v", same, err)
+	}
+	if err := os.WriteFile(executable, []byte("new executable"), 0700); err != nil { //nolint:gosec // Test executable fixture.
+		t.Fatal(err)
+	}
+	same, err = m.BinaryCurrent(executable)
+	if err != nil || same {
+		t.Fatalf("new executable not detected: %v %v", same, err)
+	}
+}

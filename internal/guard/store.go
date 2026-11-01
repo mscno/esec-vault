@@ -35,15 +35,20 @@ type Presence struct {
 // there is no hardware to protect and no dialog: whoever can read that file
 // opens the seal without this program anyway.
 func (p Presence) OpenSeal(data []byte, project, env, pub string, recipients []string, title, text string) (*coreseal.Payload, error) {
-	ui := p.ui()
+	ui := p.ClientUI()
 	ids, cautions, err := identities(recipients, ui)
 	if err != nil {
 		return nil, err
 	}
-	if !softwareOnly(ids) {
+	if nativePasskeysOnly(ids) {
+		// The system sheet is the approval. Keep caller/read attribution
+		// visible as a notification, without a second custom auth dialog.
+		p.Note(fmt.Sprintf("Read: %s %s\n%s\nApprove in the macOS passkey sheet.", project, env, text))
+	} else if !softwareOnly(ids) {
 		for _, c := range cautions {
 			text += "\n\n" + c
 		}
+		text += "\n\nAllow only if you started this. Complete any PIN prompt, then briefly touch and release your security key when it blinks."
 		ok, err := p.Ask(title, text)
 		if err != nil {
 			return nil, err
@@ -55,6 +60,16 @@ func (p Presence) OpenSeal(data []byte, project, env, pub string, recipients []s
 	return Open(data, project, env, pub, ids...)
 }
 
+func nativePasskeysOnly(ids []age.Identity) bool {
+	for _, id := range ids {
+		p, ok := id.(*plugin.Identity)
+		if !ok || p.Name() != "passkey" {
+			return false
+		}
+	}
+	return len(ids) > 0
+}
+
 func softwareOnly(ids []age.Identity) bool {
 	for _, id := range ids {
 		if _, ok := id.(*age.X25519Identity); !ok {
@@ -64,20 +79,25 @@ func softwareOnly(ids []age.Identity) bool {
 	return len(ids) > 0
 }
 
-func (p Presence) ui() *plugin.ClientUI {
+// ClientUI uses the same desktop/PIN prompts for every hardware operation,
+// including a key test started from the Mac app without a terminal.
+func (p Presence) ClientUI() *plugin.ClientUI {
 	return &plugin.ClientUI{
 		DisplayMessage: func(_, message string) error {
 			p.Note(message)
 			return nil
 		},
 		RequestValue: func(_, prompt string, _ bool) (string, error) {
-			return p.Secret(prompt)
+			return p.Secret(prompt + "\n\nEnter the requested value first. Touch the key only after this prompt closes and the key blinks; touching early can type an OTP instead.")
 		},
 		Confirm: func(_, prompt, yes, _ string) (bool, error) {
 			return p.Ask("esec: security key", prompt+" ("+yes+")")
 		},
-		WaitTimer: func(string) {
-			p.Note("touch your security key")
+		WaitTimer: func(name string) {
+			// This timer only means the plugin has been silent for five
+			// seconds. It can still be opening the card or waiting for a
+			// PIN, so it must not claim a hardware touch is ready.
+			p.Note("waiting for " + name + "; finish any PIN prompt, then touch only when the key blinks")
 		},
 	}
 }

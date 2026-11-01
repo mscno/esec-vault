@@ -32,6 +32,18 @@ import Testing
     if case .unknown = never.health {} else { Issue.record("never checked: \(never.health)") }
 }
 
+@Test func historicalRecoveryWarningsDoNotClaimCurrentKeysAreLost() throws {
+    let json = """
+    {"at":"\(ISO8601DateFormatter().string(from: Date()))","report":{"checkouts":1,"files":2,
+      "sources":[{"name":"sealed in the repository","checked":true}],
+      "keys":[{"public_key":"abcd","uses":[{"project":"acme/store","env":"prod","path":"/x/.env.prod","commit":"old"}],"held":{},"places":0,"problems":["historical key not found"]}],
+      "problems":1,"lost":0,"history_missing":1}}
+    """
+    let saved = try JSON.decoder.decode(VerifySaved.self, from: Data(json.utf8))
+    #expect(saved.report?.keys.first?.isHistorical == true)
+    #expect(saved.health == .attention("1 historical key(s) need checking"))
+}
+
 @Test func decodesGuard() throws {
     let json = #"{"set_up":true,"recipient":"age1x","holders":["age1yubikey1q","age1rec"],"projects":[{"project":"acme/a","envs":["prod"],"keys":2,"clear":["abcd"]}]}"#
     let g = try JSON.decoder.decode(GuardStatus.self, from: Data(json.utf8))
@@ -41,9 +53,9 @@ import Testing
 @Test func decodesStatusAndActivity() throws {
     let status = try JSON.decoder.decode(Status.self, from: Data(#"""
     {"daemon":{"ok":true,"pid":7,"unlocked":true,"version":"v1","up_to_date":false},"identity":"3e8c","recoverable":true,
-     "push_pending":false,"destinations":{"last_push":"2026-10-28T08:00:00Z","remote":{"usb":{"last_push":"2026-10-28T08:00:00Z"}}},"problems":["x"]}
+     "vault_server":{"server":"https://vault.example.com","login":"mscno"},"problems":["x"]}
     """#.utf8))
-    #expect(status.daemon?.upToDate == false && status.destinations?.remote?["usb"] != nil)
+    #expect(status.daemon?.upToDate == false && status.vaultServer?.login == "mscno")
 
     let entries = try JSON.decoder.decode([ActivityEntry].self, from: Data(#"""
     [{"ts":"2026-10-28T08:00:48Z","uid":501,"pid":42,"op":"get","project":"acme/shop","env":"prod","decision":"allow","detail":"guard","caller":"zsh ▸ claude ▸ esec-vault","session":"claude-7"}]

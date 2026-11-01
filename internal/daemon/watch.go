@@ -41,7 +41,7 @@ func (s *Server) watch(ctx context.Context) {
 				return
 			}
 			name := filepath.Base(event.Name)
-			if !strings.HasSuffix(name, ".keyring") && name != "identity.esec" && name != "policy.toml" && name != "trusted.toml" && name != "remote.toml" {
+			if !strings.HasSuffix(name, ".keyring") && name != "identity.esec" && name != "policy.toml" && name != "trusted.toml" {
 				continue
 			}
 			select {

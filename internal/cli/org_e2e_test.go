@@ -48,11 +48,11 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 	const p = "--project=acme/store"
 
 	owner := newMachine(t, bin, "owner").with(gh)
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")
 	writeSecret(t, owner, repo, "prod", "DATABASE_URL=postgres://db-prod")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "access", "create", p)
 
 	person := func(id int64, login string) *machine {
@@ -60,7 +60,7 @@ func TestOrgEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one sequential
 		sock, _, key := testAgentKey(t)
 		h.GitHub.AddKey(login, key)
 		m := newMachine(t, bin, login).with(gh, "SSH_AUTH_SOCK="+sock)
-		m.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+		m.seedIdentity()
 		loginAs(t, h, login, m.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, id)), "").wait(true)
 		m.run("", "access", "prove")
 		return m

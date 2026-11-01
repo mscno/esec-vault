@@ -14,13 +14,13 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/policy"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/runcmd"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 )
@@ -37,7 +37,6 @@ type AgentStartCmd struct {
 	Policy    string        `help:"Policy file" type:"path" default:""`
 	FromVault bool          `help:"Load keys from the sealed vault blob instead of keyring files"`
 	Sock      string        `help:"Socket path" default:"" env:"ESEC_VAULT_SOCK"`
-	NoBackup  bool          `help:"Do not push pending backups on start or shutdown"`
 }
 
 // Run implements agent start.
@@ -97,6 +96,7 @@ func (c *AgentStartCmd) Run(ctx *cliCtx) error {
 		sock = paths.SocketPath()
 	}
 	srv := broker.NewServer(keys, pol, audit, ctx.Logger)
+	srv.RequireLogin = func() error { return account.RequireLogin(ctx.Keyring) }
 
 	ctxc, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -123,41 +123,7 @@ func (c *AgentStartCmd) Run(ctx *cliCtx) error {
 
 	fmt.Printf("esec-vault broker running (socket %s, ttl %s, %d projects)\n", sock, c.TTL, len(keys))
 
-	if !c.NoBackup {
-		stop := startBackupWorker(ctxc, ctx)
-		defer stop()
-	}
-
 	return srv.Serve(ctxc, sock)
-}
-
-func startBackupWorker(parent context.Context, app *cliCtx) func() {
-	cfg, err := remote.Load()
-	if err != nil {
-		app.Logger.Warn("backup configuration invalid", "error", err)
-		return func() {}
-	}
-	interval := cfg.Policy.IntervalDuration()
-	if interval <= 0 {
-		return func() {}
-	}
-	ctx, cancel := context.WithCancel(parent)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		maybeAutoPushContext(ctx, app)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				maybeAutoPushContext(ctx, app)
-			}
-		}
-	}()
-	return func() { cancel(); <-done }
 }
 
 // AgentStopCmd stops the broker.

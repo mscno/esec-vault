@@ -24,6 +24,9 @@ public struct CLI: Sendable {
         let env = ProcessInfo.processInfo.environment
         var candidates: [String] = []
         if let p = env["ESEC_VAULT_BIN"] { candidates.append(p) }
+        if Bundle.main.bundleIdentifier == "com.mscno.esec-vault", let executable = Bundle.main.executableURL {
+            candidates.append(executable.deletingLastPathComponent().appendingPathComponent("esec-vault").path)
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         candidates += ["\(home)/go/bin/esec-vault", "/opt/homebrew/bin/esec-vault", "/usr/local/bin/esec-vault"]
         for dir in (env["PATH"] ?? "").split(separator: ":") {
@@ -50,10 +53,14 @@ public struct CLI: Sendable {
             p.arguments = args
             if let dir { p.currentDirectoryURL = URL(fileURLWithPath: dir) }
             var env = ProcessInfo.processInfo.environment
+            if Bundle.main.bundleIdentifier == "com.mscno.esec-vault", let executable = Bundle.main.executableURL {
+                let home = FileManager.default.homeDirectoryForCurrentUser.path
+                env["PATH"] = [executable.deletingLastPathComponent().path, home + "/go/bin", "/opt/homebrew/bin", "/usr/local/bin", env["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+                env["ESEC_VAULT_APP_BIN"] = executable.path
+            }
             env["NO_COLOR"] = "1"
-            // The app is not an agent: it asks for no value, and the audit
-            // log should say which reads it caused.
-            env["ESEC_VAULT_SESSION"] = "esec Vault app"
+            // Label explicit secret-file reads in approval dialogs and audit.
+            env["ESEC_VAULT_SESSION"] = "EsecVault app"
             p.environment = env
             let out = Pipe(), err = Pipe()
             p.standardOutput = out
@@ -61,12 +68,18 @@ public struct CLI: Sendable {
             let inPipe = Pipe()
             p.standardInput = stdin == nil ? FileHandle.nullDevice : inPipe
             try p.run()
-            if let stdin {
-                inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-                try? inPipe.fileHandleForWriting.close()
-            }
             let errBox = DataBox()
             let group = DispatchGroup()
+            if let stdin {
+                // Drain stdout/stderr concurrently with stdin: a multiline
+                // secret can exceed the pipe buffer.
+                group.enter()
+                DispatchQueue.global().async {
+                    try? inPipe.fileHandleForWriting.write(contentsOf: Data(stdin.utf8))
+                    try? inPipe.fileHandleForWriting.close()
+                    group.leave()
+                }
+            }
             group.enter()
             DispatchQueue.global().async {
                 errBox.data = err.fileHandleForReading.readDataToEndOfFile()
@@ -104,9 +117,12 @@ public struct CLI: Sendable {
     public func lastVerify() async throws -> VerifySaved { try await json(VerifySaved.self, ["verify", "--last", "--json"]) }
     public func verifyNow() async throws -> VerifyReport { try await json(VerifyReport.self, ["verify", "--json"]) }
     public func seals() async throws -> [SealView] { try await json([SealView].self, ["seal", "--all", "--json"]) }
-    public func securityKeys() async throws -> SecurityKeyList { try await json(SecurityKeyList.self, ["security-keys", "list", "--json"]) }
+    public func securityKeys(scan: Bool = false) async throws -> SecurityKeyList {
+        try await json(SecurityKeyList.self, ["security-keys", "list", "--json"] + (scan ? [] : ["--cached"]))
+    }
     public func setup() async throws -> [SetupItem] { try await json([SetupItem].self, ["setup", "--check", "--json"]) }
     public func status() async throws -> Status { try await json(Status.self, ["status", "--json"]) }
+    public func daemonStatus() async throws -> DaemonStatus { try await json(DaemonStatus.self, ["daemon", "status"]) }
     public func activity(project: String? = nil, limit: Int = 200) async throws -> [ActivityEntry] {
         var args = ["activity", "--json", "--limit", String(limit)]
         if let project { args += ["--project", project] }

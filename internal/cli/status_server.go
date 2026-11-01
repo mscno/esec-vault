@@ -42,6 +42,10 @@ type storeStatus struct {
 }
 
 func inspectServer(ctx *cliCtx, problems *[]string) *serverStatus {
+	if err := account.RequireLogin(ctx.Keyring); err != nil {
+		*problems = append(*problems, err.Error())
+		return nil
+	}
 	st, err := account.LoadState()
 	if errors.Is(err, account.ErrNotLoggedIn) {
 		return nil

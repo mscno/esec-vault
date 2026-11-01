@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,7 +24,6 @@ import (
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/storage"
 	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/wire"
 )
@@ -66,6 +65,9 @@ var entryName = regexp.MustCompile(`^(ESEC_PRIVATE_KEY(_[A-Z0-9_]{1,128})?|ESEC_
 func (a *Account) Sync(ctx context.Context, opts SyncOptions) (*SyncResult, error) {
 	var res *SyncResult
 	err := a.Locked(func() error {
+		if err := a.stagePending(); err != nil {
+			return err
+		}
 		var err error
 		res, err = a.sync(ctx, opts)
 		return err
@@ -86,6 +88,21 @@ func (a *Account) sync(ctx context.Context, opts SyncOptions) (*SyncResult, erro
 	if err != nil {
 		return nil, err
 	}
+	// Durable pending edits remain usable even if a working keyring was
+	// lost before reconnecting. Explicitly evicted projects remain excluded.
+	pending, err := a.readLocalVault(PendingPath(), id)
+	if err != nil {
+		return nil, err
+	}
+	if pending != nil {
+		_, conflicts, err := a.merge(pending.Projects, a.base(id), opts.Interactive)
+		if err != nil {
+			return nil, err
+		}
+		if len(conflicts) > 0 {
+			return nil, ErrConflicts
+		}
+	}
 	a.State.pin(st)
 	res := &SyncResult{KeyChanged: before != 0 && before != st.UKeyVersion}
 	for attempt := 0; attempt < 4; attempt++ {
@@ -100,7 +117,7 @@ func (a *Account) sync(ctx context.Context, opts SyncOptions) (*SyncResult, erro
 	return res, errors.Join(errors.New("the vault kept changing on the server; try again"), a.State.Save())
 }
 
-func (a *Account) syncOnce(ctx context.Context, st *chain.State, id *identity.Identity, opts SyncOptions, res *SyncResult) (bool, error) {
+func (a *Account) syncOnce(ctx context.Context, st *chain.State, id *identity.Identity, opts SyncOptions, res *SyncResult) (bool, error) { //nolint:gocyclo // keep the ordered recovery and commit invariants in one auditable sequence
 	remote, err := a.Client.Vault(ctx)
 	if client.IsCode(err, wire.ErrNotFound) {
 		remote = nil
@@ -115,8 +132,24 @@ func (a *Account) syncOnce(ctx context.Context, st *chain.State, id *identity.Id
 			return false, err
 		}
 		ifMatch = remote.Version
+		// Pending local guard/alias changes take part before remote keys are
+		// materialized, so stale aliases cannot reappear during the pull.
+		combined, err := a.collectInventory(id, remoteVault)
+		if err != nil {
+			return false, err
+		}
+		if err := a.applyKeyState(combined); err != nil {
+			return false, err
+		}
+		filtered := *remoteVault
+		filtered.Projects = map[string]map[string]string{}
+		for project, entries := range remoteVault.Projects {
+			filtered.Projects[project] = maps.Clone(entries)
+		}
+		filtered.Catalog = combined.Catalog
+		applyDeleted(&filtered)
 		if remote.Version != a.State.Vault.Version || len(a.State.Vault.Conflicts) > 0 {
-			added, conflicts, err := a.merge(remoteVault.Projects, a.base(id), opts.Interactive)
+			added, conflicts, err := a.merge(filtered.Projects, a.base(id), opts.Interactive)
 			if err != nil {
 				return false, err
 			}
@@ -129,15 +162,33 @@ func (a *Account) syncOnce(ctx context.Context, st *chain.State, id *identity.Id
 			}
 		}
 	}
-	local, err := a.localProjects()
+	inventory, err := a.collectInventory(id, remoteVault)
 	if err != nil {
 		return false, err
 	}
-	if remoteVault != nil && reflect.DeepEqual(local, remoteVault.Projects) {
-		if err := saveBase(remote.Blob); err != nil {
+	if err := a.applyKeyState(inventory); err != nil {
+		return false, err
+	}
+	// A pending explicit unguard may restore a key that the older remote
+	// protection record removed above. Materialize the reconciled inventory.
+	added, conflicts, err := a.merge(inventory.Projects, a.base(id), opts.Interactive)
+	if err != nil {
+		return false, err
+	}
+	res.Added = append(res.Added, added...)
+	if len(conflicts) != 0 {
+		a.State.Vault.Conflicts = conflicts
+		res.Conflicts = conflicts
+		return false, ErrConflicts
+	}
+	if sameInventory(inventory, remoteVault) {
+		if err := a.saveBase(remote.Blob, id); err != nil {
 			return false, err
 		}
 		a.State.Vault = VaultPin{Version: remote.Version, Generation: remoteVault.Generation, SHA256: remote.SHA256, SyncedAt: a.Now()}
+		if err := clearPending(); err != nil {
+			return false, err
+		}
 		res.VaultVersion, res.Generation = remote.Version, remoteVault.Generation
 		return true, nil
 	}
@@ -149,8 +200,14 @@ func (a *Account) syncOnce(ctx context.Context, st *chain.State, id *identity.Id
 	if err != nil {
 		return false, err
 	}
-	put, gen, err := a.vaultPut(st, id, wrapped, ifMatch, gen)
+	put, gen, err := a.vaultPut(st, id, wrapped, ifMatch, gen, inventory)
 	if err != nil {
+		return false, err
+	}
+	if err := a.writeLocalVault(PendingPath(), inventory); err != nil {
+		return false, err
+	}
+	if err := a.uploadObjects(ctx, inventory, remoteVault); err != nil {
 		return false, err
 	}
 	v, err := a.Client.PutVault(ctx, *put)
@@ -160,30 +217,35 @@ func (a *Account) syncOnce(ctx context.Context, st *chain.State, id *identity.Id
 	if err != nil {
 		return false, err
 	}
-	if err := saveBase(put.Blob); err != nil {
+	if err := a.saveBase(put.Blob, id); err != nil {
 		return false, err
 	}
 	a.State.Vault = VaultPin{Version: v.Version, Generation: gen, SHA256: v.SHA256, SyncedAt: a.Now()}
+	if err := clearPending(); err != nil {
+		return false, err
+	}
 	res.Pushed, res.VaultVersion, res.Generation = true, v.Version, gen
 	return true, nil
 }
 
 // basePath holds the last vault version this machine synced. It is the
-// common ancestor for three-way merges. It is the server's own blob, sealed
-// to the user key, so it adds no new plaintext copy of any key.
+// common ancestor for three-way merges, sealed to this device with evicted
+// project keys omitted.
 func basePath() string { return filepath.Join(paths.Home(), "vault-server.esec") }
 
-func saveBase(blob []byte) error { return storage.Write(basePath(), blob) }
+func clearPending() error {
+	err := os.Remove(PendingPath())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return prunePendingObjects(nil, nil)
+}
 
 // base returns the projects of the last synced vault, or nil when unknown
 // (first sync, or the user key rotated since).
 func (a *Account) base(id *identity.Identity) map[string]map[string]string {
-	raw, err := os.ReadFile(basePath())
-	if err != nil {
-		return nil
-	}
-	v, err := vaultfile.Open(raw, &id.Public, &id.Private)
-	if err != nil {
+	v, err := a.readLocalVault(basePath(), id)
+	if err != nil || v == nil {
 		return nil
 	}
 	return v.Projects
@@ -207,11 +269,18 @@ func (a *Account) openRemote(st *chain.State, id *identity.Identity, remote *wir
 }
 
 // vaultPut seals the current local keyrings into a signed vault upload.
-func (a *Account) vaultPut(st *chain.State, id *identity.Identity, wrapped []byte, ifMatch, gen uint64) (*wire.VaultPut, uint64, error) {
-	local, err := a.localProjects()
+func (a *Account) vaultPut(st *chain.State, id *identity.Identity, wrapped []byte, ifMatch, gen uint64, supplied ...*vaultfile.Vault) (*wire.VaultPut, uint64, error) {
+	var inventory *vaultfile.Vault
+	var err error
+	if len(supplied) > 0 {
+		inventory = supplied[0]
+	} else {
+		inventory, err = a.collectInventory(id, nil)
+	}
 	if err != nil {
 		return nil, 0, err
 	}
+	local := inventory.Projects
 	h, err := identity.ReadHeader(wrapped)
 	if err != nil {
 		return nil, 0, err
@@ -223,7 +292,8 @@ func (a *Account) vaultPut(st *chain.State, id *identity.Identity, wrapped []byt
 	if master != st.MasterPub {
 		return nil, 0, errors.New("identity.esec is wrapped to a different master key than the account's")
 	}
-	blob, err := vaultfile.Seal(&vaultfile.Vault{Projects: local, Identity: wrapped, IdentityFingerprint: id.Fingerprint(), Generation: gen, CreatedAt: a.Now().UTC()}, &id.Public, &master)
+	inventory.Identity, inventory.IdentityFingerprint, inventory.Generation, inventory.CreatedAt = wrapped, id.Fingerprint(), gen, a.Now().UTC()
+	blob, err := vaultfile.Seal(inventory, &id.Public, &master)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -348,7 +418,25 @@ func (a *Account) merge(remote, base map[string]map[string]string, interactive b
 		names = append(names, p)
 	}
 	sort.Strings(names)
+	cache, err := LoadCachePolicy()
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, project := range names {
+		if cache.Projects[project] == "none" {
+			// An explicit import may temporarily have local keys even though
+			// automatic caching is disabled. Detect conflicts before upload.
+			local, readErr := a.KS.Read(project)
+			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+				return nil, nil, readErr
+			}
+			for key, value := range local {
+				if rv, ok := remote[project][key]; ok && rv != value && rv != base[project][key] {
+					conflicts = append(conflicts, project+" "+key)
+				}
+			}
+			continue
+		}
 		entries := remote[project]
 		for k := range entries {
 			if !entryName.MatchString(k) {

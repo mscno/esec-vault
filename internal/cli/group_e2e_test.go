@@ -30,14 +30,14 @@ func TestMachineGroupsEndToEnd(t *testing.T) { //nolint:gocyclo,maintidx // one 
 
 	// --- The owner has two projects, both with a prod environment. ---
 	owner := newMachine(t, bin, "owner")
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
+	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	store, api := t.TempDir(), t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", store, "--env", "dev,prod", "--format", "env")
 	owner.run("", "project", "init", "acme/api", "--dir", api, "--env", "prod", "--format", "env")
 	writeSecret(t, owner, store, "prod", "DATABASE_URL=postgres://store-prod")
 	writeSecret(t, owner, store, "dev", "DATABASE_URL=postgres://store-dev")
 	writeSecret(t, owner, api, "prod", "DATABASE_URL=postgres://api-prod")
-	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	owner.run("", "team", "create", "--project=acme/store")
 	owner.run("", "team", "create", "--project=acme/api")
 

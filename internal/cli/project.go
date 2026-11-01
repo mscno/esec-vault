@@ -226,7 +226,6 @@ func (c *ProjectInitCmd) create(project string) error { //nolint:gocyclo // keys
 	if err := pf.Save(c.Dir); err != nil {
 		return err
 	}
-	markDirty("project init")
 	for file, content := range files {
 		if err := writeNewTemplate(file, []byte(content)); err != nil {
 			return err
@@ -461,7 +460,6 @@ func (c *EnvAddCmd) Run(ctx *cliCtx) error {
 			return err
 		}
 	}
-	markDirty("env add")
 	if file != "" {
 		if err := writeNewTemplate(file, content); err != nil {
 			return err

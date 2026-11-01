@@ -402,7 +402,7 @@ func (s *Server) apiVaultPut(w http.ResponseWriter, r *http.Request, c *reqCtx) 
 }
 
 // putVault stores a new vault version if IfMatch names the current one.
-func (s *Server) putVault(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.VaultPut, state *chain.State) (*wire.Vault, error) {
+func (s *Server) putVault(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.VaultPut, state *chain.State) (*wire.Vault, error) { //nolint:gocyclo // keep the ordered recovery and commit invariants in one auditable sequence
 	if len(req.Blob) == 0 || len(req.Blob) > maxVaultBytes {
 		return nil, clientErr(http.StatusBadRequest, wire.ErrInvalidRequest, "vault blob is empty or too large")
 	}
@@ -441,6 +441,9 @@ func (s *Server) putVault(ctx context.Context, tx *sql.Tx, c *reqCtx, req *wire.
 	}
 	if req.IfMatch != cur {
 		return nil, clientErr(http.StatusConflict, wire.ErrConflict, "vault changed on the server (version %d); pull and merge first", cur)
+	}
+	if err := rejectVaultDowngrade(ctx, tx, c.user.ID, cur, req.Blob); err != nil {
+		return nil, err
 	}
 	now := s.now()
 	sum := sha256.Sum256(req.Blob)
@@ -1107,4 +1110,27 @@ func (s *Server) apiAgentUnlock(w http.ResponseWriter, r *http.Request, c *reqCt
 		return
 	}
 	writeErr(w, http.StatusNotFound, wire.ErrNotFound, "no enabled unlock slot for this SSH key")
+}
+
+func rejectVaultDowngrade(ctx context.Context, tx *sql.Tx, user string, cur uint64, blob []byte) error {
+	// Once richer recovery data is present, a legacy writer must not replace
+	// it with a keyring-only payload. The envelope version is signed too.
+	if cur > 0 {
+		var previous []byte
+		if err := tx.QueryRowContext(ctx, `SELECT blob FROM vault_versions WHERE user_id = ? AND version = ?`, user, cur).Scan(&previous); err != nil {
+			return err
+		}
+		oldFormat, err := vaultfile.FormatVersion(previous)
+		if err != nil {
+			return err
+		}
+		newFormat, err := vaultfile.FormatVersion(blob)
+		if err != nil {
+			return err
+		}
+		if newFormat < oldFormat {
+			return clientErr(http.StatusConflict, wire.ErrConflict, "upgrade this client: the vault contains newer recovery data")
+		}
+	}
+	return nil
 }

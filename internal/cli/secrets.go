@@ -31,6 +31,8 @@ import (
 
 // SecretsCmd finds, changes and checks the values in secrets files.
 type SecretsCmd struct {
+	Show    SecretsShowCmd    `cmd:"" help:"Decrypt a local file into JSON using this machine's keys; guarded reads require approval. Never changes the file."`
+	Update  SecretsUpdateCmd  `cmd:"" help:"Save one encrypted value from JSON stdin, only if the file revision still matches."`
 	List    SecretsListCmd    `cmd:"" default:"withargs" help:"List the secrets files under a directory: environment, project, keys, values in the clear (default)."`
 	Where   SecretsWhereCmd   `cmd:"" help:"Find every secrets file that holds a key, across repositories."`
 	Set     SecretsSetCmd     `cmd:"" help:"Set one value in a project's secrets files, encrypted, leaving the others as they are."`
@@ -870,7 +872,6 @@ func (c *EnvRotateExposedCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // plan,
 			r.Error, failed = "rotated here, but not published: "+err.Error()+" (esec vault access publish "+r.Env+" --project "+r.Project+")", failed+1
 		}
 	}
-	markDirty("env rotate")
 	if c.JSON {
 		if err := printJSON(plan); err != nil {
 			return err

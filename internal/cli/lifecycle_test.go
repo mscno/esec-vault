@@ -16,7 +16,6 @@ import (
 	"github.com/mscno/esec-vault/internal/keyring"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/service"
 )
 
@@ -28,6 +27,7 @@ func TestCLIBackupAndFreshRecover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	enrollTestAccount(t, ctx.Keyring)
 	repo := t.TempDir()
 	c := ProjectInitCmd{Project: "org/app", Dir: repo, Env: []string{"dev", "api.prod"}, Format: "env", Template: true}
 	if err := c.Run(ctx); err != nil {
@@ -134,20 +134,4 @@ func writeExe(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return p
-}
-
-func TestNoninteractiveRemoteAddNeverPrompts(t *testing.T) {
-	t.Setenv("ESEC_VAULT_HOME", t.TempDir())
-	c := RemoteAddCmd{Name: "bad", Type: "rclone"}
-	if err := c.Run(&cliCtx{}); err == nil {
-		t.Fatal("missing fields accepted")
-	}
-	good := RemoteAddCmd{Name: "local", Type: "file", Dir: t.TempDir(), Prefix: "v2"}
-	if err := good.Run(&cliCtx{}); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := remote.Load()
-	if err != nil || cfg.Default != "local" {
-		t.Fatalf("config: %v", err)
-	}
 }

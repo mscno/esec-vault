@@ -8,60 +8,46 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"time"
 
+	"github.com/mscno/esec-vault/internal/account"
 	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/identity"
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/remote"
 	"github.com/mscno/esec-vault/internal/service"
-	"github.com/mscno/esec-vault/internal/vaultfile"
 	"github.com/mscno/esec-vault/internal/verify"
 	"github.com/mscno/esec/pkg/projectfile"
 )
 
-// InitCmd performs first-time identity setup and a verified local backup.
+// InitCmd is the legacy alias for signing in to a vault server.
 type InitCmd struct {
-	Passphrase   bool `help:"Prompt for optional recovery passphrase"`
-	NoPassphrase bool `help:"Use only the generated recovery phrase"`
-	SkipBackup   bool `help:"Skip first snapshot"`
+	Server string `arg:"" optional:"" help:"Vault server (or ESEC_VAULT_SERVER)"`
 }
 
-// Run initializes an identity and verifies its first snapshot.
-func (c *InitCmd) Run(ctx *cliCtx) error {
-	if err := (&IdentityInitCmd{Passphrase: c.Passphrase, NoPassphrase: c.NoPassphrase}).Run(ctx); err != nil {
-		return err
-	}
-	if c.SkipBackup {
-		return nil
-	}
-	return (&BackupCmd{Verify: true}).Run(ctx)
-}
+// Run starts server enrollment rather than creating a standalone vault.
+func (c *InitCmd) Run(ctx *cliCtx) error { return (&LoginCmd{Server: c.Server}).Run(ctx) }
 
-// StatusCmd reports local and remote backup health without exposing secrets.
+// StatusCmd reports pending changes and vault-server health without exposing secrets.
 type StatusCmd struct {
 	JSON bool `help:"Machine-readable output"`
 }
 type status struct {
-	Daemon       *daemon.Response `json:"daemon,omitempty"`
-	Identity     string           `json:"identity,omitempty"`
-	Passphrase   bool             `json:"passphrase_protected"`
-	Generation   uint64           `json:"generation"`
-	CreatedAt    time.Time        `json:"created_at"`
-	Projects     int              `json:"projects"`
-	Recoverable  bool             `json:"recoverable"`
-	Stale        bool             `json:"stale"`
-	Pending      bool             `json:"push_pending"`
-	Destinations *remote.State    `json:"destinations,omitempty"`
-	VaultServer  *serverStatus    `json:"vault_server,omitempty"`
-	SecretStore  *storeStatus     `json:"secret_store,omitempty"`
-	Problems     []string         `json:"problems,omitempty"`
+	Daemon      *daemon.Response `json:"daemon,omitempty"`
+	Identity    string           `json:"identity,omitempty"`
+	Passphrase  bool             `json:"passphrase_protected"`
+	Generation  uint64           `json:"generation"`
+	CreatedAt   time.Time        `json:"created_at"`
+	Projects    int              `json:"projects"`
+	Recoverable bool             `json:"recoverable"`
+	Stale       bool             `json:"stale"`
+	VaultServer *serverStatus    `json:"vault_server,omitempty"`
+	SecretStore *storeStatus     `json:"secret_store,omitempty"`
+	Problems    []string         `json:"problems,omitempty"`
 }
 
-// Run displays last verified upload and current snapshot state.
+// Run displays last verified upload and current pending state.
 func (c *StatusCmd) Run(ctx *cliCtx) error {
 	s := inspect(ctx)
 	s.SecretStore = inspectStore(ctx, &s.Problems)
@@ -79,7 +65,7 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 	if c.JSON {
 		return printJSON(s)
 	}
-	fmt.Printf("Identity: %s\nSnapshot: generation %d, %d projects, recovery material: %t\nStale: %t; upload pending: %t\n", s.Identity, s.Generation, s.Projects, s.Recoverable, s.Stale, s.Pending)
+	fmt.Printf("Identity: %s\nServer vault: generation %d, %d local projects, recovery uploaded: %t\nUpload pending: %t\n", s.Identity, s.Generation, s.Projects, s.Recoverable, s.Stale)
 	printServerStatus(s.VaultServer, s.SecretStore)
 	if s.Daemon != nil {
 		fmt.Printf("Daemon: running (pid %d), broker unlocked: %t\n", s.Daemon.PID, s.Daemon.Unlocked)
@@ -87,11 +73,11 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 	for _, p := range s.Problems {
 		fmt.Println("!", p)
 	}
-	return (&RemoteListCmd{}).Run(ctx)
+	return nil
 }
 
 func inspect(ctx *cliCtx) status {
-	s := status{Pending: remote.IsDirty()}
+	s := status{}
 	id, err := identity.Load(ctx.Keyring)
 	if err != nil {
 		s.Problems = append(s.Problems, err.Error())
@@ -99,60 +85,35 @@ func inspect(ctx *cliCtx) status {
 	}
 	s.Identity = id.Fingerprint()
 	s.Passphrase = id.PassphraseProtected
-	raw, err := os.ReadFile(paths.VaultFile())
-	if err != nil {
-		s.Problems = append(s.Problems, "no readable local snapshot: "+err.Error())
-		return s
-	}
-	v, err := vaultfile.Open(raw, &id.Public, &id.Private)
+	st, err := account.LoadState()
 	if err != nil {
 		s.Problems = append(s.Problems, err.Error())
 		return s
 	}
-	s.Generation = v.Generation
-	s.CreatedAt = v.CreatedAt
-	s.Projects = len(v.Projects)
-	s.Recoverable = len(v.Identity) > 0 && vaultfile.HasMasterCopy(raw) && v.IdentityFingerprint == id.Fingerprint()
-	if !s.Recoverable {
-		s.Problems = append(s.Problems, "snapshot lacks matching recovery material")
+	s.Generation = st.Vault.Generation
+	s.CreatedAt = st.Vault.SyncedAt
+	s.Recoverable = st.Vault.Version > 0
+	if projects, err := keystore.New().List(); err == nil {
+		s.Projects = len(projects)
+	} else {
+		s.Problems = append(s.Problems, err.Error())
 	}
-	s.Stale, err = stale(v, id)
-	if err != nil {
+	_, err = os.Stat(account.PendingPath())
+	s.Stale = err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		s.Problems = append(s.Problems, err.Error())
 	}
 	if s.Stale {
-		s.Problems = append(s.Problems, "local snapshot is stale; run backup or remote watch")
+		s.Problems = append(s.Problems, "saved locally; server upload pending")
 	}
-	s.Destinations, err = remote.LoadState()
-	if err != nil {
-		s.Problems = append(s.Problems, err.Error())
+	if account.StagingIssue() {
+		s.Stale = true
+		s.Problems = append(s.Problems, "local backup preparation failed; run sync --server to inspect the error")
+	}
+	if !s.Recoverable {
+		s.Problems = append(s.Problems, "no acknowledged server recovery revision yet")
 	}
 	return s
-}
-
-func stale(v *vaultfile.Vault, id *identity.Identity) (bool, error) {
-	ks := keystore.New()
-	projects, err := ks.List()
-	if err != nil {
-		return true, err
-	}
-	if len(projects) != len(v.Projects) {
-		return true, nil
-	}
-	for _, p := range projects {
-		e, err := ks.Read(p)
-		if err != nil {
-			return true, err
-		}
-		if !reflect.DeepEqual(e, v.Projects[p]) {
-			return true, nil
-		}
-	}
-	wrapped, _, err := identity.BackupMaterial(id)
-	if err != nil {
-		return true, err
-	}
-	return !reflect.DeepEqual(wrapped, v.Identity), nil
 }
 
 // DoctorCmd checks identity, coverage, paths and backup permissions.
@@ -164,13 +125,8 @@ type DoctorCmd struct {
 func (c *DoctorCmd) Run(ctx *cliCtx) error {
 	s := inspect(ctx)
 	inspectStore(ctx, &s.Problems)
-	server := inspectServer(ctx, &s.Problems)
+	inspectServer(ctx, &s.Problems)
 	issues := s.Problems
-	if cfg, err := remote.Load(); err != nil {
-		issues = append(issues, err.Error())
-	} else if cfg.Default == "" && server == nil {
-		issues = append(issues, "no backup destination: sign in to a vault server (esec vault login) or add a remote (remote add)")
-	}
 	issues = append(issues, permissionIssues()...)
 	issues = append(issues, daemonVersionIssues(ctx)...)
 	safety, advice := keySafetyIssues()
@@ -209,7 +165,7 @@ func keySafetyIssues() (issues, advice []string) {
 	case last.At.IsZero():
 		advice = append(advice, "keys never checked: esec vault verify --root ~/src")
 	case last.Report != nil && !last.Report.OK():
-		issues = append(issues, fmt.Sprintf("%d key(s) need attention (%d lost): esec vault verify", last.Report.Problems, last.Report.Lost))
+		issues = append(issues, fmt.Sprintf("%d key(s) need attention (%d current keys not found, %d historical keys not found): esec vault verify", last.Report.Problems, last.Report.Lost, last.Report.HistoryMissing))
 	case time.Since(last.At) > 7*24*time.Hour:
 		advice = append(advice, fmt.Sprintf("keys last checked %s ago: esec vault verify", time.Since(last.At).Round(time.Hour)))
 	}
@@ -247,7 +203,7 @@ func daemonVersionIssues(ctx *cliCtx) []string {
 	if err != nil {
 		return []string{"could not locate this executable to compare builds: " + err.Error()}
 	}
-	same, err := m.Current(exe)
+	same, err := m.BinaryCurrent(exe)
 	if err != nil {
 		return []string{"could not compare the managed daemon build: " + err.Error()}
 	}
@@ -318,7 +274,6 @@ func scanRepos(root string) []string {
 	return issues
 }
 
-func humanAge(d time.Duration) string { return d.Round(time.Second).String() }
 func printJSON(v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

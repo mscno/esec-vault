@@ -59,7 +59,7 @@ func TestSealedSharingEndToEnd(t *testing.T) { //nolint:gocyclo // one sequentia
 		t.Fatal(err)
 	}
 	owner := newMachine(t, bin, "owner").with(gh, "ESEC_VAULT_GUARD_IDENTITIES="+ids, "ESEC_VAULT_DIALOGS=off")
-	owner.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	owner.seedIdentity()
 	login(t, h, owner.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+servertest.BootstrapToken), "").wait(true)
 	repo := t.TempDir()
 	owner.run("", "project", "init", "acme/store", "--dir", repo, "--env", "dev,prod", "--format", "env")
@@ -74,7 +74,7 @@ func TestSealedSharingEndToEnd(t *testing.T) { //nolint:gocyclo // one sequentia
 	}
 
 	alice := newMachine(t, bin, "alice").with(gh, "SSH_AUTH_SOCK="+sock)
-	alice.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	alice.seedIdentity()
 	loginAs(t, h, "alice", alice.with("ESEC_VAULT_BOOTSTRAP_TOKEN="+server.UserBootstrapToken(servertest.BootstrapSecret, 2002)), "").wait(true)
 	alice.run("", "access", "prove")
 	alice.run("", "projects", "add", repo)
@@ -162,7 +162,7 @@ func TestSealedSharingEndToEnd(t *testing.T) { //nolint:gocyclo // one sequentia
 	// --- Unshared: alice's next checkout cannot open dev. ---
 	owner.run("", "unshare", "dev", "--with", "alice", "--project", "acme/store")
 	fresh := newMachine(t, bin, "alice-laptop").with(gh, "SSH_AUTH_SOCK="+sock)
-	fresh.run("", "identity", "init", "--no-passphrase", "--skip-confirm")
+	fresh.seedIdentity()
 	pf, _ = projectfile.Load(repo)
 	if strings.Contains(strings.Join(pf.Env["dev"].Readers, ","), "alice") {
 		t.Fatalf("alice still a reader: %v", pf.Env["dev"].Readers)
