@@ -103,7 +103,7 @@ func TestHints(t *testing.T) {
 
 // The binary: no arguments and "help" show help on stdout and succeed;
 // usage errors go to stderr only, with kong's usage exit code.
-func TestHelpAndUsageStreams(t *testing.T) {
+func TestHelpAndUsageStreams(t *testing.T) { //nolint:gocyclo // one story, step by step
 	bin := buildCLI(t)
 	home := t.TempDir()
 	runIn := func(dir string, stdin string, args ...string) (stdout, stderr string, code int) {
@@ -125,12 +125,30 @@ func TestHelpAndUsageStreams(t *testing.T) {
 	}
 	dir := t.TempDir()
 
+	// The short help shows the everyday commands and says where the rest
+	// are; help all lists every command, but not the old names.
 	out, _, code := runIn(dir, "")
-	if code != 0 || !strings.Contains(out, "Get started:") || !strings.Contains(out, "On machines, CI jobs and servers:") {
+	if code != 0 || !strings.Contains(out, "Get started:") || !strings.Contains(out, "  share ") || strings.Contains(out, "  daemon ") || !strings.Contains(out, "esec vault help all") {
 		t.Fatalf("no-argument help (exit %d):\n%s", code, out)
+	}
+	if strings.Contains(out, "Backup and recovery:") {
+		t.Fatalf("a section with nothing in it is listed:\n%s", out)
+	}
+	out, _, code = runIn(dir, "", "help", "all")
+	if code != 0 || !strings.Contains(out, "Machines and workloads") || !strings.Contains(out, "  daemon ") || strings.Contains(out, "esec vault help all") {
+		t.Fatalf("help all (exit %d):\n%s", code, out)
+	}
+	for _, old := range []string{"  init ", "  members ", "  team ", "  keys "} {
+		if strings.Contains(out, old) {
+			t.Fatalf("help all lists %q:\n%s", old, out)
+		}
 	}
 	if strings.Contains(out, "daemon run") {
 		t.Fatal("the service entry point is listed")
+	}
+	// An old name still runs, and says what it is now.
+	if _, errOut, _ := runIn(dir, "", "team", "show", "--json"); !strings.Contains(errOut, "this command is now esec vault access") {
+		t.Fatalf("team ran without naming access: %s", errOut)
 	}
 	out, _, code = runIn(dir, "", "help", "group", "token")
 	if code != 0 || !strings.Contains(out, "Examples:") || !strings.Contains(out, "esec vault group token acme/production") {

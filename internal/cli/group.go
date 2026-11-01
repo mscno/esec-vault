@@ -25,7 +25,8 @@ type GroupCmd struct {
 	Show           GroupShowCmd           `cmd:"" help:"Show a group: its people, machines, tokens, projects and what needs doing."`
 	Create         GroupCreateCmd         `cmd:"" help:"Create a group, with you as its admin."`
 	Add            GroupAddCmd            `cmd:"" help:"Add a person to a group: they read what it reads."`
-	Grant          GroupGrantCmd          `cmd:"" help:"Let a group read environments of a shared project (replacing what it read)."`
+	Set            GroupGrantCmd          `cmd:"" help:"Set which environments of a shared project a group reads (replacing what it read)."`
+	Grant          GroupGrantCmd          `cmd:"" hidden:"" help:"Now group set."`
 	Revoke         GroupRevokeCmd         `cmd:"" help:"Stop a group reading a project."`
 	Token          GroupTokenCmd          `cmd:"" help:"Create an enrollment token: CI jobs use it directly, and machines join the group with it."`
 	AddMachine     GroupAddMachineCmd     `cmd:"" name:"add-machine" help:"Create a machine of the group and print its key, for a machine you set up yourself."`
@@ -36,7 +37,7 @@ type GroupCmd struct {
 	Leave          GroupLeaveCmd          `cmd:"" help:"Leave a group you are a member of."`
 	Rotate         GroupRotateCmd         `cmd:"" help:"Give the group a new key, sealed to every machine still in it."`
 	Admin          GroupAdminCmd          `cmd:"" help:"Make someone an admin of a group."`
-	Sync           TeamSyncCmd            `cmd:"" help:"Send keys machines and admins are missing (the background service does this too)."`
+	Sync           TeamSyncCmd            `cmd:"" hidden:"" help:"Now esec vault sync."`
 }
 
 // groupID returns a group id, taking a bare name as this account's own:
@@ -195,7 +196,7 @@ func (c *GroupShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one report, 
 	}
 	fmt.Println("Reads:")
 	if len(v.Projects) == 0 {
-		fmt.Println("  nothing yet; let it read a project with: esec vault group grant " + id + " --project ORG/REPO --env prod")
+		fmt.Println("  nothing yet; let it read a project with: esec vault group set " + id + " --project ORG/REPO --env prod")
 	}
 	for _, p := range v.Projects {
 		state := ""
@@ -203,9 +204,9 @@ func (c *GroupShowCmd) Run(ctx *cliCtx) error { //nolint:gocyclo // one report, 
 		case !p.Visible:
 			state = "(you are not a member of the project)"
 		case !p.Trusted:
-			state = "(the group does not take its keys yet; an admin of the group runs 'esec vault group grant')"
+			state = "(the group does not take its keys yet; an admin of the group runs 'esec vault group set')"
 		case len(p.Envs) == 0:
-			state = "(the project grants nothing yet; an admin of the project runs 'esec vault group grant')"
+			state = "(the project grants nothing yet; an admin of the project runs 'esec vault group set')"
 		case !p.Delivered:
 			state = "(keys not sealed to the group's current key yet)"
 		}
@@ -330,10 +331,10 @@ func printGrant(id, project string, envs []string, res *account.GrantResult) {
 		fmt.Printf("  ! This device has no current key for %s; an admin of %s who has them sends them on their next sync.\n", strings.Join(res.Missing, ", "), project)
 	}
 	if res.NeedGroupAdmin {
-		fmt.Printf("  ! An admin of %s still has to agree: esec vault group grant %s --project %s --env %s\n", id, id, project, strings.Join(envs, ","))
+		fmt.Printf("  ! An admin of %s still has to agree: esec vault group set %s --project %s --env %s\n", id, id, project, strings.Join(envs, ","))
 	}
 	if res.NeedProjectAdmin {
-		fmt.Printf("  ! An admin of %s still has to grant it: esec vault group grant %s --project %s --env %s\n", project, id, project, strings.Join(envs, ","))
+		fmt.Printf("  ! An admin of %s still has to grant it: esec vault group set %s --project %s --env %s\n", project, id, project, strings.Join(envs, ","))
 	}
 	printRotations(res.Exposed, id+" can no longer read")
 }

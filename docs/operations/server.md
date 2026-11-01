@@ -127,8 +127,17 @@ those credentials outside the vault: you need them to restore the server.
 A Tigris bucket belongs to the same Fly account as the app; the
 full-loss procedure below covers losing both.
 
-The server is built from this repository alone; it depends on esec v0.9.0
-or later from the module proxy.
+The server is built from this repository alone; it uses the pinned esec release
+from the module proxy.
+
+Production `vault.parap.ly` uses `deploy/fly.production.toml`. A successful
+Release workflow triggers the Deploy server workflow, or an operator may dispatch
+it with a published `vX.Y.Z` tag. `FLY_API_TOKEN` is an app-scoped deploy token
+in GitHub Actions secrets; renew it before its 90-day expiry. Production requires
+backup configuration. Fly's `BUCKET_NAME` is accepted automatically with the
+Tigris endpoint and region when no explicit Litestream bucket is configured.
+The Mac release ZIPs are ad-hoc signed; native Apple passkeys require the separate
+Apple team/associated-domain build described in the macOS documentation.
 
 ## Step 4: Connect your first machine
 
@@ -242,9 +251,9 @@ everyone who checks them.
 | Task | How |
 |---|---|
 | Let a person in | Add their numeric GitHub id to `allowed_github_ids`, redeploy, send them `esec-vault-server -bootstrap-token-for <id>`. They run `esec vault login URL` and `esec vault access prove`. |
-| Share a project with them | In the repository: `esec vault access create` (once), `esec vault access add LOGIN --env dev`. Or on the project's page, then sign it. |
-| Give CI its secrets | A machine group per environment, a token per repository bound to it: `esec vault group token acme/ci deploy --github-repo acme/store --github-ref refs/heads/main --out - \| gh secret set ESEC_VAULT_MACHINE_KEY`. See the README's recipes for the workflow. |
-| Run an app (Fly.io, containers) | The group token as the app's secret `ESEC_VAULT_MACHINE_KEY`; start it with `esec-vault machine run -- esec run prod -- ./app`. |
+| Share environments with them | In the repository: `esec vault share dev --with LOGIN`, then commit `esec.toml` and `.esec/`. For membership on the server: `esec vault access create` (once), `esec vault access grant LOGIN --env dev`, or the project's page, then sign it. |
+| Give CI its secrets | `esec vault ci add deploy --env prod --github acme/store`: its own age key, stored as the secret `ESEC_AGE_IDENTITY`; the job needs esec only. Most CI needs only this. For a project shared on the server, a machine or group token bound to the repository is the advanced route (see the README). |
+| Run an app (Fly.io, containers) | `esec vault ci add deploy --env prod --fly APP`, and start it with `esec run prod -- ./app`. With no secret at all: a KMS workload (`esec vault app init`, see [docs/runbook.md](../runbook.md)). |
 | Add a server | On it: `esec-vault machine join GROUP --server URL --fingerprint WORDS`; on a laptop: `esec vault group approve GROUP`. |
 | Autoscaling | `esec vault group token GROUP autoscale --expires 90d` in the image; machines run `esec-vault machine join` at boot. |
 | Remove a machine or token | The group's page › **Remove** (blocked at once), or `esec vault group remove GROUP NAME`. Rotate what it lists. |

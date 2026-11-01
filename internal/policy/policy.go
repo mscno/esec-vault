@@ -32,8 +32,9 @@ type Rule struct {
 
 // Policy is an ordered rule list with a default action.
 type Policy struct {
-	Default Action `toml:"default"`
-	Rules   []Rule `toml:"rule"`
+	Default    Action `toml:"default"`
+	Rules      []Rule `toml:"rule"`
+	Configured bool   `toml:"-"`
 }
 
 // Load reads a policy file. A missing file yields a deny-all policy; a policy
@@ -46,7 +47,7 @@ func Load(path string) (*Policy, error) {
 		}
 		return nil, err
 	}
-	var p Policy
+	p := Policy{Configured: true}
 	if err := toml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("invalid policy file %s: %w", path, err)
 	}

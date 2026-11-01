@@ -32,7 +32,7 @@ cp .build/release/EsecVault "$app/Contents/MacOS/EsecVault"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 root="$PWD/../.."
 appbin="$PWD/$app/Contents/MacOS"
-(cd "$root" && go build -ldflags "-X main.version=dev -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$appbin/esec-vault" ./cmd/esec-vault)
+(cd "$root" && go build -ldflags "-X main.version=${ESEC_VERSION:-dev} -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$appbin/esec-vault" ./cmd/esec-vault)
 (cd "$root" && go build -o "$appbin/age-plugin-passkey" ./cmd/age-plugin-passkey)
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -45,7 +45,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>AppIcon.icns</string>
   <key>CFBundleExecutable</key><string>EsecVault</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundleShortVersionString</key><string>${ESEC_VERSION:-0.1.0}</string>
+  <key>CFBundleVersion</key><string>${ESEC_VERSION:-0.1.0}</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
 </dict>

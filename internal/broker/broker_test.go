@@ -291,7 +291,7 @@ func TestBrokerResolvesByPublicKey(t *testing.T) {
 		Default: policy.Allow,
 	}
 	client, _, _ := startTestBroker(t, map[string]map[string]string{"org/repo": pubEntries}, pol)
-	secrets, err := client.GetSecrets("org/repo", "registry.production", secretsPath, ".ejson")
+	secrets, err := client.GetSecrets("org/repo", "dev", secretsPath, ".ejson")
 	if err != nil {
 		t.Fatal(err)
 	}

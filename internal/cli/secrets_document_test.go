@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/secretfile"
 	"github.com/mscno/esec/pkg/fileutils"
+	coreseal "github.com/mscno/esec/pkg/seal"
 )
 
 func localDocumentFixture(t *testing.T) (path, pub string) {
@@ -106,8 +108,21 @@ func TestSecretDocumentGuardedReadNeverFallsBackToCachedKey(t *testing.T) {
 			root := filepath.Dir(filepath.Dir(path))
 			if source == "project" {
 				writeDocumentTestFile(t, filepath.Join(root, "esec.toml"), []byte("project = 'acme/viewer'\n[env.dev]\nkey = '"+pub+"'\nguard = 'touch'\n"))
-			} else if err := (seal.Records{"dev": {Key: pub, Guard: "session"}}).Save(root); err != nil {
-				t.Fatal(err)
+			} else {
+				sealed := []byte("synthetic sealed key; fake broker denies before opening it")
+				if err := os.Mkdir(filepath.Join(root, ".esec"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				writeDocumentTestFile(t, filepath.Join(root, ".esec", "dev.age"), sealed)
+				_, signer, err := ed25519.GenerateKey(nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rec := &seal.Record{Key: pub, Guard: "session", Sealed: coreseal.Hash(sealed)}
+				rec.Sign("acme/viewer", "dev", "synthetic-test", signer)
+				if err := (seal.Records{"dev": rec}).Save(root); err != nil {
+					t.Fatal(err)
+				}
 			}
 			// A short socket path also works on macOS. The fake broker denies
 			// the read despite the valid clear key still present in the fixture.
@@ -148,7 +163,7 @@ func TestSecretDocumentGuardedReadNeverFallsBackToCachedKey(t *testing.T) {
 			}
 			select {
 			case req := <-requests:
-				if req.Op != broker.OpGetSecrets || !req.Document || req.Env != "dev" {
+				if req.Op != broker.OpReadDocument || req.Digest == "" || req.Env != "dev" {
 					t.Fatal("incorrect guarded request")
 				}
 			case <-time.After(time.Second):

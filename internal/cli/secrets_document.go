@@ -18,7 +18,6 @@ import (
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/caller"
 	"github.com/mscno/esec-vault/internal/paths"
-	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/secretfile"
 	"github.com/mscno/esec-vault/internal/storage"
 )
@@ -67,63 +66,18 @@ func (c *SecretsShowCmd) document() (*secretDocumentView, error) {
 	if f.Project == "" {
 		return nil, errors.New("no valid esec.toml above this file; check the project configuration")
 	}
-	guarded, err := documentIsGuarded(f)
+	target, err := esec.ResolveRead(filepath.Dir(path), path, f.Format)
 	if err != nil {
 		return nil, err
 	}
-	var doc *secretfile.Document
-	if guarded {
-		doc, err = c.brokerDocument(f)
-	} else {
-		doc, err = c.localDocument(f, data)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if doc.Revision != secretfile.Revision(data) {
+	if target.Digest != secretfile.Revision(data) {
 		return nil, errors.New("the file changed while opening; open it again")
 	}
-	return &secretDocumentView{File: f, Document: *doc}, nil
-}
-
-func documentIsGuarded(f *secretfile.File) (bool, error) {
-	pf, err := projectfile.Load(f.Root)
+	plain, err := esec.ReadDocument(target, esec.ReadOptions{Socket: c.Sock, Session: c.Session})
 	if err != nil {
-		return false, errors.New("could not read project guard settings; check esec.toml")
+		return nil, err
 	}
-	if seal.Guarded(pf.Env[f.Env].Guard) {
-		return true, nil
-	}
-	recs, err := seal.LoadRecords(f.Root)
-	if err != nil {
-		return false, errors.New("could not read project seal records; check .esec/seals.toml")
-	}
-	if rec := recs[f.Env]; rec != nil && seal.Guarded(rec.Guard) {
-		return true, nil
-	}
-	// A copied or renamed file must not turn a guarded key into a local read.
-	for env, e := range pf.Env {
-		if e.Key == f.PublicKey && seal.Guarded(e.Guard) {
-			return false, fmt.Errorf("this file uses the guarded key for %s; open that environment's configured file", env)
-		}
-	}
-	for env, rec := range recs {
-		if rec != nil && rec.Key == f.PublicKey && seal.Guarded(rec.Guard) {
-			return false, fmt.Errorf("this file uses the guarded key for %s; open that environment's configured file", env)
-		}
-	}
-	return false, nil
-}
-
-func (c *SecretsShowCmd) localDocument(f *secretfile.File, data []byte) (*secretfile.Document, error) {
-	var plain bytes.Buffer
-	if _, err := esec.Decrypt(bytes.NewReader(data), &plain, f.Env, esec.FileFormat(f.Format), filepath.Dir(f.Path), ""); err != nil {
-		if errors.Is(err, esec.ErrKeyNotFound) {
-			return nil, fmt.Errorf("no local key for this file: %w", err)
-		}
-		return nil, errors.New("could not decrypt this file with the local key; check the keyring and encrypted file")
-	}
-	values, err := secretfile.DocumentValues(plain.Bytes(), fileutils.FileFormat(f.Format))
+	values, err := secretfile.DocumentValues(plain, fileutils.FileFormat(f.Format))
 	if err != nil {
 		return nil, err
 	}
@@ -132,36 +86,16 @@ func (c *SecretsShowCmd) localDocument(f *secretfile.File, data []byte) (*secret
 	}
 	audit, err := broker.NewAuditLogger(paths.AuditPath())
 	if err != nil {
-		return nil, fmt.Errorf("could not record local file read: %w", err)
+		return nil, fmt.Errorf("could not record file read: %w", err)
 	}
 	if err := audit.Log(broker.AuditEntry{
-		UID: uint32(os.Getuid()), PID: uint32(os.Getpid()), Op: broker.OpGetSecrets, //nolint:gosec // platform uid/pid fit the audit schema
-		Project: f.Project, Env: f.Env, Decision: "allow", Detail: "local file, locally available key",
+		UID: uint32(os.Getuid()), PID: uint32(os.Getpid()), Op: broker.OpReadDocument, //nolint:gosec // platform uid/pid fit the audit schema
+		Project: f.Project, Env: target.Environment, Decision: "allow", Detail: "native document viewer",
 		Session: c.Session, Caller: caller.Describe(caller.Chain(os.Getpid())),
 	}); err != nil {
-		return nil, fmt.Errorf("could not record local file read: %w", err)
+		return nil, fmt.Errorf("could not record file read: %w", err)
 	}
-	return &secretfile.Document{Revision: secretfile.Revision(data), Values: values}, nil
-}
-
-func (c *SecretsShowCmd) brokerDocument(f *secretfile.File) (*secretfile.Document, error) {
-	sock := c.Sock
-	if sock == "" {
-		sock = paths.SocketPath()
-	}
-	client := broker.NewClient(sock)
-	client.Timeout = 6 * time.Minute
-	resp, err := client.Call(&broker.Request{Op: broker.OpGetSecrets, Project: f.Project, Env: f.Env, Path: f.Path, Format: f.Format, Session: c.Session, Document: true})
-	if err != nil {
-		return nil, err
-	}
-	if !resp.OK {
-		return nil, errors.New(resp.Error)
-	}
-	if resp.Document == nil {
-		return nil, errors.New("the background service needs updating; use Update Service in EsecVault’s Overview, then retry")
-	}
-	return resp.Document, nil
+	return &secretDocumentView{File: f, Document: secretfile.Document{Revision: target.Digest, Values: values}}, nil
 }
 
 // SecretsUpdateCmd accepts a revision-checked value edit over stdin.

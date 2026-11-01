@@ -22,10 +22,10 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/mscno/esec"
 	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
 	coreseal "github.com/mscno/esec/pkg/seal"
-	"golang.org/x/term"
 
 	"github.com/mscno/esec-vault/internal/broker"
 	"github.com/mscno/esec-vault/internal/seal"
@@ -69,32 +69,24 @@ type Options struct {
 // like a hang, and a touch of a YubiKey that nothing waits for types its
 // one-time password into the terminal instead.
 func Fetch(client *broker.Client, env, format string, opts Options) (map[string]string, error) {
-	cwd, err := os.Getwd()
+	target, err := esec.ResolveRead(".", env, format)
 	if err != nil {
 		return nil, err
 	}
-	project, marker, err := projectfile.FindProjectFile(cwd)
-	if err != nil {
-		return nil, fmt.Errorf("no esec.toml found (needed to identify the project): %w", err)
+	if !opts.Forwarded {
+		data, err := esec.ReadDocument(target, esec.ReadOptions{Socket: client.SockPath, Session: opts.Session})
+		if err != nil {
+			return nil, err
+		}
+		return esec.EnvVars(data, target.Format)
 	}
-	secretPath, fileFormat, err := resolveSecretsFile(cwd, env, format)
+	req := &broker.Request{Op: broker.OpGetSecrets, Project: target.Project, Env: target.Environment, Path: target.Path, Format: string(target.Format), Session: opts.Session, Content: target.Content, Host: opts.Host}
+	if target.KeyEnvironment != target.Environment {
+		return nil, fmt.Errorf("forward the exact environment holding this sealed key: %s", target.KeyEnvironment)
+	}
+	req.Seal, err = coreseal.Read(target.Root, target.KeyEnvironment)
 	if err != nil {
 		return nil, err
-	}
-	req := &broker.Request{Op: broker.OpGetSecrets, Project: project, Env: env, Path: secretPath, Format: fileFormat, Session: opts.Session}
-	if opts.Forwarded {
-		if req.Content, err = os.ReadFile(secretPath); err != nil { //nolint:gosec // the secrets file this command resolved
-			return nil, err
-		}
-		req.Host = opts.Host
-		// The key sealed in the repository: the other machine opens it
-		// with a touch there, and the key never comes here.
-		if req.Seal, err = coreseal.Read(filepath.Dir(marker), env); err != nil {
-			return nil, err
-		}
-	}
-	if guarded(cwd, env) && term.IsTerminal(int(os.Stderr.Fd())) {
-		fmt.Fprintf(os.Stderr, "esec: %s is guarded: allow the read if a dialog asks, then touch your security key when it blinks\n", env)
 	}
 
 	// Approval may take a while; allow the server's approval window plus slack.
@@ -104,7 +96,7 @@ func Fetch(client *broker.Client, env, format string, opts Options) (map[string]
 		return nil, err
 	}
 	if len(secrets) == 0 {
-		return nil, fmt.Errorf("broker returned no secrets for %s env %q", project, env)
+		return nil, fmt.Errorf("broker returned no secrets for %s env %q", target.Project, env)
 	}
 	return secrets, nil
 }

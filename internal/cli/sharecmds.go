@@ -20,6 +20,8 @@ type ShareCmd struct {
 	With       []string `required:"" sep:"," help:"Who: GitHub logins (alice), groups (group acme/backend), or keys (deploy=age1…)"`
 	Project    string   `help:"Project id (default: the checkout here)"`
 	AccountKey string   `help:"The account key words of the person (from their esec vault status), when they have not published a GitHub proof"`
+	// Yes is accepted so scripts and esec setup can pass it. share does not ask.
+	Yes bool `help:"Accepted for scripts; share does not ask a question"`
 }
 
 // Run implements share.

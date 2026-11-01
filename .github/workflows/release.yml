@@ -11,7 +11,10 @@ permissions:
   attestations: write
 
 jobs:
+  validate:
+    uses: ./.github/workflows/go-test.yml
   release:
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -59,3 +62,42 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "dist/*_source.tar.gz"
+
+  macos:
+    needs: release
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build and verify app
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          export ESEC_VERSION="${RELEASE_TAG#v}"
+          swift test --package-path macos/EsecVault
+          macos/EsecVault/bundle.sh
+          codesign --verify --deep --strict macos/EsecVault/build/EsecVault.app
+      - name: Publish app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          artifact="EsecVault_${RELEASE_TAG#v}_darwin_${ARCH}.zip"
+          ditto -c -k --sequesterRsrc --keepParent macos/EsecVault/build/EsecVault.app "$artifact"
+          shasum -a 256 "$artifact" > "$artifact.sha256"
+          gh release upload "$RELEASE_TAG" "$artifact" "$artifact.sha256"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: EsecVault_*.zip

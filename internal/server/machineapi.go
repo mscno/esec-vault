@@ -123,7 +123,7 @@ func (s *Server) apiMachineKeys(w http.ResponseWriter, r *http.Request) { //noli
 		return
 	}
 	if len(grants) == 0 {
-		writeErr(w, http.StatusNotFound, wire.ErrNotFound, "no keys were sent to this machine yet; an admin's device sends them (esec vault access sync)")
+		writeErr(w, http.StatusNotFound, wire.ErrNotFound, "no keys were sent to this machine yet; an admin's device sends them (esec vault sync)")
 		return
 	}
 	chains, err := s.db.signerChains(ctx, s.db.sql, st)

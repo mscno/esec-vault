@@ -1,0 +1,42 @@
+# Fly.io deployment for the esec vault server. One machine: the database is
+# SQLite on a volume, replicated continuously by Litestream.
+app = "paraply-vault"
+primary_region = "fra"
+
+# Deploy from the repository root:
+#   fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[deploy]
+  strategy = "immediate"
+
+[env]
+  ESEC_SERVER_REQUIRE_BACKUP = "true"
+  ESEC_SERVER_BASE_URL = "https://vault.parap.ly"
+  ESEC_SERVER_CLIENT_IP_HEADER = "Fly-Client-IP"
+  ESEC_SERVER_DB_PATH = "/data/esec-vault.db"
+
+[mounts]
+  source = "esec_vault_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # Request bodies in memory are capped at 256 MiB in the worst case.
+  memory = "512mb"

@@ -23,12 +23,14 @@ import (
 
 // KeyringCmd manages existing and new project keyrings.
 type KeyringCmd struct {
-	Migrate KeyringMigrateCmd `cmd:"" help:"Import repo-local keyrings into the global store."`
-	List    KeyringListCmd    `cmd:"" help:"List stored projects and key counts."`
-	Add     KeyringAddCmd     `cmd:"" help:"Generate a public-key-addressed project key."`
-	Seal    KeyringSealCmd    `cmd:"" help:"Encrypt keyring files with this machine's cache key."`
-	Unseal  KeyringUnsealCmd  `cmd:"" help:"Store keyring files as plain text again."`
-	Repair  KeyringRepairCmd  `cmd:"" help:"File every key also under its public key, so no later change can drop it."`
+	Migrate   KeyringMigrateCmd `cmd:"" help:"Import repo-local keyrings into the global store."`
+	List      KeyringListCmd    `cmd:"" help:"List stored projects and key counts."`
+	Add       KeyringAddCmd     `cmd:"" help:"Generate a public-key-addressed project key."`
+	Protect   KeyringSealCmd    `cmd:"" help:"Encrypt keyring files with this machine's cache key."`
+	Unprotect KeyringUnsealCmd  `cmd:"" help:"Store keyring files as plain text again."`
+	Seal      KeyringSealCmd    `cmd:"" hidden:"" help:"Now keyring protect."`
+	Unseal    KeyringUnsealCmd  `cmd:"" hidden:"" help:"Now keyring unprotect."`
+	Repair    KeyringRepairCmd  `cmd:"" help:"File every key also under its public key, so no later change can drop it."`
 }
 
 // KeyringRepairCmd files named keys under their public keys. Every write
@@ -150,8 +152,6 @@ func (c *KeyringMigrateCmd) Run(ctx *cliCtx) error {
 		projects, err := keystore.New().Migrate(dir, c.DeleteLocal, confirm)
 		for _, p := range projects {
 			fmt.Fprintln(os.Stderr, "Imported", p)
-		}
-		if len(projects) > 0 {
 		}
 		if err != nil {
 			errs = append(errs, err)

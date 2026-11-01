@@ -99,6 +99,12 @@ func TestGuarderOpensAndCaches(t *testing.T) { //nolint:gocyclo // one story, st
 	if opens != 6 {
 		t.Fatalf("forwarded reads opened %d times; want 2", opens-4)
 	}
+	strict := req("staging")
+	strict.Protection = "touch"
+	before := opens
+	if _, how, err := gd.Key(strict); err != nil || how != "touch" || opens != before+1 {
+		t.Fatalf("stronger guard used session cache: %s %v opens %d", how, err, opens-before)
+	}
 	// prod's file asked for as staging: staging's seal holds another key.
 	wrong := req("staging")
 	wrong.PublicKey = pf.Env["prod"].Key

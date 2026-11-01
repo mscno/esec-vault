@@ -31,3 +31,17 @@ production replication, retention, or disaster recovery.
 The reviewer additionally checked `VerifyArchive`, its export/drill integration,
 and the missing-object regression. Missing or corrupt ciphertext now prevents an
 export or recovery drill from reporting success. That focused follow-up passed.
+
+## Release integration review — 2026-11-01
+
+An independent GPT-6 Astra reviewer checked integration with released esec
+v0.18.0 and vault v0.28.0: unified reads, login checks before/after approval,
+scoped consent, guard resolution, lock epochs, forwarded reads, native viewer,
+Zed routing, storage merge, CI deployment and the Rust decryptor. Focused broker,
+daemon and viewer checks passed. No blocking security regression was found.
+
+The review recommended restricting manual production deployments to published
+release tags; the workflow now validates the tag and published-release metadata.
+The Rust decrypt-only library has no explicit size/depth bounds and is intended
+for trusted, compile-time embedded configuration, not arbitrary untrusted input.
+Deployment and actual backup recovery were outside the reviewer's scope.

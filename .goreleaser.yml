@@ -1,7 +1,8 @@
 version: 2
 
 builds:
-  - main: ./cmd/esec-vault/
+  - id: cli
+    main: ./cmd/esec-vault/
     flags:
       - -trimpath
     ldflags: >
@@ -24,15 +25,44 @@ builds:
     # Reproducible builds
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  - id: server
+    main: ./cmd/esec-vault-server/
+    binary: esec-vault-server
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+  - id: passkey
+    main: ./cmd/age-plugin-passkey/
+    binary: age-plugin-passkey
+    flags: [-trimpath]
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 # Archive with reproducible timestamps
 archives:
-  - formats: [tar.gz]
+  - id: cli
+    ids: [cli]
+    formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     builds_info:
       mtime: "{{ .CommitDate }}"
     format_overrides:
       - goos: windows
         formats: [zip]
+
+  - id: server
+    ids: [server]
+    formats: [tar.gz]
+    name_template: "esec-vault-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: passkey
+    ids: [passkey]
+    formats: [tar.gz]
+    name_template: "age-plugin-passkey_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 # SHA256 checksums
 checksum:

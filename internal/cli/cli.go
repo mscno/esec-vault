@@ -53,9 +53,12 @@ type cli struct {
 	Unshare      UnshareCmd      `cmd:"" group:"secrets" help:"Stop sharing environments with someone, and optionally rotate."`
 	CI           CICmd           `cmd:"" name:"ci" group:"secrets" help:"Give CI jobs and deploys their own age key, sealed into environments; they need only esec."`
 	Guard        GuardCmd        `cmd:"" group:"secrets" help:"Guard environments with your security keys or native passkeys; reads require your approval."`
-	SecurityKeys SecurityKeysCmd `cmd:"" name:"security-keys" aliases:"keys" group:"secrets" help:"Security keys and native passkeys: register, set up, test or remove."`
+	SecurityKeys SecurityKeysCmd `cmd:"" name:"security-keys" group:"secrets" help:"Security keys and native passkeys: register, set up, test or remove."`
+	Keys         SecurityKeysCmd `cmd:"" hidden:"" help:"Now security-keys."`
 
-	Access      TeamCmd        `cmd:"" name:"access" aliases:"team" group:"team" help:"Who reads which environments of a shared project: share it, grant, revoke, offboard."`
+	Sync        SyncCmd        `cmd:"" group:"team" help:"Bring this machine up to date with the vault server: your keys, and the shared projects' (accept invitations, send keys others are missing). The background service does this by itself."`
+	Access      TeamCmd        `cmd:"" name:"access" group:"team" help:"Who reads which environments of a project shared on the server: create, grant, revoke, offboard."`
+	Team        TeamCmd        `cmd:"" hidden:"" help:"Now access."`
 	Group       GroupCmd       `cmd:"" group:"team" help:"Groups of people or machines that read the same environments (acme/backend, acme/production)."`
 	Org         OrgCmd         `cmd:"" group:"team" help:"An organisation's projects, groups and policy (acme of acme/store)."`
 	Personal    PersonalCmd    `cmd:"" group:"team" help:"Choose or rename your personal namespace without changing your GitHub identity."`
@@ -67,7 +70,7 @@ type cli struct {
 	Index       IndexCmd       `cmd:"" group:"team" help:"Publish project and environment names (no secrets) for the web UI: on or off."`
 	AgentUnlock AgentUnlockCmd `cmd:"" group:"team" name:"agent-unlock" help:"Let an SSH-agent key unlock new devices (optional)."`
 
-	Machine MachineCmd `cmd:"" group:"machines" help:"Give CI jobs and apps their own keys to a shared project."`
+	Machine MachineCmd `cmd:"" group:"machines" help:"Machine keys to a project shared on the server (most CI needs only esec vault ci add)."`
 	App     AppCmd     `cmd:"" group:"machines" help:"Set up an app to read its secrets with no secret of its own, and check it before each deploy."`
 	KMS     KMSCmd     `cmd:"" name:"kms" group:"machines" help:"Set up a cloud KMS key for workloads that hold no secret."`
 
@@ -84,9 +87,6 @@ type cli struct {
 	Approve   ApproveCmd   `cmd:"" group:"service" help:"Approve a pending broker request by id."`
 	Uninstall UninstallCmd `cmd:"" group:"service" help:"Remove service; optionally purge local vault data."`
 
-	Members MembersCmd `cmd:"" group:"git" help:"Manage team member identity proofs."`
-	Sync    SyncCmd    `cmd:"" group:"start" help:"Sync keys and recovery data with the vault server."`
-
 	Version kong.VersionFlag `help:"Show version"`
 	Debug   bool             `help:"Enable debug logging" env:"ESEC_DEBUG"`
 	Quiet   bool             `help:"Suppress non-essential output" short:"q"`
@@ -96,25 +96,22 @@ type cli struct {
 var commandGroups = []kong.Group{
 	{Key: "start", Title: "Get started:"},
 	{Key: "secrets", Title: "Secrets in a project:"},
-	{Key: "team", Title: "Share with people and machines (vault server):"},
-	{Key: "machines", Title: "On machines, CI jobs and servers:"},
+	{Key: "team", Title: "With a vault server: people, groups, organisations, devices:"},
+	{Key: "machines", Title: "Machines and workloads without a secret (vault server; most CI needs only ci add):"},
 	{Key: "backup", Title: "Backup and recovery:"},
 	{Key: "service", Title: "Background service:"},
-	{Key: "git", Title: "Legacy Git shares (sign-in required):"},
 }
 
 const description = `Manage esec keys through your vault server. Sign in first. The server stores encrypted keys and identity recovery data. Every command also runs as "esec vault ...".
 
 Start here:
 
-    esec vault setup                          # server sign-in and background service
-    esec vault login https://vault.example.com
-    esec vault project init acme/api          # in a repository: project file and env keys
-    esec vault access create                  # share it; you become its admin
-    esec vault access grant alice --env dev   # alice's devices get the dev key
-    esec vault group create acme/backend      # a team: people who read the same things
-    esec vault group add acme/backend bob
-    esec vault access grant acme/backend --env dev,staging
+    esec vault setup                              # identity, backup and background service
+    esec vault project init acme/api              # in a repository: esec.toml and env keys
+    esec vault share dev,staging --with alice     # alice reads them; commit .esec/
+    esec vault ci add deploy --env prod --github acme/api   # CI needs esec alone
+    esec vault guard enable --env prod            # every prod read needs your touch
+    esec vault run prod -- ./deploy               # or: esec run prod -- ./deploy
 
 Scripts and agents: list and show commands take --json; commands that ask take --yes (or --force); "esec vault help <command>" explains one. Exit codes: 0 done, 1 failed, 80 bad usage; run and machine run return their command's code.`
 
@@ -133,7 +130,10 @@ func Execute(version string) {
 		kong.Help(func(o kong.HelpOptions, ctx *kong.Context) error {
 			// One line per command at the top; below it, each with its arguments.
 			o.Compact = ctx.Selected() == nil
-			return kong.DefaultHelpPrinter(o, ctx)
+			if ctx.Selected() != nil || showAllHelp {
+				return kong.DefaultHelpPrinter(o, ctx)
+			}
+			return everydayHelp(o, ctx)
 		}),
 		kong.Vars{"version": version},
 	)
@@ -143,6 +143,10 @@ func Execute(version string) {
 		// Usage goes to stderr with the error, so stdout stays clean.
 		parser.Stdout = os.Stderr
 		parser.FatalIfErrorf(err)
+	}
+
+	if now := renamed(ctx.Command()); now != "" && !c.Quiet {
+		fmt.Fprintf(os.Stderr, "esec-vault: this command is now %s; the old name goes away in a later release\n", now)
 	}
 
 	level := slog.LevelInfo
@@ -162,17 +166,8 @@ func Execute(version string) {
 	if err == nil {
 		err = runCommand(func() error { return ctx.Run(app) }, mutation)
 	}
-	fileChange := isSecretFileMutation(ctx.Command())
-	if (mutation || fileChange) && loginErr == nil {
-		if pendingErr := account.StagePending(app.Keyring); pendingErr != nil {
-			logger.Warn("changes saved locally, but staging the server upload failed", "error", pendingErr)
-		}
-		// Without a daemon, push key changes to the vault server right away.
-		if !daemon.Notify() && err == nil && !strings.HasPrefix(ctx.Command(), "sync") {
-			if syncErr := serverSync(&cliCtx{Logger: logger, Keyring: app.Keyring, Quiet: true}, false); syncErr != nil && !errors.Is(syncErr, account.ErrNotLoggedIn) {
-				logger.Warn("keys saved, but the vault server sync is pending", "error", syncErr)
-			}
-		}
+	if loginErr == nil {
+		stageCommandChanges(app, ctx.Command(), mutation, err)
 	}
 	// Never exit on a failure without telling the user why. Both branches below
 	// used to os.Exit silently, which made a failing command look like success
@@ -201,10 +196,95 @@ func Execute(version string) {
 	}
 }
 
+// stageCommandChanges preserves mutations durably before attempting upload.
+func stageCommandChanges(app *cliCtx, command string, mutation bool, err error) {
+	fileChange := isSecretFileMutation(command)
+	if mutation || fileChange {
+		if pendingErr := account.StagePending(app.Keyring); pendingErr != nil {
+			app.Logger.Warn("changes saved locally, but staging the server upload failed", "error", pendingErr)
+		}
+		// Without a daemon, push key changes to the vault server right away.
+		if !daemon.Notify() && err == nil && !strings.HasPrefix(command, "sync") {
+			if syncErr := serverSync(&cliCtx{Logger: app.Logger, Keyring: app.Keyring, Quiet: true}, false); syncErr != nil && !errors.Is(syncErr, account.ErrNotLoggedIn) {
+				app.Logger.Warn("keys saved, but the vault server sync is pending", "error", syncErr)
+			}
+		}
+	}
+}
+
+// everydayCommands are the top-level commands the short help shows; the
+// rest are in esec vault help all.
+var everydayCommands = map[string]bool{
+	"setup": true, "login": true, "status": true,
+	"project": true, "env": true, "secrets": true, "run": true, "decrypt": true,
+	"share": true, "unshare": true, "ci": true, "guard": true, "security-keys": true,
+	"sync": true,
+}
+
+// showAllHelp is set by esec vault help all.
+var showAllHelp bool
+
+// everydayHelp prints the top-level help with the everyday commands only,
+// and says how to see the rest.
+func everydayHelp(o kong.HelpOptions, ctx *kong.Context) error {
+	// Hidden commands also leave their sections, or the sections print
+	// with nothing under them. Everything is put back after printing.
+	type state struct {
+		hidden bool
+		group  *kong.Group
+	}
+	saved := map[*kong.Node]state{}
+	more := 0
+	for _, n := range ctx.Model.Children {
+		saved[n] = state{n.Hidden, n.Group}
+		if !n.Hidden && !everydayCommands[n.Name] {
+			n.Hidden = true
+			more++
+		}
+		if n.Hidden {
+			n.Group = nil
+		}
+	}
+	defer func() {
+		for n, st := range saved {
+			n.Hidden, n.Group = st.hidden, st.group
+		}
+	}()
+	if err := kong.DefaultHelpPrinter(o, ctx); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(ctx.Stdout, "\n%d more commands (vault server, groups, machines, backups, the background service): esec vault help all\n", more)
+	return err
+}
+
+// renamedCommands maps old command names, which still run for now, to what
+// replaced them.
+var renamedCommands = []struct{ old, now string }{
+	{"init", "esec vault setup (in a script: esec vault identity init, then esec vault backup --verify)"},
+	{"team", "esec vault access"},
+	{"keys", "esec vault security-keys"},
+	{"access sync", "esec vault sync"},
+	{"group sync", "esec vault sync"},
+	{"group grant", "esec vault group set"},
+	{"remote push", "esec vault backup --push"},
+	{"keyring seal", "esec vault keyring protect"},
+	{"keyring unseal", "esec vault keyring unprotect"},
+}
+
+// renamed returns what replaced command, "" when it is current.
+func renamed(command string) string {
+	for _, r := range renamedCommands {
+		if command == r.old || strings.HasPrefix(command, r.old+" ") {
+			return r.now
+		}
+	}
+	return ""
+}
+
 // isMutation reports whether a command changes keyrings, so it runs under the
 // keyring lock and is followed by durable staging and a server push.
 func isMutation(command string) bool {
-	for _, prefix := range []string{"project init", "env add", "env rename", "env rotate", "keyring add", "keyring migrate", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "group sync", "guard enable", "guard disable", "seal sync", "seal migrate", "seal recover", "share", "unshare", "ci add", "ci remove", "security-keys add", "security-keys remove"} {
+	for _, prefix := range []string{"project init", "env add", "env rename", "env rotate", "keyring add", "keyring migrate", "keyring protect", "keyring unprotect", "keyring seal", "keyring unseal", "keyring repair", "sync", "restore", "access sync", "team sync", "group sync", "guard enable", "guard disable", "seal sync", "seal migrate", "seal recover", "share", "unshare", "ci add", "ci remove", "security-keys add", "security-keys remove", "keys add", "keys remove"} {
 		if strings.HasPrefix(command, prefix) {
 			return true
 		}

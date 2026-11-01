@@ -505,7 +505,7 @@ func (s *Server) checkGroupSet(ctx context.Context, tx *sql.Tx, l team.Link) err
 		return err
 	}
 	if n == 0 {
-		return clientErr(http.StatusConflict, wire.ErrConflict, "the group %s does not take keys from %s yet; an admin of the group runs 'esec vault group grant' first", b.Group, l.Project)
+		return clientErr(http.StatusConflict, wire.ErrConflict, "the group %s does not take keys from %s yet; an admin of the group runs 'esec vault group set' first", b.Group, l.Project)
 	}
 	return nil
 }

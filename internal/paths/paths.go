@@ -63,9 +63,6 @@ func AuditPath() string { return filepath.Join(Home(), "audit.log") }
 // PolicyPath is the broker's policy file.
 func PolicyPath() string { return filepath.Join(Home(), "policy.toml") }
 
-// TrustedPath stores TOFU-pinned member fingerprints.
-func TrustedPath() string { return filepath.Join(Home(), "trusted.toml") }
-
 // EnsureHome creates the home directory with private permissions.
 func EnsureHome() error {
 	return os.MkdirAll(Home(), 0700)

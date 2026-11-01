@@ -1,4 +1,7 @@
-# Unreleased
+# v0.29.0
+
+Upgrade the server before installing clients. Pairs with esec v0.18.0 or later.
+Run `esec vault daemon upgrade` after installing the client.
 
 ### Server-first vault storage
 
@@ -40,6 +43,97 @@
   verify and open its signed backup. Health checks no longer require a second
   external backup destination. Keep repository seals for guarded keys and
   back up the server database separately.
+
+# v0.28.0
+
+Pairs with esec v0.18.0. Run `esec vault daemon upgrade` after installing.
+No cloud server deployment or key rotation is required for this change.
+
+- **Unified reads and inspection.** The shared core resolver binds files to
+  their exact environment, project, public key and guard. Filenames no
+  longer become policy environment labels. The daemon independently
+  validates that binding and the ciphertext digest before opening a key.
+- **Scoped local consent.** A managed ordinary broker read can request
+  desktop approval with no policy file: once, or one hour for the specific
+  checkout/project/environment/key. Lock or restart revokes session consent.
+  Only that read's key opens; the broker stays globally locked. Existing
+  explicit denials stay effective. No desktop or cancelled approval fails
+  with an actionable code and serves no secrets.
+- **Document reads** preserve file format for core `decrypt`, `get`, `export`
+  and `run`. The vault compatibility commands use the same reader while
+  keeping their existing presentation and masking options. Authorized age
+  workload identities remain unattended.
+- **Metadata-only inspection** reports broker state, local consent, reader
+  metadata and recent hardware observations without opening private keys,
+  starting a sync or asking for approval. Unverified availability is explicit.
+- **Guard and lock transitions** cannot reuse a weaker cached session for a
+  touch-protected read or return an in-flight document after lock revocation.
+
+# v0.27.0
+
+Pairs with esec v0.17.0. Run `esec vault daemon upgrade` after installing.
+
+- **Environment names match exactly.** Updated the shared esec library so
+  vault file discovery no longer substitutes `prod`/`production`,
+  `dev`/`development`, or `stage`/`staging` in either direction. Discovery
+  no longer aliases names that broker policy, guard, and seals treat as
+  distinct environments.
+- Remove any `[aliases]` section from the shared preferences before using
+  this release. Existing encrypted files and environment keys stay valid;
+  no key rotation or resealing is needed for this change.
+
+# v0.26.0
+
+Pairs with esec v0.16.0. Only the client changes; the server stays as it is.
+
+- **`esec vault project check ID --json`** asks whether a project id is free.
+  It creates nothing and prints no secret. `relation` is `available`, `yours`,
+  `taken`, `reserved`, `legacy`, `system` or `alias`. Exit 0 includes a taken
+  name; the JSON says so. Exit 80 is a bad id. `esec setup` calls this before
+  it writes.
+- **`project init --guard`** accepts `production=touch` and `production=session`
+  as well as a bare environment name (still touch).
+- **`share` accepts `--yes`**, so scripts can pass it. share does not ask.
+- **`status --json`** adds `signed_in`, `server`, `login`, `github_id`,
+  `reader` and `namespaces` for other tools. `identity` is still the fingerprint.
+
+# v0.25.0
+
+Fewer ways to do the same thing. Only clients change; the server stays at
+v0.24.0. Pairs with esec v0.13.0, whose `run`, `decrypt` and `get` now read
+guarded environments through this background service.
+
+- **Removed: sharing through git without a server.** `esec vault members`
+  (prove, verify, trust, list) and the committed share files that
+  `esec vault sync` opened are gone: nothing had written those files since
+  `share` moved to sealed keys. Share with
+  `esec vault share ENV --with LOGIN` (signed in to a vault server), or with
+  no server `--with NAME=age1…`; commit `.esec/`. `~/.config/esec/trusted.toml`
+  (member pins) is no longer written or read.
+- **`esec vault sync` means one thing:** bring this machine up to date with
+  the vault server, your own keys and the shared projects' (accept
+  invitations, take in keys, and as an admin send keys others are missing).
+  It does what `sync --server` and `access sync` (also `group sync`) did
+  together. `sync --server` still does only the first half.
+- **Renamed:** `group grant` is `group set`, since it replaces what a group
+  reads (like `access set`; `access grant` adds). `keyring seal` and
+  `keyring unseal` are `keyring protect` and `keyring unprotect`, so "seal"
+  means only keys sealed in the repository.
+- **Old names still run, and say what replaced them; a later release removes
+  them:** `init` (use `setup`, or in a script `identity init` then
+  `backup --verify`), `team` (use `access`), `keys` (use `security-keys`),
+  `access sync` and `group sync` (use `sync`), `group grant`, `keyring
+  seal`/`unseal`, and `remote push` (use `backup --push`). `remote watch` is
+  hidden: the background service does it; `--once` still suits a scheduled
+  job on a machine without one.
+- **Shorter help.** `esec vault` and `esec vault --help` show the everyday
+  commands; `esec vault help all` lists every command. The overview leads
+  with sealed sharing, `ci add` and guard. Machines, workloads and KMS are
+  grouped as the route for projects shared on a server and for workloads
+  that hold no secret; most CI needs only `esec vault ci add`.
+- Messages and hints name the new commands. The README and runbook drop the
+  git sharing guide, lead with `share` and `ci add`, and fix places that
+  contradicted the CLI (environment discovery, encrypted keyring files).
 
 # v0.24.2
 

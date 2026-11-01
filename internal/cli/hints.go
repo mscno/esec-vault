@@ -16,6 +16,10 @@ func helpArgs(args []string) []string {
 		return []string{"--help"}
 	}
 	if args[0] == "help" {
+		if len(args) == 2 && args[1] == "all" {
+			showAllHelp = true
+			return []string{"--help"}
+		}
 		return append(append([]string{}, args[1:]...), "--help")
 	}
 	return args

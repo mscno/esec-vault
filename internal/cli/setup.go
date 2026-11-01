@@ -196,7 +196,7 @@ func (r *setupRun) server() {
 		return
 	}
 	if err := serverSync(r.ctx, r.interactive); err != nil {
-		r.add("vault server", "failed", "sync: "+err.Error(), "esec vault sync --server")
+		r.add("vault server", "failed", "sync: "+err.Error(), "esec vault sync")
 		return
 	}
 	r.add("vault server", "done", "keys synced", "")
