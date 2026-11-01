@@ -110,8 +110,12 @@ fly secrets set --config deploy/fly.toml \
   LITESTREAM_BUCKET=<the BUCKET_NAME it printed> \
   LITESTREAM_ENDPOINT=fly.storage.tigris.dev \
   LITESTREAM_REGION=auto
-fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+cp deploy/fly.toml fly.deploy.toml
+fly deploy --config fly.deploy.toml --dockerfile deploy/Dockerfile
 ```
+
+The root-level config copy is intentional: Fly resolves the Dockerfile path
+relative to the config file. The production CI workflow uses the same layout.
 
 Litestream reads the Tigris credentials from `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY`. `AWS_ENDPOINT_URL_S3` is removed because it bypasses

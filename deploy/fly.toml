@@ -4,7 +4,8 @@ app = "REPLACE-esec-vault"
 primary_region = "arn"
 
 # Deploy from the repository root:
-#   fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+#   cp deploy/fly.toml fly.deploy.toml
+#   fly deploy --config fly.deploy.toml --dockerfile deploy/Dockerfile
 
 [env]
   ESEC_SERVER_BASE_URL = "https://REPLACE-esec-vault.fly.dev"

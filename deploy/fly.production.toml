@@ -4,7 +4,8 @@ app = "paraply-vault"
 primary_region = "fra"
 
 # Deploy from the repository root:
-#   fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+#   cp deploy/fly.production.toml fly.production.toml
+#   fly deploy --config fly.production.toml
 
 [build]
   dockerfile = "deploy/Dockerfile"
