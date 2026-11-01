@@ -356,3 +356,54 @@ func TestProjectInitPlaintextCLI(t *testing.T) {
 		t.Fatal("CLI did not encrypt file")
 	}
 }
+
+func TestInitNeverReactivatesHistoricalKey(t *testing.T) {
+	for _, metadata := range []bool{false, true} {
+		t.Run(fmt.Sprint(metadata), func(t *testing.T) {
+			c, ctx := initFixture(t, "env")
+			c.Yes = true
+			oldPub, oldPriv, err := esec.GenerateKeypair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, activePriv, err := esec.GenerateKeypair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries := map[string]string{keystore.EnvEntry("dev"): activePriv, keystore.PubEntry(oldPub): oldPriv}
+			if err := keystore.New().Write(c.Project, entries, false); err != nil {
+				t.Fatal(err)
+			}
+			if metadata {
+				pf := &projectfile.File{Project: c.Project}
+				pf.SetEnv("dev", oldPub)
+				if err := pf.Save(c.Dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(c.Dir, ".env.dev")
+			original := "ESEC_PUBLIC_KEY=" + oldPub + "\nTOKEN=synthetic-token\n"
+			writeInitFixture(t, path, original)
+			err = c.Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), "different public key") {
+				t.Fatalf("historical key was accepted: %v", err)
+			}
+			after, _ := os.ReadFile(path) //nolint:gosec // test-owned file
+			if string(after) != original {
+				t.Fatal("mismatched file changed")
+			}
+			stored, err := keystore.New().Read(c.Project)
+			if err != nil || stored[keystore.EnvEntry("dev")] != activePriv || stored[keystore.PubEntry(oldPub)] != oldPriv {
+				t.Fatal("active or historical key changed")
+			}
+			pf, err := projectfile.Load(c.Dir)
+			if metadata {
+				if err != nil || pf.Env["dev"].Key != oldPub {
+					t.Fatal("existing metadata changed")
+				}
+			} else if err == nil {
+				t.Fatal("project published despite mismatch")
+			}
+		})
+	}
+}

@@ -307,7 +307,18 @@ func (c *ProjectInitCmd) prepareEnvironmentKey(s *sealing, pf *projectfile.File,
 	if _, err := coreseal.Read(c.Dir, env); pub != "" && err == nil {
 		return pub, nil, nil
 	}
-	if pub == "" && file != nil {
+	// Repairing a missing seal or adopting a legacy checkout must never
+	// reactivate a historical key over the vault's current environment binding.
+	if active, ok := s.cached(pf.Project, env, ""); ok {
+		activePub, err := publicHex(active)
+		if err != nil {
+			return "", nil, err
+		}
+		if pub != "" && pub != activePub {
+			return "", nil, fmt.Errorf("%s metadata names a different public key from the active environment key; restore its seal or refresh the project metadata before initializing (nothing changed)", env)
+		}
+		pub = activePub
+	} else if pub == "" && file != nil {
 		pub = file.publicKey
 	}
 	level := pf.Env[env].GuardLevel()
