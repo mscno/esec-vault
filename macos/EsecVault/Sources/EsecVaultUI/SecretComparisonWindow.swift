@@ -154,8 +154,17 @@ struct SecretComparisonView: View {
                 .accessibilityLabel("Open \(column.title) file")
                 .help("Open an individual secrets file")
             }
-            Text("\(column.files.count) file\(column.files.count == 1 ? "" : "s")")
-                .font(.caption).foregroundStyle(.secondary)
+            ForEach(column.files) { file in
+                HStack(spacing: 6) {
+                    Button(URL(fileURLWithPath: file.path).lastPathComponent) { openFile(file.path) }
+                        .buttonStyle(.link).font(.caption).lineLimit(1).truncationMode(.middle)
+                        .help(file.path)
+                    Spacer(minLength: 0)
+                    if let document = model.documents[file.path] {
+                        SecretDecryptionBadge(info: document.decryption)
+                    }
+                }
+            }
             let failures = column.files.compactMap { model.errors[$0.path] }
             if !failures.isEmpty {
                 ForEach(Array(Set(failures)).sorted(), id: \.self) { message in

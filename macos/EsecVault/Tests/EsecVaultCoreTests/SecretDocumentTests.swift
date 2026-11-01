@@ -7,7 +7,7 @@ import Testing
 private func secretFixture(failSave: Bool = false, delay: Bool = false, locked: Bool = false) throws -> (SecretDocumentStore, URL) {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("esec-secret-test-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let fixture = #"{"file":{"path":"/example/.env.dev","format":".env","env":"dev","project":"acme/app"},"revision":"before","values":[{"key":"API_KEY","value":"original","editable":true},{"key":"MULTILINE","value":"first\nsecond\n","editable":true}]}"#
+    let fixture = #"{"file":{"path":"/example/.env.dev","format":".env","env":"dev","project":"acme/app"},"revision":"before","decryption":{"source":"local_key","guard":"none"},"values":[{"key":"API_KEY","value":"original","editable":true},{"key":"MULTILINE","value":"first\nsecond\n","editable":true}]}"#
     try fixture.write(to: dir.appendingPathComponent("document.json"), atomically: true, encoding: .utf8)
     let script = """
     #!/bin/sh
@@ -51,6 +51,7 @@ private func secretFixture(failSave: Bool = false, delay: Bool = false, locked: 
     #expect(model.readIssue == nil)
     #expect(model.document?.values.count == 2)
     #expect(model.allRevealed)
+    #expect(model.document?.decryption?.title == "Local key")
 }
 
 @Test @MainActor func secretWindowShowsValuesByDefaultAndCanHideThem() async throws {
@@ -89,6 +90,7 @@ private func secretFixture(failSave: Bool = false, delay: Bool = false, locked: 
     await model.save()
     #expect(model.error == nil)
     #expect(model.document?.revision == "after")
+    #expect(model.document?.decryption?.source == "local_key") // metadata describes the last read
     #expect(model.document?.values.first?.value == value)
     #expect(!model.revealed.contains("API_KEY"))
     #expect(model.draftValue.isEmpty)

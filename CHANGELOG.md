@@ -1,3 +1,12 @@
+# v0.29.4
+
+- Show the actual decryption route next to each successfully opened file in
+  single-file and environment-comparison windows. Hover for an explanation of
+  local keys, sealed identities, workload credentials, or local/forwarded brokers.
+  Routes include broker fallback and disappear when a document is locked.
+- Update the shared reader to esec v0.18.2. Route metadata contains no secret
+  values or credential paths and does not change access policy or key lookup.
+
 # v0.29.3
 
 - Exclude ordinary, undeclared dotenv templates and test fixtures from secret

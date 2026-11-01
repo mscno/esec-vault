@@ -34,7 +34,8 @@ type SecretsShowCmd struct {
 type secretDocumentView struct {
 	secretfile.Document
 
-	File *secretfile.File `json:"file"`
+	File       *secretfile.File `json:"file"`
+	Decryption esec.ReadInfo    `json:"decryption"`
 }
 
 // Run prints the in-memory document.
@@ -73,7 +74,7 @@ func (c *SecretsShowCmd) document() (*secretDocumentView, error) {
 	if target.Digest != secretfile.Revision(data) {
 		return nil, errors.New("the file changed while opening; open it again")
 	}
-	plain, err := esec.ReadDocument(target, esec.ReadOptions{Socket: c.Sock, Session: c.Session})
+	plain, info, err := esec.ReadDocumentWithInfo(target, esec.ReadOptions{Socket: c.Sock, Session: c.Session})
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +96,7 @@ func (c *SecretsShowCmd) document() (*secretDocumentView, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("could not record file read: %w", err)
 	}
-	return &secretDocumentView{File: f, Document: secretfile.Document{Revision: target.Digest, Values: values}}, nil
+	return &secretDocumentView{File: f, Decryption: info, Document: secretfile.Document{Revision: target.Digest, Values: values}}, nil
 }
 
 // SecretsUpdateCmd accepts a revision-checked value edit over stdin.

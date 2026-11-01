@@ -148,7 +148,12 @@ struct SecretFileView: View {
             HStack(spacing: 12) {
                 Image(systemName: "doc.text.magnifyingglass").font(.largeTitle).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(URL(fileURLWithPath: model.path).lastPathComponent).font(.title2.bold())
+                    HStack(spacing: 10) {
+                        Text(URL(fileURLWithPath: model.path).lastPathComponent).font(.title2.bold())
+                        if let document = model.document {
+                            SecretDecryptionBadge(info: document.decryption)
+                        }
+                    }
                     if let file = model.document?.file {
                         Text("\(file.project ?? "") · \(file.env.isEmpty ? "default" : file.env) · \(file.format)")
                             .font(.callout).foregroundStyle(.secondary)

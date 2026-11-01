@@ -101,6 +101,17 @@ func TestSecretDocumentLocalReadNeedsNoBrokerOrPolicy(t *testing.T) {
 	}
 }
 
+func TestSecretDocumentReportsSuccessfulRoute(t *testing.T) {
+	path, _ := localDocumentFixture(t)
+	doc, err := (&SecretsShowCmd{File: path}).document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Decryption != (esec.ReadInfo{Source: "local_key", Guard: "none"}) {
+		t.Fatal("successful local read did not report its actual route")
+	}
+}
+
 func TestSecretDocumentGuardedReadNeverFallsBackToCachedKey(t *testing.T) {
 	for _, source := range []string{"project", "seal"} {
 		t.Run(source, func(t *testing.T) {

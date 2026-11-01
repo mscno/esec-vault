@@ -25,7 +25,7 @@ private func comparisonFixture() throws -> (SecretComparisonStore, URL) {
         let path = dir.appendingPathComponent(name).path
         let file: [String: Any] = ["path": path, "env": env, "format": ".env", "project": "demo/app", "keys": Array(values.keys)]
         files.append(try JSON.decoder.decode(SecretsFile.self, from: JSONSerialization.data(withJSONObject: file)))
-        let document: [String: Any] = ["file": file, "revision": "test", "values": values.map { ["key": $0.key, "value": $0.value, "editable": true] as [String: Any] }]
+        let document: [String: Any] = ["file": file, "revision": "test", "decryption": ["source": name == "second.env.dev" ? "broker" : "local_key", "guard": "none"], "values": values.map { ["key": $0.key, "value": $0.value, "editable": true] as [String: Any] }]
         try JSONSerialization.data(withJSONObject: document).write(to: URL(fileURLWithPath: path + ".json"))
     }
     let script = """
@@ -53,10 +53,12 @@ private func comparisonFixture() throws -> (SecretComparisonStore, URL) {
     #expect(model.allRevealed)
     let dev = try #require(model.columns.first)
     #expect(model.values(for: "API_KEY", in: dev).count == 2)
+    #expect(Set(dev.files.compactMap { model.documents[$0.path]?.decryption?.source }) == ["local_key", "broker"])
     #expect(model.values(for: "PROD_ONLY", in: dev).isEmpty)
     #expect(model.hasDifferentValues("API_KEY"))
     #expect(model.incomplete(model.columns[1]))
     #expect(model.errors.count == 1)
+    #expect(model.documents[dir.appendingPathComponent(".env.staging").path] == nil)
     #expect(model.readIssues.count == 1)
     #expect(!model.needsUnlock)
     model.hideAll()
