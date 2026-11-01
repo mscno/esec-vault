@@ -45,3 +45,18 @@ release tags; the workflow now validates the tag and published-release metadata.
 The Rust decrypt-only library has no explicit size/depth bounds and is intended
 for trusted, compile-time embedded configuration, not arbitrary untrusted input.
 Deployment and actual backup recovery were outside the reviewer's scope.
+
+## Rollout follow-up — 2026-11-01
+
+Real inventory synchronization exposed ordinary dotenv fixtures being treated as
+encrypted archive candidates. Astra independently reviewed the exclusion rule
+and identified custom filename patterns, escaped encryption metadata and a
+concurrent JSON callback race. The implementation now honors declared custom
+paths, checks parsed encryption metadata as well as raw markers, and uses an
+atomic flag for concurrent encrypted-value detection. Previously archived paths
+remain protected against silent exclusion. Regression tests cover each case.
+
+The final focused source review identified no remaining blocker. The complete
+account and secretfile test packages subsequently passed with Go's race detector.
+The native subprocess concurrency fix was independently reviewed as well; its
+28 native tests passed on hosted Apple Silicon and Intel runners.

@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/joho/godotenv"
 	"github.com/mscno/esec"
@@ -189,12 +190,14 @@ func HasEncrypted(data []byte, f fileutils.FileFormat) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	found := false
+	var found atomic.Bool
 	_, err = h.TransformScalarValues(data, func(v []byte) ([]byte, error) {
-		found = found || crypto.IsBoxedMessage(v)
+		if crypto.IsBoxedMessage(v) {
+			found.Store(true)
+		}
 		return v, nil
 	})
-	return found, err
+	return found.Load(), err
 }
 
 // Plain lists the paths of values that should be encrypted and are not: a

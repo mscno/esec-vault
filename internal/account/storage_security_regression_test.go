@@ -227,3 +227,101 @@ func TestArchiveRejectsUnreadableCandidatesInsteadOfOmittingThem(t *testing.T) {
 		})
 	}
 }
+
+func TestArchiveIgnoresUnmanagedDotenvTemplatesButKeepsEncryptedFiles(t *testing.T) {
+	_, a := setup(t)
+	root, _, _, encrypted := archiveFixture(t, a, "none")
+	for _, name := range []string{".env.example", ".env.test", ".env"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("TOKEN=synthetic-template\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An encrypted file need not have an environment entry in esec.toml.
+	archived := filepath.Join(root, ".env.historical")
+	if err := os.WriteFile(archived, encrypted, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.Sync(ctx, account.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "restored")
+	if err := a.RestoreProject(ctx, "acme/archive", "", dest); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".env.example", ".env.test", ".env"} {
+		if _, err := os.Stat(filepath.Join(dest, name)); !os.IsNotExist(err) {
+			t.Fatalf("unmanaged plaintext %s was archived", name)
+		}
+	}
+	got, err := os.ReadFile(filepath.Join(dest, ".env.historical")) //nolint:gosec // test-owned restore directory
+	if err != nil || !bytes.Equal(got, encrypted) {
+		t.Fatal("undeclared encrypted file was omitted")
+	}
+	// Removing all encryption metadata cannot hide a formerly archived file.
+	if err := os.WriteFile(archived, []byte("TOKEN=plaintext\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sync(ctx, account.SyncOptions{}); err == nil {
+		t.Fatal("previously archived file was silently excluded")
+	}
+}
+
+func TestArchiveStillRejectsUnmanagedFilesWithEncryptionMarkers(t *testing.T) {
+	for _, data := range []string{"ESEC_PUBLIC_KEY=invalid\n", "TOKEN=ESEC[broken]\n", "TOKEN=EJ[broken]\n"} {
+		t.Run(data, func(t *testing.T) {
+			_, a := setup(t)
+			root, _, _, _ := archiveFixture(t, a, "none")
+			if err := os.WriteFile(filepath.Join(root, ".env.example"), []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.Sync(context.Background(), account.SyncOptions{}); err == nil {
+				t.Fatal("malformed encryption candidate was silently excluded")
+			}
+		})
+	}
+}
+
+func TestArchiveRecognizesConfiguredFileNames(t *testing.T) {
+	_, a := setup(t)
+	root, pub, _, _ := archiveFixture(t, a, "none")
+	config := "project = 'acme/archive'\n[files]\nname = 'secrets/app.{env}.etoml'\n[env.dev]\nkey = '" + pub + "'\n"
+	if err := os.WriteFile(filepath.Join(root, "esec.toml"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "secrets"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secrets/app.dev.etoml"), []byte("TOKEN='plaintext'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sync(context.Background(), account.SyncOptions{}); err == nil {
+		t.Fatal("declared custom filename was silently excluded")
+	}
+}
+
+func TestArchiveRecognizesEscapedEncryptionMetadata(t *testing.T) {
+	_, a := setup(t)
+	root, pub, _, _ := archiveFixture(t, a, "none")
+	var encrypted bytes.Buffer
+	if _, err := esec.Encrypt(strings.NewReader(`{"_ESEC_PUBLIC_KEY":"`+pub+`","TOKEN":"synthetic","SECOND":"test","nested":{"THIRD":"fixture"}}`), &encrypted, ".ejson"); err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.ReplaceAll(encrypted.Bytes(), []byte("ESEC"), []byte(`\u0045SEC`))
+	path := filepath.Join(root, "historical.ejson")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.Sync(ctx, account.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "restored")
+	if err := a.RestoreProject(ctx, "acme/archive", "", dest); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "historical.ejson")) //nolint:gosec // test-owned restore directory
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatal("escaped encrypted file was omitted")
+	}
+}

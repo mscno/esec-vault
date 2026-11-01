@@ -1,3 +1,11 @@
+# v0.29.3
+
+- Exclude ordinary, undeclared dotenv templates and test fixtures from secret
+  archives. Declared environments, encryption-marked files and previously
+  archived paths retain strict validation; plaintext is never uploaded.
+- Fix a race in encrypted-value detection when JSON scalar callbacks run
+  concurrently.
+
 # v0.29.2
 
 Upgrade the server before installing clients. Pairs with esec v0.18.0 or later.

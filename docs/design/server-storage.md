@@ -69,6 +69,11 @@ Archive discovery is strict: recognized secret-file candidates with invalid
 public keys, malformed content, plaintext values, unsupported file types or
 excessive size fail staging. The last acknowledged revision remains intact.
 Nested projects are archived through their own registered checkouts.
+Ordinary dotenv templates and test fixtures are excluded only when their
+environment/path is undeclared and they contain no encryption metadata or
+ciphertext. Declared custom filenames and encrypted files with escaped JSON
+metadata remain candidates. A previously archived file cannot silently leave
+the archive by losing its metadata.
 
 Archive files: 4 MiB each. Objects: 50,000 / 1 GiB per account, including orphans.
 Project captures: 50,000. Device settings: 1 MiB per file. Portable single-file

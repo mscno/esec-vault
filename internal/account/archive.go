@@ -182,6 +182,14 @@ func (a *Account) recordCapture(v *vaultfile.Vault, c workspace.Checkout, origin
 }
 
 func checkoutFiles(root *os.Root) (map[string]string, error) {
+	config, err := readArchiveFile(root, "esec.toml")
+	if err != nil {
+		return nil, err
+	}
+	project, err := projectfile.Parse(config)
+	if err != nil {
+		return nil, err
+	}
 	files := map[string]string{"esec.toml": "config"}
 	if entries, err := root.Open(".esec"); err == nil {
 		items, err := entries.ReadDir(-1)
@@ -200,13 +208,42 @@ func checkoutFiles(root *os.Root) (map[string]string, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	err := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+	if err := addCheckoutSecretFiles(root, files, project); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func addCheckoutSecretFiles(root *os.Root, files map[string]string, project *projectfile.File) error {
+	declaredPaths := map[string]bool{}
+	if project.Files.Name != "" {
+		for env := range project.Env {
+			declaredPaths[strings.ReplaceAll(project.Files.Name, "{env}", env)] = true
+		}
+	}
+	return fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if _, _, formatErr := secretfile.EnvOf(path); formatErr == nil {
+		if env, format, formatErr := secretfile.EnvOf(path); formatErr == nil {
 			if !d.Type().IsRegular() {
 				return fmt.Errorf("archive secret path is not a regular file: %s", path)
+			}
+			if _, declared := project.Env[env]; !declared && !declaredPaths[path] {
+				data, err := readArchiveFile(root, path)
+				if err != nil {
+					return err
+				}
+				// Naming alone also matches ordinary dotenv examples and test
+				// fixtures. Only undeclared files with no esec metadata or
+				// ciphertext may be excluded. Previously archived paths are
+				// checked separately, so stripping their metadata still fails.
+				_, keyErr := esec.ExtractPublicKey(data, esec.FileFormat(format))
+				encrypted, _ := secretfile.HasEncrypted(data, format)
+				if keyErr != nil && !encrypted && !bytes.Contains(data, []byte(esec.EsecPublicKey)) &&
+					!bytes.Contains(data, []byte("ESEC[")) && !bytes.Contains(data, []byte("EJ[")) {
+					return nil
+				}
 			}
 			files[path] = "secrets"
 			return nil
@@ -227,10 +264,6 @@ func checkoutFiles(root *os.Root) (map[string]string, error) {
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return files, nil
 }
 
 // An earlier file may be hidden by replacing an ancestor with a symlink or
