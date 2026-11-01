@@ -210,15 +210,15 @@ func Plain(data []byte, f fileutils.FileFormat) ([]string, error) {
 	// The handler visits each value it would encrypt, in order; mark the
 	// clear ones, then find which keys they are.
 	const mark = "esec-vault-plain-marker"
-	n := 0
+	var n atomic.Int64
 	marked, err := h.TransformScalarValues(data, func(v []byte) ([]byte, error) {
 		if crypto.IsBoxedMessage(v) {
 			return v, nil
 		}
-		n++
+		n.Add(1)
 		return []byte(mark), nil
 	})
-	if err != nil || n == 0 {
+	if err != nil || n.Load() == 0 {
 		return nil, err
 	}
 	vals, err := values(marked, f)
@@ -233,7 +233,7 @@ func Plain(data []byte, f fileutils.FileFormat) ([]string, error) {
 	}
 	if len(out) == 0 {
 		// Inside arrays: no key of its own.
-		out = append(out, fmt.Sprintf("%d value(s)", n))
+		out = append(out, fmt.Sprintf("%d value(s)", n.Load()))
 	}
 	return out, nil
 }

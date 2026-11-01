@@ -1,3 +1,16 @@
+# v0.29.5
+
+- Make project initialization distinguish plaintext, encrypted, and mixed files.
+  Ask before adding a missing public key and encrypting existing plaintext;
+  support explicit `--yes` for scripts, and leave files/keys unchanged on decline.
+- Create missing secrets files with only their public key, for both project init
+  and env add. Never copy example files or their defaults.
+- Add explicit plaintext-encryption consent to the Mac app's New Project form.
+- Preserve values and file permissions, reject concurrent edits and mismatched
+  keys, and report files encrypted during init separately from newly created files.
+- Preserve multiline dotenv values during initialization and fix concurrent
+  plaintext detection for JSON files.
+
 # v0.29.4
 
 - Show the actual decryption route next to each successfully opened file in

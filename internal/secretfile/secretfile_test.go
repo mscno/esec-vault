@@ -23,6 +23,14 @@ func encrypted(t *testing.T, f fileutils.FileFormat, plain string) []byte {
 	return out.Bytes()
 }
 
+func TestPlainCountsConcurrentJSONScalars(t *testing.T) {
+	data := []byte(`{"items":[` + strings.Repeat(`"value",`, 255) + `"value"]}`)
+	plain, err := secretfile.Plain(data, fileutils.Ejson)
+	if err != nil || len(plain) != 1 || plain[0] != "256 value(s)" {
+		t.Fatalf("plaintext array values were missed: %v %v", plain, err)
+	}
+}
+
 // Setting a value in each format: only that value changes, it is
 // encrypted, and it decrypts to the new value.
 func TestSetEachFormat(t *testing.T) {

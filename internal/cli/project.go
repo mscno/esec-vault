@@ -18,9 +18,7 @@ import (
 	"github.com/mscno/esec-vault/internal/safetext"
 	"github.com/mscno/esec-vault/internal/seal"
 	"github.com/mscno/esec-vault/internal/storage"
-	"github.com/mscno/esec/pkg/config"
 	"github.com/mscno/esec/pkg/crypto"
-	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
 	coreseal "github.com/mscno/esec/pkg/seal"
 )
@@ -39,13 +37,15 @@ type ProjectInitCmd struct {
 	Dir      string   `default:"." type:"path" help:"Project directory"`
 	Env      []string `name:"env" sep:"," default:"dev" help:"Environment names"`
 	Format   string   `short:"f" default:"" help:"env, ejson, eyaml, eyml or etoml"`
-	Template bool     `default:"true" negatable:"" help:"Create secrets templates"`
+	Template bool     `default:"true" negatable:"" help:"Create missing secrets files with only their public key"`
+	Yes      bool     `help:"Encrypt existing plaintext files without asking"`
 	Force    bool     `help:"Replace a different existing project id in esec.toml"`
 	Guard    []string `name:"guard" sep:"," help:"Environments born guarded: prod (touch), or production=touch / production=session"`
 	JSON     bool     `help:"Print what was set up as JSON (the project, its environments and keys, files created, next steps), for scripts and agents"`
 
 	ctx         *cliCtx
 	created     []string
+	encrypted   []string
 	guardLevels map[string]string
 }
 
@@ -57,10 +57,10 @@ type initResult struct {
 	IDFrom string    `json:"id_from"`
 	Format string    `json:"format"`
 	Envs   []initEnv `json:"envs"`
-	// Created are the secrets files this run wrote; those that existed are
-	// kept as they were.
-	Created []string `json:"created"`
-	Next    []string `json:"next"`
+	// Created lists new files; Encrypted lists existing files encrypted with consent.
+	Created   []string `json:"created"`
+	Encrypted []string `json:"encrypted"`
+	Next      []string `json:"next"`
 }
 
 type initEnv struct {
@@ -69,8 +69,9 @@ type initEnv struct {
 	Guard string `json:"guard"`
 }
 
-// Run validates all requested files before storing keys, then publishes templates.
+// Run validates files and obtains encryption consent before storing keys or files.
 func (c *ProjectInitCmd) Run(ctx *cliCtx) error {
+	c.created, c.encrypted = nil, nil
 	project, err := c.projectID()
 	if err != nil {
 		return err
@@ -114,7 +115,7 @@ func (c *ProjectInitCmd) printJSON(project, dir, from string, next []string) err
 	if err != nil {
 		return err
 	}
-	res := initResult{Project: project, Dir: dir, IDFrom: from, Format: pf.FilesFormat(), Envs: []initEnv{}, Created: []string{}, Next: next}
+	res := initResult{Project: project, Dir: dir, IDFrom: from, Format: pf.FilesFormat(), Envs: []initEnv{}, Created: []string{}, Encrypted: []string{}, Next: next}
 	for _, env := range c.Env {
 		e := pf.Env[env]
 		res.Envs = append(res.Envs, initEnv{Name: env, Key: e.Key, Guard: e.GuardLevel()})
@@ -122,18 +123,25 @@ func (c *ProjectInitCmd) printJSON(project, dir, from string, next []string) err
 	for _, f := range c.created {
 		res.Created = append(res.Created, relTo(dir, f))
 	}
+	for _, f := range c.encrypted {
+		res.Encrypted = append(res.Encrypted, relTo(dir, f))
+	}
+	sort.Strings(res.Encrypted)
 	sort.Strings(res.Created)
 	return printJSON(res)
 }
 
 // nextSteps says what to do now. Running init again is safe: it keeps
-// existing keys and files.
+// existing keys and encrypted files. Plaintext changes require consent.
 func (c *ProjectInitCmd) nextSteps() []string {
 	env := c.Env[0]
 	steps := []string{
-		"git add esec.toml and the secrets files (they hold no secret in the clear)",
+		"git add esec.toml and the encrypted secrets files",
 		"esec vault secrets set NAME --env " + env + " --create   # add a value (--generate makes one)",
 		"esec vault run " + env + " -- COMMAND                      # run with the values",
+	}
+	if !c.Template {
+		steps[0] = "git add esec.toml"
 	}
 	if path, err := preCommitPath(c.Dir); err == nil {
 		if data, err := os.ReadFile(path); err != nil || !strings.Contains(string(data), hookBegin) { //nolint:gosec // the repository's own hook
@@ -174,7 +182,7 @@ func (c *ProjectInitCmd) create(project string) error { //nolint:gocyclo // keys
 	if err != nil {
 		return err
 	}
-	if _, err := templateContent(format, "", ""); err != nil {
+	if _, err := templateContent(format, ""); err != nil {
 		return err
 	}
 	levels, err := initGuardLevels(c.Env, c.Guard)
@@ -212,6 +220,9 @@ func (c *ProjectInitCmd) create(project string) error { //nolint:gocyclo // keys
 			}
 		}
 	}
+	if err := checkInitFiles(files); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(c.Dir, 0o750); err != nil {
 		return err
 	}
@@ -228,11 +239,19 @@ func (c *ProjectInitCmd) create(project string) error { //nolint:gocyclo // keys
 	if err := pf.Save(c.Dir); err != nil {
 		return err
 	}
-	for file, content := range files {
-		if err := writeNewTemplate(file, []byte(content)); err != nil {
+	for _, file := range files {
+		if err := file.publish(); err != nil {
 			return err
 		}
-		c.created = append(c.created, file)
+		if file.next == nil {
+			continue
+		}
+		if file.info == nil {
+			c.created = append(c.created, file.path)
+		} else {
+			c.encrypted = append(c.encrypted, file.path)
+			fmt.Fprintf(os.Stderr, "Encrypted existing file %s\n", safetext.Clean(file.path))
+		}
 	}
 	return ensureGitignoreEntry(c.Dir, esec.DefaultKeyringFilename)
 }
@@ -241,66 +260,75 @@ func (c *ProjectInitCmd) create(project string) error { //nolint:gocyclo // keys
 // already (running init again changes nothing), one this device holds from
 // before, or a new one. It returns the keys to seal and the secrets files to
 // create.
-func prepareEnvironments(c *ProjectInitCmd, s *sealing, pf *projectfile.File, format string) ([]freshKey, map[string]string, error) {
-	files := map[string]string{}
+func prepareEnvironments(c *ProjectInitCmd, s *sealing, pf *projectfile.File, format string) ([]freshKey, []*initFile, error) {
+	var files []*initFile
 	var fresh []freshKey
-	cfg, err := config.LoadDir(c.Dir)
-	if err != nil {
-		return nil, nil, err
-	}
+	seen := map[string]bool{}
 	for _, env := range c.Env {
 		if err := validateEnvName(env); err != nil {
 			return nil, nil, err
 		}
-		pub := pf.Env[env].Key
-		if _, serr := coreseal.Read(c.Dir, env); pub == "" || serr != nil {
-			level := c.guardLevels[env]
-			if level == "" {
-				level = projectfile.GuardNone
-			}
-			priv, ok := s.cached(pf.Project, env, pub)
-			if !ok {
-				var err error
-				if _, priv, err = esec.GenerateKeypair(); err != nil {
-					return nil, nil, err
-				}
-			}
-			if pub, err = publicHex(priv); err != nil {
-				return nil, nil, err
-			}
-			fresh = append(fresh, freshKey{env: env, priv: priv, level: level})
-		}
-		filename, err := config.Expand(cfg.Files.Create, env, format)
-		if err != nil {
-			return nil, nil, err
-		}
-		file := filepath.Join(c.Dir, filename)
-		if !c.Template {
+		if seen[env] {
 			continue
 		}
-		if existing, _, err := fileutils.Resolve(c.Dir, env, format); err == nil {
-			file = existing
-		} else if !errors.Is(err, fileutils.ErrNotFound) {
-			return nil, nil, err
-		}
-		data, readErr := os.ReadFile(file) //nolint:gosec // user-selected project directory and validated environment
-		switch {
-		case readErr == nil:
-			p, err := esec.ExtractPublicKey(data, esec.FileFormat(format))
-			if err != nil || hex.EncodeToString(p[:]) != pub {
-				return nil, nil, fmt.Errorf("existing %s is not encrypted to %s's key: rotate it (esec vault env rotate %s), or move it aside", file, env, env)
-			}
-		case !errors.Is(readErr, os.ErrNotExist):
-			return nil, nil, readErr
-		default:
-			_, content, err := secretsTemplate(c.Dir, format, env, pub)
+		seen[env] = true
+		var file *initFile
+		var err error
+		if c.Template {
+			file, err = inspectInitFile(c.Dir, format, env)
 			if err != nil {
 				return nil, nil, err
 			}
-			files[file] = string(content)
+		}
+		pub, key, err := c.prepareEnvironmentKey(s, pf, env, file)
+		if err != nil {
+			return nil, nil, err
+		}
+		if key != nil {
+			fresh = append(fresh, *key)
+		}
+		if file != nil {
+			if err := file.prepare(c, env, pub); err != nil {
+				return nil, nil, err
+			}
+			for _, other := range files {
+				if other.path == file.path {
+					return nil, nil, fmt.Errorf("environments resolve to the same secrets file: %s", file.path)
+				}
+			}
+			files = append(files, file)
 		}
 	}
 	return fresh, files, nil
+}
+
+func (c *ProjectInitCmd) prepareEnvironmentKey(s *sealing, pf *projectfile.File, env string, file *initFile) (string, *freshKey, error) {
+	pub := pf.Env[env].Key
+	if _, err := coreseal.Read(c.Dir, env); pub != "" && err == nil {
+		return pub, nil, nil
+	}
+	if pub == "" && file != nil {
+		pub = file.publicKey
+	}
+	level := pf.Env[env].GuardLevel()
+	if requested := c.guardLevels[env]; requested != "" {
+		if pf.Env[env].Key != "" && requested != level {
+			return "", nil, fmt.Errorf("%s already has %s protection; init will not change it", env, level)
+		}
+		level = requested
+	}
+	priv, ok := s.cached(pf.Project, env, pub)
+	if !ok {
+		if pub != "" {
+			return "", nil, fmt.Errorf("%s already has a public key, but its private key is not available to seal; import the matching key with esec vault storage add --project %s --file KEYRING, or restore its seal before initializing (no project files changed)", env, pf.Project)
+		}
+		var err error
+		if _, priv, err = esec.GenerateKeypair(); err != nil {
+			return "", nil, err
+		}
+	}
+	pub, err := publicHex(priv)
+	return pub, &freshKey{env: env, priv: priv, level: level}, err
 }
 
 // initGuardLevels reads --guard. A bare name means touch, the original
@@ -329,10 +357,10 @@ func initGuardLevels(envs, guards []string) (map[string]string, error) {
 	return out, nil
 }
 
-func templateContent(format, env, pub string) (string, error) {
+func templateContent(format, pub string) (string, error) {
 	switch format {
 	case ".env":
-		return fmt.Sprintf("# %s secrets\nESEC_PUBLIC_KEY=%s\n", env, pub), nil
+		return fmt.Sprintf("ESEC_PUBLIC_KEY=%s\n", pub), nil
 	case ".ejson":
 		return fmt.Sprintf("{\n  \"_ESEC_PUBLIC_KEY\": %q\n}\n", pub), nil
 	case ".eyaml", ".eyml":
@@ -441,7 +469,7 @@ type EnvAddCmd struct {
 	Project  string `help:"Project id (default: the checkout here)"`
 	Format   string `short:"f" help:"Template format (default: esec config)"`
 	Dir      string `type:"path" help:"Secrets directory (default: project marker directory)"`
-	Template bool   `default:"true" negatable:"" help:"Create an encrypted secrets file from an example or empty template"`
+	Template bool   `default:"true" negatable:"" help:"Create a secrets file containing only its public key"`
 	Guard    string `enum:"none,touch,session" default:"none" help:"Guard the new key: touch (every read needs a touch) or session"`
 }
 
@@ -492,7 +520,7 @@ func (c *EnvAddCmd) Run(ctx *cliCtx) error {
 		if err := writeNewTemplate(file, content); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "Created encrypted secrets file %s\n", file)
+		fmt.Fprintf(os.Stderr, "Created public-key-only secrets file %s\n", file)
 	}
 	fmt.Printf("ESEC_PUBLIC_KEY=%s\n", pub)
 	if shared, err := sharedProject(ctx, project); err != nil {

@@ -381,7 +381,11 @@ final class Store {
         if !draft.project.isEmpty { args += ["--project", draft.project] }
         if !draft.guarded.isEmpty { args += ["--guard", draft.guarded.joined(separator: ",")] }
         if draft.format != "default" { args += ["--format", draft.format] }
+        if draft.encryptExisting { args.append("--yes") }
         let ok = await perform("Setting up the project…", args, in: draft.dir.path)
+        if !ok, lastError?.contains("encryption cancelled") == true {
+            lastError = "This folder contains plaintext secrets. Enable “Encrypt existing plaintext files” to add a public key where needed and encrypt the current values, or cancel to keep the files unchanged."
+        }
         if ok { await add(draft.dir) }
         return ok
     }
@@ -573,4 +577,5 @@ struct ProjectDraft: Identifiable {
     var envs = ["dev", "prod"]
     var guarded: [String] = []
     var format = "default"
+    var encryptExisting = false
 }

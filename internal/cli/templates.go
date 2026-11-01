@@ -1,27 +1,18 @@
 package cli
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
-	"github.com/joho/godotenv"
-	"github.com/mscno/esec"
 	"github.com/mscno/esec/pkg/config"
-	"github.com/mscno/esec/pkg/crypto"
 	"github.com/mscno/esec/pkg/fileutils"
 	"github.com/mscno/esec/pkg/projectfile"
-	"github.com/pelletier/go-toml/v2"
-	"gopkg.in/yaml.v3"
 )
 
-// secretsTemplate builds a new file entirely in memory. Only ciphertext is
-// written to disk, including when an example contains nonempty defaults.
+// secretsTemplate creates only a public-key header. Example files are never read.
 func secretsTemplate(dir, format, env, pub string) (string, []byte, error) {
 	cfg, err := config.LoadDir(dir)
 	if err != nil {
@@ -35,140 +26,8 @@ func secretsTemplate(dir, format, env, pub string) (string, []byte, error) {
 	if err != nil || string(f) != format {
 		return "", nil, fmt.Errorf("files.create must produce a filename identifying %s", format)
 	}
-	target := filepath.Join(dir, name)
-	var sources []string
-	seen := map[string]bool{}
-	for _, pattern := range cfg.Files.Templates {
-		n, err := config.Expand(pattern, env, format)
-		if err != nil {
-			return "", nil, err
-		}
-		p := filepath.Join(dir, n)
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		info, err := os.Lstat(p)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return "", nil, err
-		}
-		if !info.Mode().IsRegular() {
-			return "", nil, fmt.Errorf("template %s is not a regular file", p)
-		}
-		if filepath.Clean(p) == filepath.Clean(target) {
-			return "", nil, errors.New("example template and destination must differ")
-		}
-		sources = append(sources, p)
-	}
-	sort.Strings(sources)
-	if len(sources) > 1 {
-		return "", nil, fmt.Errorf("ambiguous example templates: %s", strings.Join(sources, ", "))
-	}
-	plain, err := templateContent(format, env, pub)
-	if err != nil {
-		return "", nil, err
-	}
-	if len(sources) == 1 {
-		data, err := os.ReadFile(sources[0])
-		if err != nil {
-			return "", nil, err
-		}
-		plain, err = populateTemplate(data, format, pub)
-		if err != nil {
-			return "", nil, fmt.Errorf("invalid example template %s: %w", sources[0], err)
-		}
-	}
-	var encrypted bytes.Buffer
-	if _, err := esec.Encrypt(strings.NewReader(plain), &encrypted, esec.FileFormat(format)); err != nil {
-		return "", nil, fmt.Errorf("encrypt template: %w", err)
-	}
-	return target, encrypted.Bytes(), nil
-}
-
-func populateTemplate(data []byte, format, pub string) (string, error) {
-	if format == ".env" {
-		m, err := godotenv.Unmarshal(string(data))
-		if err != nil {
-			return "", errors.New("invalid dotenv syntax")
-		}
-		delete(m, "_ESEC_PUBLIC_KEY")
-		m["ESEC_PUBLIC_KEY"] = pub
-		// The esec dotenv transformer consumes literal values, not quoted
-		// dotenv syntax. Reject multiline values rather than corrupt them.
-		var b strings.Builder
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if crypto.IsBoxedMessage([]byte(m[k])) {
-				return "", errors.New("templates must contain plaintext dummy defaults, not ciphertext from another key")
-			}
-			if strings.ContainsAny(k, "=\r\n\x00") || strings.ContainsAny(m[k], "\r\n\x00") || strings.TrimSpace(m[k]) != m[k] {
-				return "", errors.New("dotenv template requires single-line values without surrounding whitespace; use TOML for other values")
-			}
-			fmt.Fprintf(&b, "%s=%s\n", k, m[k])
-		}
-		return b.String(), nil
-	}
-	var m map[string]any
-	var err error
-	switch format {
-	case ".ejson":
-		err = json.Unmarshal(data, &m)
-	case ".etoml":
-		err = toml.Unmarshal(data, &m)
-	case ".eyaml", ".eyml":
-		err = yaml.Unmarshal(data, &m)
-	default:
-		return "", errors.New("unsupported template format")
-	}
-	if err != nil || m == nil {
-		return "", errors.New("expected a structured configuration document")
-	}
-	delete(m, "ESEC_PUBLIC_KEY")
-	delete(m, "_ESEC_PUBLIC_KEY")
-	if hasBoxedDefault(m) {
-		return "", errors.New("templates must contain plaintext dummy defaults, not ciphertext from another key")
-	}
-	m["_ESEC_PUBLIC_KEY"] = pub
-	var out []byte
-	switch format {
-	case ".ejson":
-		out, err = json.MarshalIndent(m, "", "  ")
-	case ".etoml":
-		out, err = toml.Marshal(m)
-	default:
-		out, err = yaml.Marshal(m)
-	}
-	if err != nil {
-		return "", errors.New("cannot encode example template")
-	}
-	return string(out), nil
-}
-
-func hasBoxedDefault(v any) bool {
-	switch x := v.(type) {
-	case string:
-		return crypto.IsBoxedMessage([]byte(x))
-	case map[string]any:
-		for _, v := range x {
-			if hasBoxedDefault(v) {
-				return true
-			}
-		}
-	case []any:
-		for _, v := range x {
-			if hasBoxedDefault(v) {
-				return true
-			}
-		}
-	}
-	return false
+	content, err := templateContent(format, pub)
+	return filepath.Join(dir, name), []byte(content), err
 }
 
 func creationFormat(dir, explicit string) (string, error) {

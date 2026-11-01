@@ -926,8 +926,17 @@ The default global keyring path is:
 ~/.config/esec/keyrings/acme_store.keyring
 ```
 
-`project init` creates a different key pair for each environment. Each template
-contains its public key. The matching private key goes into the global keyring.
+`project init` creates a different key pair for each environment. A missing
+secrets file is created with **only its public key**; `.env.example` and other
+example files are never copied. The matching private key goes into the vault.
+
+If a secrets file already exists, init checks its encryption and public key.
+For plaintext without a public key, it asks before adding the environment's key
+and encrypting the existing values in place. With a matching public key, it asks
+before encrypting any remaining plaintext. Declining (or EOF) leaves the project
+files and environment keys unchanged. Use `--yes` to approve this in scripts.
+Already-encrypted matching files stay unchanged. Missing or mismatched keys have
+separate diagnostics; init never silently rotates an existing key.
 
 You can select another directory without changing your shell directory:
 
@@ -2351,7 +2360,7 @@ files persist with vault data and are removed by purge. Do not unlink lock files
 while writers are running.
 
 
-## Shared file preferences and encrypted example templates
+## Shared file preferences and new secrets files
 
 esec and esec-vault share `~/.config/esec/config.toml` (honoring
 `XDG_CONFIG_HOME`, `ESEC_VAULT_HOME`, or an explicit `ESEC_CONFIG` file).
@@ -2362,17 +2371,22 @@ default_format = "etoml"
 [files]
 patterns = [".{format}.{env}", "{env}.{format}"]
 create = "{env}.{format}"
-templates = ["example.{format}", ".{format}.example"]
 ```
 
-Put public defaults and dummy placeholders in `example.etoml`, `example.ejson`
-or `.env.example`. Omit the public key. `esec vault project init` and
-`esec vault env add prod` insert the new public key and encrypt defaults in
-memory before creating the file. The configured `default_format` applies to
-both commands; `-f` or `ESEC_FORMAT` overrides it. Filenames use the literal
-environment argument: the config above creates `prod.etoml`. Templates are
-parsed and re-serialized, so comments and formatting are not preserved.
-Ambiguous templates and existing mismatched files fail without overwriting.
+`esec vault project init` and `esec vault env add prod` create missing files
+containing only the public key. They never read or copy `.env.example`,
+`example.etoml`, or any other example; an existing `files.templates` preference
+is ignored by these commands. Add the values you need explicitly.
+
+The configured `default_format` applies to both commands; `-f` or `ESEC_FORMAT`
+overrides it unless the project's `esec.toml` specifies its format. Filenames
+use the literal environment argument: the config above creates `prod.etoml`.
+
+For existing plaintext, `project init` asks before encrypting in place (`--yes`
+for scripts). Ordinary dotenv comments and file permissions are preserved.
+Multiline/colon-style dotenv entries are normalized to single lines with their
+values preserved; that normalization removes comments and is noted in the prompt.
+The JSON result separates newly `created` files from existing `encrypted` files.
 
 ```sh
 esec vault env add prod -f etoml

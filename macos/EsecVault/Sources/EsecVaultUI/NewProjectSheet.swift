@@ -35,6 +35,8 @@ struct NewProjectSheet: View {
                     Text("YAML (eyaml)").tag("eyaml")
                     Text("TOML (etoml)").tag("etoml")
                 }
+                Toggle("Encrypt existing plaintext files", isOn: $draft.encryptExisting)
+                    .help("Add public keys where missing and encrypt the existing values in place. Multiline or colon-style dotenv entries are normalized to single lines and their comments are removed.")
                 if EnvironmentName.isValidList(envs) {
                     ForEach(envs, id: \.self) { env in
                         Toggle("Require approval for every \(env) read", isOn: Binding(get: { guarded.contains(env) }, set: { on in
@@ -68,7 +70,7 @@ struct NewProjectSheet: View {
     }
 
     private var footer: String {
-        var text = "Writes esec.toml and an encrypted secrets file per environment; commit them. Each key is stored on your vault server or backup before a file uses it."
+        var text = "Creates esec.toml and missing secrets files containing only their public key. Example files are never copied. Enable the option above to approve encryption of existing plaintext files."
         if !guardReady { text += " To guard environments, add a passkey or security key first (Security Keys)." }
         return text
     }
