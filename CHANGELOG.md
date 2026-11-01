@@ -1,10 +1,12 @@
-# v0.29.1
+# v0.29.2
 
 Upgrade the server before installing clients. Pairs with esec v0.18.0 or later.
 Run `esec vault daemon upgrade` after installing the client.
 
 - Build the native app with older Swift/Xcode toolchains, keeping native
   security-key PRF support available in Xcode 26.4+ builds.
+- Prevent concurrent secret reads from starving Swift's worker threads on
+  smaller Macs; exercise simultaneous large stdin/stdout/stderr in native tests.
 
 ### Server-first vault storage
 

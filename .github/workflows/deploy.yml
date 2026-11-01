@@ -34,6 +34,7 @@ jobs:
           test "$(gh release view "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           ref: ${{ inputs.ref && format('refs/tags/{0}', inputs.ref) || github.event.workflow_run.head_sha }}
       - uses: superfly/flyctl-actions/setup-flyctl@98172f70657cb3e15db199af139be99bd3e61200
         with:
