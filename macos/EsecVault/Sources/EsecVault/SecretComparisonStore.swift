@@ -86,7 +86,7 @@ final class SecretComparisonStore {
     }
     func hasDifferentValues(_ key: String) -> Bool {
         // Only compare complete reads; locked columns do not imply a mismatch.
-        let values = columns.flatMap { values(for: key, in: $0).map { $0.entry.value } }
+        let values = columns.flatMap { self.values(for: key, in: $0).map { $0.entry.value } }
         return Set(values).count > 1
     }
     func hideAll() { revealed = []; revealIncoming = false }

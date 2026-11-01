@@ -95,6 +95,8 @@ private final class NativePasskeySheet: NSObject, ASAuthorizationControllerDeleg
               let name = input.name, !name.isEmpty, name.utf8.count <= 256 else { throw failure("Invalid passkey registration.") }
         let request: ASAuthorizationRequest
         if input.provider == "security-key" {
+            #if compiler(>=6.3)
+            // Security-key PRF declarations arrived with the Xcode 26.4 SDK.
             guard #available(macOS 26.4, *) else { throw failure("Native YubiKey passkey encryption requires macOS 26.4 or later.") }
             let provider = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(relyingPartyIdentifier: input.rpID)
             let registration = provider.createCredentialRegistrationRequest(challenge: try challenge(), displayName: name, name: name, userID: userID)
@@ -103,6 +105,9 @@ private final class NativePasskeySheet: NSObject, ASAuthorizationControllerDeleg
             registration.userVerificationPreference = .required
             registration.prf = .inputValues(.init(saltInput1: salt))
             request = registration
+            #else
+            throw failure("Native security-key encryption requires an app built with Xcode 26.4 or later.")
+            #endif
         } else {
             guard input.provider == "platform" else { throw failure("Choose a password-manager passkey or a security key.") }
             let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: input.rpID)
@@ -117,10 +122,16 @@ private final class NativePasskeySheet: NSObject, ASAuthorizationControllerDeleg
         if let registration = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration {
             id = registration.credentialID
             supported = registration.prf?.isSupported == true
-        } else if #available(macOS 26.4, *), let registration = credential as? ASAuthorizationSecurityKeyPublicKeyCredentialRegistration {
-            id = registration.credentialID
-            supported = registration.prf?.isSupported == true
-        } else { throw failure("Unexpected passkey registration response.") }
+        } else {
+            #if compiler(>=6.3)
+            if #available(macOS 26.4, *), let registration = credential as? ASAuthorizationSecurityKeyPublicKeyCredentialRegistration {
+                id = registration.credentialID
+                supported = registration.prf?.isSupported == true
+            } else { throw failure("Unexpected passkey registration response.") }
+            #else
+            throw failure("Unexpected passkey registration response.")
+            #endif
+        }
         guard supported else { throw failure("This passkey provider does not support encryption (WebAuthn PRF). No vault keys were changed.") }
         // Confirm PRF works during a real unlock before registering a key as
         // a reader. Some providers only return it from an assertion.
@@ -138,6 +149,7 @@ private final class NativePasskeySheet: NSObject, ASAuthorizationControllerDeleg
         platform.allowedCredentials = inputs.map { ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0.credentialID) }
         platform.prf = .perCredentialInputValues(salts)
         var requests: [ASAuthorizationRequest] = [platform]
+        #if compiler(>=6.3)
         if #available(macOS 26.4, *) {
             let hardware = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(relyingPartyIdentifier: rpID).createCredentialAssertionRequest(challenge: challenge)
             hardware.userVerificationPreference = .required
@@ -145,6 +157,7 @@ private final class NativePasskeySheet: NSObject, ASAuthorizationControllerDeleg
             hardware.prf = .perCredentialInputValues(salts)
             requests.append(hardware)
         }
+        #endif
         let credential = try await authorize(requests)
         let id: Data
         let prf: ASAuthorizationPublicKeyCredentialPRFAssertionOutput?
@@ -153,11 +166,17 @@ private final class NativePasskeySheet: NSObject, ASAuthorizationControllerDeleg
             id = assertion.credentialID
             prf = assertion.prf
             authenticatorData = assertion.rawAuthenticatorData
-        } else if #available(macOS 26.4, *), let assertion = credential as? ASAuthorizationSecurityKeyPublicKeyCredentialAssertion {
-            id = assertion.credentialID
-            prf = assertion.prf
-            authenticatorData = assertion.rawAuthenticatorData
-        } else { throw failure("Unexpected passkey unlock response.") }
+        } else {
+            #if compiler(>=6.3)
+            if #available(macOS 26.4, *), let assertion = credential as? ASAuthorizationSecurityKeyPublicKeyCredentialAssertion {
+                id = assertion.credentialID
+                prf = assertion.prf
+                authenticatorData = assertion.rawAuthenticatorData
+            } else { throw failure("Unexpected passkey unlock response.") }
+            #else
+            throw failure("Unexpected passkey unlock response.")
+            #endif
+        }
         guard inputs.contains(where: { $0.credentialID == id }), authenticatorData.count >= 37,
               authenticatorData[32] & 0x05 == 0x05,
               Data(authenticatorData.prefix(32)) == Data(SHA256.hash(data: Data(rpID.utf8))) else {

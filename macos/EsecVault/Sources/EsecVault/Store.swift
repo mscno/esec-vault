@@ -154,7 +154,7 @@ final class Store {
 
     /// Failed reads retain their last data but are marked as unavailable;
     /// they can never silently turn into an empty, healthy result.
-    private func read<T>(_ source: String, _ operation: () async throws -> T) async -> T? {
+    private func read<T>(_ source: String, _ operation: @MainActor () async throws -> T) async -> T? {
         do {
             let value = try await operation()
             refreshErrors[source] = nil
