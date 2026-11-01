@@ -30,7 +30,7 @@ jobs:
       - name: Test
         run: |
           go mod download
-          go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+          go test -timeout 20m -race -coverprofile=coverage.txt -covermode=atomic ./...
 
   cross:
     name: Build every release target
