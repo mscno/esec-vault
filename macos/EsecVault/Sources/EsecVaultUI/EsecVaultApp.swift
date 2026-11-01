@@ -2,9 +2,8 @@ import AppKit
 import EsecVaultCore
 import SwiftUI
 
-@main
-enum EsecVaultMain {
-    @MainActor static func main() {
+public enum EsecVaultApplication {
+    @MainActor public static func main() {
         if CommandLine.arguments.dropFirst().elementsEqual(["--passkey-helper"]) {
             NativePasskeyHelper.run()
         } else {

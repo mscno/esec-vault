@@ -1,4 +1,4 @@
-@testable import EsecVault
+@testable import EsecVaultUI
 import EsecVaultCore
 import Foundation
 import Testing
