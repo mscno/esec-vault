@@ -44,7 +44,14 @@ public struct CLI: Sendable {
     /// it would in a terminal there.
     public func run(_ args: [String], in dir: String? = nil, stdin: String? = nil) async throws -> Data {
         let binary = self.binary
-        return try await Task.detached { try Self.runBlocking(binary, args, dir, stdin) }.value
+        // Process and pipe waits must not occupy Swift's cooperative executor.
+        // When all its workers block here, the dispatch pipe readers cannot
+        // start on smaller machines and even a completed child can deadlock.
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try Self.runBlocking(binary, args, dir, stdin) })
+            }
+        }
     }
 
     private static func runBlocking(_ binary: URL, _ args: [String], _ dir: String?, _ stdin: String?) throws -> Data {
