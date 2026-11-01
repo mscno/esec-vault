@@ -5,6 +5,7 @@ on:
     tags: ['v*.*.*']
 
 permissions:
+  actions: read
   contents: write
   packages: write
   id-token: write
@@ -12,7 +13,16 @@ permissions:
 
 jobs:
   validate:
-    uses: ./.github/workflows/go-test.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require passing tests for this exact release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow go-test.yml --commit "$GITHUB_SHA" --branch master --event push --limit 1 --json databaseId --jq '.[0].databaseId')
+          test -n "$run_id" && test "$run_id" != null
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status --interval 20
   release:
     needs: validate
     runs-on: ubuntu-latest
@@ -73,6 +83,8 @@ jobs:
           - runner: macos-15-intel
             arch: amd64
     runs-on: ${{ matrix.runner }}
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7
         with:
