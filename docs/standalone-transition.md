@@ -1,10 +1,11 @@
 # Transition to standalone Esec
 
-The replacement workflow is being implemented in the sibling `esec` repository.
+The replacement workflow is in [Esec 0.19](https://github.com/mscno/esec).
 It uses local age identities, public recipient lists and encrypted environment
 key generations committed alongside the encrypted files. It needs no EsecVault
 account, broker, server, daemon or macOS application for migrated environments.
-The standalone changes are not a published release yet.
+The optional Esec.app browser now ships with Esec and delegates all cryptographic
+operations to its bundled CLI. It has no helper or Vault UI.
 
 Machine setup offers a software identity for dev/test/staging and accepts pasted
 age/rage YubiKey recipients. Production includes hardware recipients and only
@@ -16,7 +17,7 @@ identity must stay off ordinary developer machines.
 Use the Esec checkout's `README.md` for the current commands and storage layout.
 The migration sequence is:
 
-1. Build and install the standalone CLI; run `esec setup`. Machine configuration
+1. Install Esec 0.19 or later; run `esec setup`. Machine configuration
    lives in `age.toml` beside the legacy `config.toml`, allowing coexistence.
 2. Migrate one non-production environment with `esec adopt dev`. This rotates its
    environment key; old keys and seals are preserved. Check `esec inspect dev` and
@@ -29,7 +30,8 @@ The migration sequence is:
    applications and other Esec readers to understand the new standalone seals.
    Deployment secret changes remain the owner's responsibility.
 5. After all active projects, deployments and required history work independently,
-   stop the menu bar app/helper and Linux services. Preserve legacy encrypted
+   stop the legacy EsecVault app/helper and Linux services. The new Esec.app
+   browser can remain installed and running. Preserve legacy encrypted
    backups and recovery material until their retention requirements are settled.
 6. Only then retire server access, scheduled sync/backup jobs and distribution of
    the old app. Do not mistake stopping a service for revoking old copied secrets;

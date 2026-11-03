@@ -73,16 +73,4 @@ jobs:
           # Keep in step with mise.toml.
           version: v2.15.0
 
-  macos:
-    name: Native macOS app
-    runs-on: macos-15
-    timeout-minutes: 15
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - run: swift test --package-path macos/EsecVault
-      - run: macos/EsecVault/bundle.sh
+  # The maintained macOS app is built and released by mscno/esec.

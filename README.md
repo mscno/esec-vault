@@ -1,5 +1,9 @@
 # esec-vault
 
+> Legacy compatibility and recovery tooling. New setups use standalone
+> [Esec](https://github.com/mscno/esec) and its optional local **Esec.app**.
+> See the [transition guide](docs/standalone-transition.md).
+
 Use esec-vault to store, share, and back up the private keys used by
 [esec](https://github.com/mscno/esec). Use esec to encrypt project secrets files.
 
@@ -1890,98 +1894,18 @@ six months. Only a full check (no `--no-…` flags) is kept for them.
 
 ## The Mac app
 
-`macos/EsecVault` is a menu bar app with project and secret-file windows.
-Background refreshes read metadata only. Opening a secrets file explicitly
-decrypts its values into memory. Unguarded files use this machine's local
-keys, just like `esec decrypt`; guarded files use the broker's approval path.
-Both kinds of reads are audited without recording secret values.
+The maintained macOS credential browser is now **Esec.app**, published with
+[Esec 0.19 and later](https://github.com/mscno/esec/releases). Its source lives
+in that repository at `macos/Esec`. It browses local files, compares environments,
+and saves encrypted edits using only its bundled core `esec` CLI. It has no
+broker, helper, server, account, or sync UI.
 
-- **Overview**: key health and setup, service installation/running state,
-  the app/service build match, and a separate broker session with a duration,
-  unlock and lock controls. Starting or upgrading the service starts it locked;
-  locking does not stop backups. Status failures and unchecked/pending seals
-  stay visible instead of appearing healthy.
-- **Activity**: every request for keys, newest first: allowed, asked or
-  refused, by which programs and agent session. The menu bar lists the last
-  day's guarded reads and offers broker lock/unlock.
-- **Projects** by namespace: the source `esec.toml`, its file format and
-  filename pattern, unrecognized settings and invalid-checkout diagnostics,
-  environments, readers, seals, and files across checkouts. Add or rename an
-  environment, rotate a key, or change its guard policy. Environment names
-  follow `esec.toml`: dot-separated lowercase letters and digits (`api.prod`).
-- **Security Keys**: native passkeys and legacy PIV keys. Ordinary refreshes
-  read the background service's YubiKey scan cache; **Scan Connected YubiKeys**
-  requests a new scan. Adding a detected row registers that specific slot.
-- **Secrets files**: click any file in a project, or use **Open Secrets File…**
-  (⌘O). Each file opens in its own window with visible values on one line per key, per-key show/hide,
-  show/hide all, and key-name search. **Edit → Save Encrypted** writes the
-  encrypted value atomically, preserving file permissions; simply opening or
-  revealing values never changes the file. Empty and multiline values work.
-  Dotenv and YAML files also support **Add Key**. Nested keys are displayed;
-  array elements, metadata, non-string scalars and ambiguous paths are read-only.
-  **Compare Environments** opens a matrix of every key across the project’s
-  files: dev/development, staging, prod/production, then other environments
-  alphabetically. Missing keys, differing values, duplicate sources and failed
-  reads are shown explicitly. Each source can open in the file editor.
-  Policy denials show the actual reason in each environment column. A locked
-  session offers **Unlock for 4 Hours and Retry** directly in either window.
-  Unguarded local files need no broker session or policy rule when this Mac
-  has their keys. Broker policies still control `esec vault run`, and explicit
-  deny rules still apply to guarded reads.
-  A file changed elsewhere must be reloaded before saving. Values are hidden
-  when the window loses focus, and discarded on close, lock or sleep. Swift
-  does not guarantee erasure of all runtime copies from memory.
-- **New Project** (⌘N): pick a folder, choose environments and which should
-  require approval for every read; it runs `project init`.
-
-`touch` means approval for every read; `session` means approval once per
-broker session, with the key discarded on lock/expiry. **Guard It Here**
-removes cached guarded keys while preserving each environment's configured
-level. Keep `esec.toml` and `.esec/` changes together in version control.
-
-The app watches vault metadata, checkout `esec.toml` files and seals, coalesces
-file changes, and checks helper/session status every five seconds. The menu-bar
-app starts and supervises its bundled Go helper automatically, including when
-opened at login. Closing a window keeps the menu bar and helper running.
-**Quit EsecVault and Stop Helper** ends the broker session and pauses background
-sync. Reopening starts locked. An app crash closes a private lifetime pipe;
-the helper cancels its work and exits within five seconds. Helper crashes are
-retried with backoff; repeated failures show an error and **Restart Helper**.
-
-The first launch disables this vault's validated legacy LaunchAgent, retaining
-its installation metadata, keys, caches and pending encrypted uploads. Setup
-remembers app ownership even while the app is closed. No daemon installation
-or upgrade commands are needed for normal Mac use. Update the app bundle and
-reopen it to update its helper. An explicit `ESEC_VAULT_SOCK` override keeps its
-external broker's lifetime unchanged.
-
-The server stores encrypted revisions, enrollment and access metadata; all
-file decryption and key access stay local. The same Go helper remains available
-as a standalone Linux user service. Ordinary `esec encrypt` / `esec decrypt`
-with local keys/keyrings continue to work independently of the Mac app.
-Release app bundles remain ad-hoc signed, without Developer ID notarization.
-
-```sh
-cd macos/EsecVault && ./bundle.sh install   # ~/Applications/EsecVault.app
-```
-
-The app prefers its bundled `esec-vault` CLI; `ESEC_VAULT_BIN` can override
-it for development. An unbundled build also searches `~/go/bin`, Homebrew
-and `PATH`.
-
-Native passkey unlocking uses Apple's system sheet with Apple Passwords,
-enabled password managers such as Strongbox, and FIDO2 security keys. It
-requires a signed build with an associated domain; see
-[native passkey setup and migration](docs/design/native-passkeys.md).
-The signed app bundles its matching CLI and age plugin. Existing PIV seals
-keep their current unlock method until explicitly resealed to a passkey.
-After updating, use **Update Service** in Overview to run the matching broker
-for guarded secret-file reads. Unguarded local reads work independently of
-the broker. The viewer's
-CLI contract is `secrets show --file PATH --json`; `secrets update --file PATH`
-accepts `{ "revision": "…", "key": "API_KEY", "value": "…", "create": false }`
-on stdin and returns only the saved ciphertext revision. Secret values never
-appear in command arguments.
+`macos/EsecVault` is retained here as legacy source for recovery and migration.
+This repository no longer publishes new EsecVault app bundles. Existing releases
+remain available for files that still need their old approval path. Quit the old
+app and disable its Open at Login when switching; do not delete keys, caches,
+seals, or backups as part of that switch. Follow the
+[transition guide](docs/standalone-transition.md) before retiring legacy services.
 
 ## Server backup and recovery
 
