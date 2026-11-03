@@ -174,10 +174,17 @@ final class Store {
         runtimeRefreshing = true
         defer { runtimeRefreshing = false }
         let wasOpen = daemonState?.unlocked == true
+        let helperWasReady = daemonState?.owner == "app" && daemonState?.reachable == true
         daemonState = await read("Background service") { try await cli.daemonStatus() }
         helper.observed(daemonState)
         if wasOpen && daemonState?.sessionIsOpen() != true {
             lockSecretWindows()
+        }
+        if started, !helperWasReady, daemonState?.owner == "app", daemonState?.reachable == true {
+            // The first metadata read can finish before migration/startup.
+            // Refresh its setup checklist as soon as the helper becomes ready,
+            // instead of showing an obsolete "open EsecVault" step for 5 min.
+            Task { await refresh(full: true) }
         }
     }
 
