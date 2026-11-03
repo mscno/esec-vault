@@ -207,10 +207,17 @@ type CIAddCmd struct {
 	Project string   `help:"Project id (default: the checkout here)"`
 	GitHub  string   `name:"github" help:"Store the key as the secret ESEC_AGE_IDENTITY of this GitHub repository (OWNER/REPO), with gh"`
 	Fly     string   `help:"Store the key as the secret ESEC_AGE_IDENTITY of this Fly app, with fly"`
+	Stage   bool     `help:"With --fly, stage the secret for the next deploy without restarting existing Machines"`
 }
 
 // Run implements ci add.
 func (c *CIAddCmd) Run(ctx *cliCtx) error {
+	if c.Stage && c.Fly == "" {
+		return fmt.Errorf("--stage requires --fly")
+	}
+	if c.GitHub != "" && c.Fly != "" {
+		return fmt.Errorf("choose either --github or --fly")
+	}
 	root, pf, err := checkoutFor(c.Project)
 	if err != nil {
 		return err
@@ -250,16 +257,27 @@ func (c *CIAddCmd) Run(ctx *cliCtx) error {
 		}
 		fmt.Printf("✓ Stored as the secret ESEC_AGE_IDENTITY of %s. In the workflow: env: ESEC_AGE_IDENTITY: ${{ secrets.ESEC_AGE_IDENTITY }}\n", c.GitHub)
 	case c.Fly != "":
-		if err := storeSecret("ESEC_AGE_IDENTITY="+secret+"\n", "fly", "secrets", "import", "--app", c.Fly); err != nil {
+		if err := storeFlyIdentity(secret, c.Fly, c.Stage); err != nil {
 			return fmt.Errorf("the key is sealed in, but storing it in Fly failed (%w): run esec vault ci remove %s and try again", err, c.Name)
 		}
 		fmt.Printf("✓ Stored as the secret ESEC_AGE_IDENTITY of the Fly app %s.\n", c.Fly)
+		if c.Stage {
+			fmt.Println("  Staged only: commit the updated seals, then deploy an image containing them to activate the identity.")
+		}
 	default:
 		fmt.Fprintln(os.Stderr, "Its key, shown once (store it as the CI secret ESEC_AGE_IDENTITY; it is not kept anywhere):")
 		fmt.Println(secret)
 	}
 	fmt.Printf("✓ %s reads %s of %s with esec alone: esec run %s -- COMMAND. Commit .esec/ and esec.toml.\n", c.Name, strings.Join(c.Envs, ", "), pf.Project, c.Envs[0])
 	return nil
+}
+
+func storeFlyIdentity(secret, app string, stage bool) error {
+	args := []string{"secrets", "import", "--app", app}
+	if stage {
+		args = append(args, "--stage")
+	}
+	return storeSecret("ESEC_AGE_IDENTITY="+secret+"\n", "fly", args...)
 }
 
 // storeSecret runs a CLI (gh, fly) with the secret on its standard input,

@@ -387,6 +387,7 @@ the repository is the advanced route (see
 
 ```sh
 esec vault ci add deploy --env prod --fly store   # the secret ESEC_AGE_IDENTITY, set with fly
+esec vault ci add deploy --env prod --fly store --stage # activate on the next image deploy
 ```
 
 The image holds `esec`, `esec.toml`, `.esec/` and the encrypted
