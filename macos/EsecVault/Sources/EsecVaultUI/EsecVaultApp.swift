@@ -103,14 +103,15 @@ struct MenuContent: View {
         }
         if let daemon = store.daemonState {
             Text("Service: \(daemon.serviceDescription.lowercased())")
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                if daemon.sessionIsOpen(at: context.date) {
-                    Button("Lock Broker") { Task { await store.lock() } }
-                        .disabled(store.busy != nil)
-                } else if daemon.reachable, daemon.upToDate {
-                    Button("Unlock Broker for 4 Hours") { Task { await store.unlock() } }
-                        .disabled(store.busy != nil)
-                }
+            // A TimelineView inside a native menu recursively invalidates
+            // SwiftUI's menu host on macOS. The existing five-second daemon
+            // poll updates this state, including session expiry.
+            if daemon.sessionIsOpen() {
+                Button("Lock Broker") { Task { await store.lock() } }
+                    .disabled(store.busy != nil)
+            } else if daemon.reachable, daemon.upToDate {
+                Button("Unlock Broker for 4 Hours") { Task { await store.unlock() } }
+                    .disabled(store.busy != nil)
             }
         }
         let recent = store.recentGuarded.prefix(5)

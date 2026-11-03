@@ -1,3 +1,9 @@
+# v0.29.8
+
+- Fix the Mac app crashing while opening the menu bar after a broker unlock.
+  Use the existing broker-status refresh instead of a live timeline inside the
+  native menu, which could trigger recursive SwiftUI menu rendering.
+
 # v0.29.7
 
 - Make project initialization distinguish plaintext, encrypted, and mixed files.
