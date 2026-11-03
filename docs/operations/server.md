@@ -264,7 +264,7 @@ everyone who checks them.
 | Remove a person | `esec vault access remove LOGIN` in each project, then `esec vault env rotate ENV` for each environment listed; remove their id from `allowed_github_ids`. |
 | Approve web changes | `esec vault changes`, the dialog on a computer running the background service, or a passkey on the Changes page. |
 | See what needs doing | The web overview; `esec vault access`, `esec vault group`, `esec vault changes`. |
-| Upgrade | Deploy the new server version, then update the CLIs (`go install ...@vX` or the release archives) and run `esec-vault daemon upgrade` on each computer. Read the CHANGELOG first: some releases need every colleague's CLI updated before a feature is used. |
+| Upgrade | Deploy the new server version, then update the CLIs (`go install ...@vX` or the release archives) and reopen EsecVault on Macs, or run `esec-vault daemon upgrade` for standalone Linux/headless services. Read the CHANGELOG first: some releases need every colleague's CLI updated before a feature is used. |
 
 ## Respond to incidents
 

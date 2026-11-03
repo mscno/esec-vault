@@ -4,37 +4,32 @@ import SwiftUI
 struct ServiceSection: View {
     @Environment(Store.self) private var store
     @State private var ttl = "4h"
-    @State private var pendingAction: String?
+    @State private var confirmRestart = false
 
     var body: some View {
         Section {
-            if let daemon = store.daemonState {
-                LabeledContent("Background service", value: daemon.serviceDescription)
-                if let version = daemon.version {
-                    LabeledContent("Service build", value: version).font(.caption)
-                }
-                if !daemon.upToDate, daemon.installed || daemon.reachable {
-                    Label("The service and this app use different builds. Update the service to use this app’s CLI.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                }
+            LabeledContent("Local helper", value: store.helper.state)
+            if let error = store.helper.error {
+                Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
+            if store.helper.customSocket {
+                Text("A custom broker socket is configured. Its lifetime is managed outside EsecVault.")
+                    .foregroundStyle(.secondary)
+            } else {
                 HStack {
-                    if daemon.managed {
-                        if !daemon.installed {
-                            Button("Install and Start") { Task { await store.serviceAction("install") } }
-                        } else if !daemon.upToDate {
-                            Button("Update Service…") { pendingAction = "upgrade" }
-                        } else if !daemon.reachable {
-                            Button("Start Service") { Task { await store.serviceAction("start") } }
-                        }
-                        if daemon.reachable, daemon.installed {
-                            Button("Restart…") { pendingAction = "restart" }
-                            Button("Stop…") { pendingAction = "stop" }
-                            Button("Reload Policy") { Task { await store.serviceAction("reload") } }
-                        }
-                    } else {
-                        Text("A custom broker socket is configured. Manage that broker from Terminal.")
-                            .foregroundStyle(.secondary)
+                    Button("Restart Helper…") { confirmRestart = true }
+                    if store.daemonState?.reachable == true {
+                        Button("Reload Policy") { Task { await store.serviceAction("reload") } }
                     }
+                }
+            }
+            if let daemon = store.daemonState {
+                if let version = daemon.version {
+                    LabeledContent("Helper build", value: version).font(.caption)
+                }
+                if !daemon.upToDate, daemon.reachable {
+                    Label("Update and reopen EsecVault so the app and helper use the same build.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 }
                 if daemon.reachable {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -62,31 +57,18 @@ struct ServiceSection: View {
                         }
                     }
                 }
-            } else {
-                Text("Background service status is unavailable.").foregroundStyle(.orange)
-                Button("Check Service") { Task { await store.refreshRuntime() } }
             }
             Toggle("Open EsecVault at Login", isOn: Binding(get: { store.opensAtLogin }, set: { store.opensAtLogin = $0 }))
         } header: {
-            Text("Service and broker session")
+            Text("Local helper and broker session")
         } footer: {
-            Text("The service backs up and syncs keys even while the broker is locked or EsecVault is closed. Unlocking the broker needs no YubiKey touch. Guarded keys ask for approval when first read: every read for touch guards, once per broker session for session guards. Locking clears those session keys. Opening EsecVault at login controls this menu bar app separately.")
+            Text("EsecVault starts its bundled helper automatically. Closing a window keeps the menu bar, sync and helper running. Quitting the app stops the helper and ends its broker session; reopening starts locked. Decryption and key access happen on this Mac. The server stores encrypted backups. Locking the broker clears session keys while encrypted sync continues. Local keyring access remains available to esec commands independently of the app.")
         }
         .disabled(store.busy != nil)
-        .confirmationDialog("\(actionTitle) background service?", isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } })) {
-            if let action = pendingAction {
-                Button(actionTitle) { Task { await store.serviceAction(action) } }
-            }
+        .confirmationDialog("Restart local helper?", isPresented: $confirmRestart) {
+            Button("Restart Helper") { Task { await store.serviceAction("restart") } }
         } message: {
-            Text("This ends the broker session and clears its cached keys. Restarting or updating starts the service locked. Stopping also pauses backups and sync until the service starts again; its login startup remains installed.")
-        }
-    }
-
-    private var actionTitle: String {
-        switch pendingAction {
-        case "upgrade": "Update"
-        case "stop": "Stop"
-        default: "Restart"
+            Text("This ends the broker session and clears its cached keys. The bundled helper restarts locked.")
         }
     }
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/mscno/esec-vault/internal/keystore"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/policy"
+	"github.com/mscno/esec-vault/internal/storage"
 )
 
 // Request is the versioned local control protocol. It carries no private keys
@@ -49,6 +50,7 @@ type Response struct {
 	// Version is the build answering the control socket. It lets a newer CLI
 	// notice that a managed daemon still runs an older executable copy.
 	Version string `json:"version,omitempty"`
+	Owner   string `json:"owner,omitempty"`
 	// CLI and UpToDate are filled in by the client for reporting only; the
 	// daemon never sets them.
 	CLI      string `json:"cli_version,omitempty"`
@@ -75,6 +77,7 @@ type queued struct {
 // Server owns one broker session and serializes server synchronization. Keyring access by the
 // backup worker is transient and does not extend the broker session TTL.
 type Server struct {
+	Owner    string
 	Keyring  keyring.Keyring
 	Logger   *slog.Logger
 	Broker   *broker.Server
@@ -143,12 +146,17 @@ func New(kr keyring.Keyring, logger *slog.Logger) (*Server, error) {
 	return s, nil
 }
 
-// Serve runs both endpoints and the scheduler until cancellation. The OS user
-// service owns process lifetime; a broker lock/expiry does not stop this loop.
+// Serve runs both endpoints and the scheduler until cancellation. The Mac app
+// or OS user service owns lifetime; a broker lock/expiry does not stop this loop.
 func (s *Server) Serve(parent context.Context) error {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return fmt.Errorf("daemon requires macOS or Linux")
 	}
+	unlock, err := storage.Lock(filepath.Join(paths.Home(), "helper-lock"))
+	if err != nil {
+		return fmt.Errorf("another helper already owns this vault: %w", err)
+	}
+	defer unlock()
 	if err := os.MkdirAll(paths.RuntimeDir(), 0700); err != nil {
 		return err
 	}
@@ -260,7 +268,7 @@ func (s *Server) dispatch(ctx context.Context, uid, pid uint32, r Request) Respo
 	switch r.Op {
 	case "ping", "status":
 		unlocked, expires := s.Broker.Session()
-		return Response{OK: true, PID: os.Getpid(), Unlocked: unlocked, Expires: expires, Version: BuildVersion}
+		return Response{OK: true, PID: os.Getpid(), Unlocked: unlocked, Expires: expires, Version: BuildVersion, Owner: s.Owner}
 	case "lock":
 		s.Broker.Lock()
 		s.guard.clear()

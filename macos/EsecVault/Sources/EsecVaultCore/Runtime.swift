@@ -11,9 +11,13 @@ public struct DaemonStatus: Codable, Hashable, Sendable {
     public let cliVersion: String?
     public let upToDate: Bool
     public let error: String?
+    public let owner: String?
+    public let appManaged: Bool?
+    public let pid: Int32?
 
     enum CodingKeys: String, CodingKey {
-        case installed, reachable, managed, unlocked, expires, version, error
+        case installed, reachable, managed, unlocked, expires, version, error, owner, pid
+        case appManaged = "app_managed"
         case cliVersion = "cli_version"
         case upToDate = "up_to_date"
     }
@@ -23,6 +27,8 @@ public struct DaemonStatus: Codable, Hashable, Sendable {
     }
 
     public var serviceDescription: String {
+        if owner == "app", reachable { return "Running in EsecVault" }
+        if appManaged == true, !reachable { return "Open EsecVault to start the helper" }
         if reachable { return installed ? "Running" : "Running outside the managed service" }
         return installed ? "Stopped or unavailable" : "Not installed"
     }

@@ -1640,8 +1640,9 @@ named variables and keyring entries alone never choose that workload route.
 
 ### Local approval without policy setup
 
-Run `esec vault setup` once for your identity and background service. After
-updating an existing installation, run `esec vault daemon upgrade`.
+Run `esec vault setup` once for your identity. On macOS, open EsecVault to
+start its bundled local helper. On headless Linux, setup installs the user
+service; update that service with `esec vault daemon upgrade` after CLI upgrades.
 Ordinary interactive onboarding needs no manually authored `policy.toml`.
 
 When a broker read needs local consent, the daemon's desktop dialog shows
@@ -1939,10 +1940,26 @@ removes cached guarded keys while preserving each environment's configured
 level. Keep `esec.toml` and `.esec/` changes together in version control.
 
 The app watches vault metadata, checkout `esec.toml` files and seals, coalesces
-file changes, and checks daemon/session status every five seconds. Its own
-**Open EsecVault at Login** toggle is independent of the LaunchAgent that
-runs backups, sync and guarded reads; quitting the GUI leaves that service
-running.
+file changes, and checks helper/session status every five seconds. The menu-bar
+app starts and supervises its bundled Go helper automatically, including when
+opened at login. Closing a window keeps the menu bar and helper running.
+**Quit EsecVault and Stop Helper** ends the broker session and pauses background
+sync. Reopening starts locked. An app crash closes a private lifetime pipe;
+the helper cancels its work and exits within five seconds. Helper crashes are
+retried with backoff; repeated failures show an error and **Restart Helper**.
+
+The first launch disables this vault's validated legacy LaunchAgent, retaining
+its installation metadata, keys, caches and pending encrypted uploads. Setup
+remembers app ownership even while the app is closed. No daemon installation
+or upgrade commands are needed for normal Mac use. Update the app bundle and
+reopen it to update its helper. An explicit `ESEC_VAULT_SOCK` override keeps its
+external broker's lifetime unchanged.
+
+The server stores encrypted revisions, enrollment and access metadata; all
+file decryption and key access stay local. The same Go helper remains available
+as a standalone Linux user service. Ordinary `esec encrypt` / `esec decrypt`
+with local keys/keyrings continue to work independently of the Mac app.
+Release app bundles remain ad-hoc signed, without Developer ID notarization.
 
 ```sh
 cd macos/EsecVault && ./bundle.sh install   # ~/Applications/EsecVault.app
@@ -2078,20 +2095,31 @@ recovery data with the vault server. Without the service, mutating commands
 sync directly. New changes wait in a device-encrypted pending revision;
 acknowledged uploads remove that queue. Automatic local snapshot history is no longer created.
 
+On macOS, open EsecVault; its menu-bar process owns the helper. Enable
+**Open EsecVault at Login** to start it automatically. Quitting stops background
+sync, but CLI mutations still sync directly and encrypted pending work survives.
+`esec-vault daemon status` reports `owner: "app"` and `app_managed: true`.
+The app displays helper startup/retry errors; `daemon logs` directs app users to those diagnostics instead of showing a stale
+standalone service log.
+
+On Linux or a deliberately headless Mac, use the standalone service:
+
 ```sh
 esec-vault daemon install --start
 esec-vault daemon status
 esec-vault daemon logs
-esec-vault daemon upgrade               # also stops the old external upload worker
+esec-vault daemon upgrade
 ```
 
-The OS owns the process: a macOS LaunchAgent or Linux systemd user service starts
-at login and restarts after a crash. Installation copies the current executable
-to a stable, private path. A broker lock does not stop vault-server sync.
+The OS owns a standalone service: Linux systemd or a macOS LaunchAgent starts
+it at login and restarts after a crash. Installation copies the executable to
+a stable private path. Quit EsecVault before explicitly returning a Mac to
+standalone service mode with `daemon install --start`; opening EsecVault again
+takes ownership back. A broker lock does not stop vault-server sync.
 
-### Upgrading the CLI and the daemon
+### Upgrading the CLI and a standalone daemon
 
-The service runs its **own copy** of the executable, not the one on your `PATH`.
+The standalone service runs its **own copy** of the executable, not the one on your `PATH`.
 Installing a newer `esec-vault` therefore does not change the running daemon,
 which keeps executing the copy it was installed with. Refresh it explicitly:
 

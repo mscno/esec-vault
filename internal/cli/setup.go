@@ -216,6 +216,17 @@ func (r *setupRun) daemon() {
 		r.add("background service", "skipped", "ESEC_VAULT_SOCK is set: run the broker yourself", "")
 		return
 	}
+	if runtime.GOOS == "darwin" && (service.AppManaged() || os.Getenv("ESEC_VAULT_APP_BIN") != "") {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		resp, err := daemon.Call(ctx, daemon.Request{Op: "status"})
+		if err == nil && resp.Owner == "app" && sameHelperBuild(resp.Version, r.ctx.Version) {
+			r.add("local helper", "ok", "managed by EsecVault; decryption stays on this Mac", "")
+		} else {
+			r.add("local helper", "todo", "open or update EsecVault to start its bundled helper", "open -a EsecVault")
+		}
+		return
+	}
 	m, err := service.New()
 	if err != nil {
 		r.add("background service", "failed", err.Error(), "esec vault daemon install --start")

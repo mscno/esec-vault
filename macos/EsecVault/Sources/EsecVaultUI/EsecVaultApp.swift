@@ -13,7 +13,7 @@ public enum EsecVaultApplication {
 }
 
 struct EsecVaultApp: App {
-    @State private var store = Store()
+    @State private var store = Store.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
@@ -51,7 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Bundle.main.bundleIdentifier == nil {
             NSApp.setActivationPolicy(.accessory)
         }
+        Store.shared.start()
     }
+
+    func applicationWillTerminate(_: Notification) { Store.shared.helper.stop() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { false }
 }
@@ -132,6 +135,6 @@ struct MenuContent: View {
         Button("Refresh") { Task { await store.refresh(full: true) } }
         Divider()
         Toggle("Open EsecVault at Login", isOn: Binding(get: { store.opensAtLogin }, set: { store.opensAtLogin = $0 }))
-        Button("Quit EsecVault (Keep Service Running)") { NSApp.terminate(nil) }
+        Button("Quit EsecVault and Stop Helper") { NSApp.terminate(nil) }
     }
 }

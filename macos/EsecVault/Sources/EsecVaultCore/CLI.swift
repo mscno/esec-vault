@@ -7,6 +7,19 @@ public struct CLI: Sendable {
 
     public init(binary: URL) { self.binary = binary }
 
+    /// Shared by short CLI calls and the app-owned helper (including passkeys).
+    public static var environment: [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if Bundle.main.bundleIdentifier == "com.mscno.esec-vault", let executable = Bundle.main.executableURL {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            env["PATH"] = [executable.deletingLastPathComponent().path, home + "/go/bin", "/opt/homebrew/bin", "/usr/local/bin", env["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+            env["ESEC_VAULT_APP_BIN"] = executable.path
+        }
+        env["NO_COLOR"] = "1"
+        env["ESEC_VAULT_SESSION"] = "EsecVault app"
+        return env
+    }
+
     public struct Failure: Error, LocalizedError, Sendable {
         public let command: String
         public let output: String
@@ -59,16 +72,7 @@ public struct CLI: Sendable {
             p.executableURL = binary
             p.arguments = args
             if let dir { p.currentDirectoryURL = URL(fileURLWithPath: dir) }
-            var env = ProcessInfo.processInfo.environment
-            if Bundle.main.bundleIdentifier == "com.mscno.esec-vault", let executable = Bundle.main.executableURL {
-                let home = FileManager.default.homeDirectoryForCurrentUser.path
-                env["PATH"] = [executable.deletingLastPathComponent().path, home + "/go/bin", "/opt/homebrew/bin", "/usr/local/bin", env["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
-                env["ESEC_VAULT_APP_BIN"] = executable.path
-            }
-            env["NO_COLOR"] = "1"
-            // Label explicit secret-file reads in approval dialogs and audit.
-            env["ESEC_VAULT_SESSION"] = "EsecVault app"
-            p.environment = env
+            p.environment = Self.environment
             let out = Pipe(), err = Pipe()
             p.standardOutput = out
             p.standardError = err

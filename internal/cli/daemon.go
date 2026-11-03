@@ -16,6 +16,7 @@ import (
 	"github.com/mscno/esec-vault/internal/daemon"
 	"github.com/mscno/esec-vault/internal/paths"
 	"github.com/mscno/esec-vault/internal/service"
+	"github.com/mscno/esec-vault/internal/storage"
 )
 
 // DaemonCmd owns the OS-managed background process.
@@ -59,6 +60,9 @@ func (c *DaemonUpgradeCmd) Run(app *cliCtx) error {
 // no-op when the copy and unit already match, so a healthy daemon is not
 // bounced and its broker session survives.
 func installManaged(start bool) error {
+	if err := refuseAppServiceControl(); err != nil {
+		return err
+	}
 	if !daemon.ManagedSocket() {
 		return fmt.Errorf("managed service requires the default broker socket; unset ESEC_VAULT_SOCK")
 	}
@@ -79,6 +83,9 @@ func installManaged(start bool) error {
 	if err := m.Install(ctx, exe, start); err != nil {
 		return err
 	}
+	if err := m.UseService(); err != nil {
+		return err
+	}
 	if start {
 		if err := waitDaemon(ctx); err != nil {
 			return fmt.Errorf("service installed but not ready; inspect daemon logs: %w", err)
@@ -96,17 +103,62 @@ func installManaged(start bool) error {
 }
 
 // DaemonRunCmd is the supervised foreground process.
-type DaemonRunCmd struct{}
+type DaemonRunCmd struct {
+	AppOwned bool `help:"Run while the owning Mac app keeps stdin open"`
+}
 
 // Run starts locked and exits on OS cancellation.
 func (c *DaemonRunCmd) Run(app *cliCtx) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if c.AppOwned {
+		if runtime.GOOS != "darwin" || !daemon.ManagedSocket() {
+			return fmt.Errorf("app-owned helper requires macOS and the default broker socket")
+		}
+		info, err := os.Stdin.Stat()
+		if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+			return fmt.Errorf("app-owned helper requires a private lifetime pipe on stdin")
+		}
+		return daemon.WithParent(ctx, os.Stdin, 5*time.Second, func(ctx context.Context) error {
+			unlock, err := storage.Lock(filepath.Join(paths.Home(), "app-helper"))
+			if err != nil {
+				return fmt.Errorf("another EsecVault app already owns the helper: %w", err)
+			}
+			defer unlock()
+			m, err := service.New()
+			if err != nil {
+				return err
+			}
+			migration, migrationCancel := context.WithTimeout(ctx, 45*time.Second)
+			defer migrationCancel()
+			if err := m.UseApp(migration); err != nil {
+				return err
+			}
+			return runDaemon(ctx, app, "app")
+		})
+	}
+	return runDaemon(ctx, app, "service")
+}
+
+func runDaemon(ctx context.Context, app *cliCtx, owner string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s, err := daemon.New(app.Keyring, app.Logger)
 	if err != nil {
 		return err
 	}
+	s.Owner = owner
 	return s.Serve(ctx)
+}
+
+func refuseAppServiceControl() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if resp, err := daemon.Call(ctx, daemon.Request{Op: "status"}); err == nil && resp.Owner == "app" {
+		return fmt.Errorf("EsecVault owns this helper; quit the menu-bar app to stop it, or use Restart Helper in the app")
+	}
+	return nil
 }
 
 // DaemonStartCmd enables and starts a service.
@@ -140,6 +192,9 @@ type DaemonUninstallCmd struct{}
 func (c *DaemonUninstallCmd) Run(app *cliCtx) error { return manageService("uninstall") }
 
 func manageService(action string) error {
+	if err := refuseAppServiceControl(); err != nil {
+		return err
+	}
 	m, err := service.New()
 	if err != nil {
 		return err
@@ -151,7 +206,10 @@ func manageService(action string) error {
 		if err := m.Start(ctx); err != nil {
 			return err
 		}
-		return waitDaemon(ctx)
+		if err := waitDaemon(ctx); err != nil {
+			return err
+		}
+		return m.UseService()
 	case "stop":
 		if err := m.Stop(ctx); err != nil {
 			return err
@@ -179,7 +237,10 @@ func manageService(action string) error {
 		if err := m.Start(ctx); err != nil {
 			return err
 		}
-		return waitDaemon(ctx)
+		if err := waitDaemon(ctx); err != nil {
+			return err
+		}
+		return m.UseService()
 	case "uninstall":
 		return m.Uninstall(ctx)
 	default:
@@ -251,10 +312,11 @@ type DaemonStatusCmd struct{}
 type daemonStatusView struct {
 	*daemon.Response
 
-	Installed bool   `json:"installed"`
-	Reachable bool   `json:"reachable"`
-	Managed   bool   `json:"managed"`
-	Unit      string `json:"unit,omitempty"`
+	Installed  bool   `json:"installed"`
+	Reachable  bool   `json:"reachable"`
+	Managed    bool   `json:"managed"`
+	Unit       string `json:"unit,omitempty"`
+	AppManaged bool   `json:"app_managed"`
 }
 
 // Run prints the service and session status.
@@ -264,7 +326,8 @@ func (c *DaemonStatusCmd) Run(app *cliCtx) error {
 		return err
 	}
 	v := daemonStatusView{Response: &daemon.Response{CLI: app.Version}, Installed: m.Installed(), Managed: daemon.ManagedSocket(), Unit: m.Manifest.Unit}
-	if v.Installed {
+	v.AppManaged = service.AppManaged()
+	if v.Installed && !v.AppManaged {
 		if exe, exeErr := os.Executable(); exeErr == nil {
 			v.UpToDate, _ = m.BinaryCurrent(exe)
 		}
@@ -276,14 +339,23 @@ func (c *DaemonStatusCmd) Run(app *cliCtx) error {
 		managedCurrent := v.UpToDate
 		v.Response, v.Reachable = resp, true
 		resp.CLI = app.Version
-		resp.UpToDate = resp.Version != "" && resp.Version == app.Version && (!v.Installed || managedCurrent)
+		v.AppManaged = v.AppManaged || resp.Owner == "app"
+		resp.UpToDate = sameHelperBuild(resp.Version, app.Version) && (v.AppManaged || !v.Installed || managedCurrent)
 		if !resp.UpToDate {
-			fmt.Fprintf(os.Stderr, "! daemon runs %s but this CLI is %s; run: esec-vault daemon upgrade\n", orUnknown(resp.Version), orUnknown(app.Version))
+			fmt.Fprintln(os.Stderr, "!", daemonBuildAdvice(resp, app.Version))
 		}
 		return printJSON(v)
 	}
 	v.Error = err.Error()
 	return printJSON(v)
+}
+
+func daemonBuildAdvice(resp *daemon.Response, version string) string {
+	fix := "run: esec-vault daemon upgrade"
+	if resp.Owner == "app" {
+		fix = "update and reopen EsecVault, and use the matching CLI release"
+	}
+	return fmt.Sprintf("helper runs %s but this CLI is %s; %s", orUnknown(resp.Version), orUnknown(version), fix)
 }
 
 // orUnknown labels a missing build string so status output stays unambiguous
@@ -304,6 +376,9 @@ type UnlockCmd struct {
 func (c *UnlockCmd) Run(app *cliCtx) error {
 	resp, err := daemon.Call(context.Background(), daemon.Request{Op: "unlock", TTL: c.TTL})
 	if err != nil {
+		if resp == nil && service.AppManaged() {
+			return fmt.Errorf("open EsecVault and check its local helper status: %w", err)
+		}
 		return err
 	}
 	// Say what unlocking does not need: a YubiKey touched now, with nothing
@@ -353,6 +428,9 @@ type DaemonLogsCmd struct {
 
 // Run reads launchd's managed file or the systemd user journal.
 func (c *DaemonLogsCmd) Run(app *cliCtx) error {
+	if service.AppManaged() {
+		return fmt.Errorf("EsecVault owns this helper; startup and retry errors are shown in the app's Local helper section")
+	}
 	if c.Lines < 1 || c.Lines > 10000 {
 		return fmt.Errorf("lines must be between 1 and 10000")
 	}
@@ -413,6 +491,9 @@ func (c *UninstallCmd) Run(app *cliCtx) error {
 	}
 	if c.DryRun {
 		return nil
+	}
+	if err := refuseAppServiceControl(); err != nil {
+		return err
 	}
 	if c.Purge && !c.Yes && !confirm("Permanently delete these local private keys, snapshots and identity entries?") {
 		return fmt.Errorf("purge cancelled")

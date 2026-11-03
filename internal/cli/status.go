@@ -79,9 +79,9 @@ func (c *StatusCmd) Run(ctx *cliCtx) error {
 	if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil {
 		s.Daemon = resp
 		resp.CLI = ctx.Version
-		resp.UpToDate = resp.Version != "" && resp.Version == ctx.Version
+		resp.UpToDate = sameHelperBuild(resp.Version, ctx.Version)
 		if resp.Version != "" && !resp.UpToDate {
-			s.Problems = append(s.Problems, fmt.Sprintf("daemon runs %s but this CLI is %s; run: esec vault daemon upgrade", resp.Version, ctx.Version))
+			s.Problems = append(s.Problems, daemonBuildAdvice(resp, ctx.Version))
 		}
 	}
 	if c.JSON {
@@ -261,6 +261,14 @@ func daemonVersionIssues(ctx *cliCtx) []string {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return nil
 	}
+	if service.AppManaged() {
+		cctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil && !sameHelperBuild(resp.Version, ctx.Version) {
+			return []string{daemonBuildAdvice(resp, ctx.Version)}
+		}
+		return nil
+	}
 	m, err := service.New()
 	if err != nil {
 		return []string{"could not inspect the managed daemon: " + err.Error()}
@@ -282,7 +290,7 @@ func daemonVersionIssues(ctx *cliCtx) []string {
 	issue := "managed daemon runs an older copy of esec-vault; run: esec-vault daemon upgrade"
 	cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil && resp.Version != "" && resp.Version != ctx.Version {
+	if resp, err := daemon.Call(cctx, daemon.Request{Op: "status"}); err == nil && resp.Version != "" && !sameHelperBuild(resp.Version, ctx.Version) {
 		issue += fmt.Sprintf(" (daemon %s, cli %s)", resp.Version, ctx.Version)
 	}
 	return []string{issue}

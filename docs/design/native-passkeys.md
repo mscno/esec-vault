@@ -48,8 +48,9 @@ ESEC_APPLE_TEAM_ID=YOUR_TEAM_ID ESEC_PASSKEY_RP=sign.vault.example.com ./bundle.
 The app bundles a matching CLI and `age-plugin-passkey`. CLI/daemon users
 must also put this plugin on their PATH, for example by linking
 `~/Applications/EsecVault.app/Contents/MacOS/age-plugin-passkey` into
-`~/go/bin`. Upgrade the managed daemon from the bundled CLI after installing
-the app. A daemon upgrade ends the broker's unlocked session.
+`~/go/bin`. The menu-bar app starts its bundled helper automatically. Reopen
+the app after updating it; the helper starts locked. Headless service users
+still run `esec vault daemon upgrade` after updating their CLI.
 
 Publish `signer/.well-known/apple-app-site-association` on the isolated signer
 origin before installing the signed app. Its `webcredentials.apps` must list

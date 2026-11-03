@@ -80,7 +80,7 @@ type cli struct {
 	Drill    DrillCmd    `cmd:"" group:"backup" help:"Test phrase recovery of the server backup and repository key seals."`
 	Identity IdentityCmd `cmd:"" group:"backup" help:"Manage your identity keypair (mnemonic-backed)."`
 
-	Daemon    DaemonCmd    `cmd:"" group:"service" help:"Manage the OS-supervised user daemon."`
+	Daemon    DaemonCmd    `cmd:"" group:"service" help:"Inspect the local helper or manage a standalone user service."`
 	Unlock    UnlockCmd    `cmd:"" group:"service" help:"Unlock the broker for a bounded session."`
 	Lock      LockCmd      `cmd:"" group:"service" help:"Lock the broker while backups continue."`
 	Agent     AgentCmd     `cmd:"" group:"service" help:"Run the broker daemon holding keys in memory."`

@@ -1,3 +1,15 @@
+# v0.30.0
+
+- Let the Mac menu-bar app own its bundled local helper: start automatically,
+  retry crashes with backoff, and stop on app quit or crash. Reopening starts
+  locked. Closing a window keeps the menu bar and helper running.
+- Automatically disable the validated legacy LaunchAgent without changing keys,
+  caches or pending encrypted uploads. Setup remembers app ownership and the
+  GUI offers helper status/restart instead of daemon installation/upgrades.
+- Keep the shared Go helper and standalone systemd support for Linux. Decryption
+  stays local; ordinary esec local-key/keyring commands remain independent.
+  Developer ID signing and notarization remain out of scope for this release.
+
 # v0.29.9
 
 - Add `ci add --fly APP --stage` to store a deploy identity without restarting

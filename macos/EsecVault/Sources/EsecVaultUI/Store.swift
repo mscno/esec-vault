@@ -9,6 +9,8 @@ import ServiceManagement
 @MainActor
 @Observable
 final class Store {
+    static let shared = Store()
+    let helper = AppHelper()
     var cli: CLI? = CLI.locate()
     var projects: [Project] = []
     var details: [String: Project] = [:]
@@ -101,6 +103,7 @@ final class Store {
             return .attention("Guarded keys are still cached on this Mac")
         }
         if !refreshErrors.isEmpty { return .attention("Some status checks could not complete") }
+        if helper.error != nil { return .attention("Local helper needs attention") }
         if daemonState?.needsAttention == true { return .attention("Background service needs attention") }
         if !(status?.problems ?? []).isEmpty { return .attention("Vault status needs attention") }
         if !sealsToFix.isEmpty { return .attention("Sealed keys need attention") }
@@ -142,6 +145,7 @@ final class Store {
     func start() {
         guard !started else { return }
         started = true
+        if let cli { helper.start(cli: cli) }
         Task { await refresh(full: true) }
         watch()
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
@@ -171,6 +175,7 @@ final class Store {
         defer { runtimeRefreshing = false }
         let wasOpen = daemonState?.unlocked == true
         daemonState = await read("Background service") { try await cli.daemonStatus() }
+        helper.observed(daemonState)
         if wasOpen && daemonState?.sessionIsOpen() != true {
             lockSecretWindows()
         }
@@ -477,7 +482,13 @@ final class Store {
     }
 
     func serviceAction(_ action: String) async {
-        await perform("Background service: \(action)…", ["daemon", action] + (action == "install" ? ["--start"] : []))
+        if action == "restart", let cli {
+            lockSecretWindows()
+            await helper.restart(cli: cli)
+            await refreshRuntime()
+        } else {
+            await perform("Local helper: \(action)…", ["daemon", action])
+        }
     }
 
     func unlock(ttl: String = "4h") async {
