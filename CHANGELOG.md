@@ -1,3 +1,10 @@
+# v0.29.9
+
+- Add `ci add --fly APP --stage` to store a deploy identity without restarting
+  existing Machines. Deploy the updated sealed key with the new image before
+  activating that identity. Reject ambiguous or invalid secret destinations
+  before changing seals.
+
 # v0.29.8
 
 - Fix the Mac app crashing while opening the menu bar after a broker unlock.
